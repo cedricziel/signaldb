@@ -106,6 +106,11 @@ pub struct QueryIrRequest {
     /// The value of the `constant` pseudo-source (irVersion 10+).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub constant: Option<f64>,
+    /// Walk a `rows`/`trace` result in pages (irVersion 14+): resend the
+    /// same document with `page.cursor` set to the previous
+    /// `page.next_cursor` to continue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<common::query_ir::Page>,
 }
 
 /// One named formula in a [`MultiQueryIrRequest`] (D5): arithmetic
@@ -141,6 +146,8 @@ pub struct MultiQueryIrRequest {
 /// request needs no wrapper key.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(untagged)]
+// Parsed once per request and matched on at once; boxing buys nothing.
+#[allow(clippy::large_enum_variant)]
 pub enum QueryIrRequestBody {
     Multi(MultiQueryIrRequest),
     Single(QueryIrRequest),
@@ -169,6 +176,7 @@ impl QueryIrResponse {
             graph: None,
             traces: None,
             metadata: Some(metadata),
+            page: None,
             warnings,
         }
     }
@@ -369,6 +377,9 @@ pub struct QueryIrResponse {
     /// server has nothing to report; a warning never suppresses the result.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<QueryWarning>,
+    /// Present iff the request carried `page` (`rows`/`trace` only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<QueryPage>,
 }
 
 /// Submit a native Query IR document — either a single query or a
@@ -385,6 +396,7 @@ pub struct QueryIrResponse {
         (status = 400, description = "Invalid IR document", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 401, description = "Missing or invalid credentials", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 403, description = "Missing read scope for a queried source", body = crate::endpoints::api_error::ApiErrorBody),
+        (status = 410, description = "The `page.cursor` expired or comes from an incompatible server version (`errorType` `gone`); restart the walk", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 422, description = "The query exceeds a server-side resource bound (`errorType` `resource_limit`); narrow it rather than retry", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 503, description = "No querier service available", body = crate::endpoints::api_error::ApiErrorBody),
@@ -421,11 +433,29 @@ async fn query_ir_single(
     // Stamp the server clock once, at the ticket boundary, so relative anchors
     // resolve to a single absolute window every stage of the plan sees.
     let now = super::now_ns();
-    let window = resolve_window(&req.range, now)?;
 
     // The IR document is the request re-serialized; the querier validates it.
     let document = serde_json::to_value(&req)
         .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
+
+    // A page is planned here, before any data is read: its cursor fixes the
+    // window and the position to resume after.
+    let paging = match &req.page {
+        Some(_) => {
+            let doc: common::query_ir::Document = serde_json::from_value(document.clone())
+                .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
+            common::query_ir::check_structure(&doc).map_err(super::query_paging::ir_error)?;
+            let limits = &state.config().querier;
+            Some(super::query_paging::plan(
+                limits, ctx, &document, &doc, &req.range, now,
+            )?)
+        }
+        None => None,
+    };
+    let window = match &paging {
+        Some(paging) => paging.window,
+        None => resolve_window(&req.range, now)?,
+    };
 
     // An introspection document is answered here, from the registry and the
     // catalog. It never becomes a ticket, so discovery does not depend on
@@ -440,10 +470,19 @@ async fn query_ir_single(
             .await
             .map(axum::Json);
     }
-    let ticket = query_ir_ticket(ctx, &document, now)?;
+    let ticket = match &paging {
+        Some(paging) => query_ir_page_ticket(
+            ctx,
+            &paging.ticket_document(&document),
+            now,
+            Some(&paging.request),
+        )?,
+        None => query_ir_ticket(ctx, &document, now)?,
+    };
 
     let (batches, correlate_report) = execute_ticket(&state, ticket).await?;
     let mut response = build_envelope(&req.result, window, &batches, &document)?;
+    response.page = paging.map(|p| p.response(correlate_report.page.as_ref(), now));
     response
         .warnings
         .extend(unknown_group_by_warnings(&req.from, &document, &batches));
@@ -475,6 +514,18 @@ async fn query_ir_multi(
     // partially-authorized multi-query request must fail closed, not spend
     // work on the queries it was allowed to run before rejecting the rest.
     check_multi_source_scopes(ctx, &req.queries)?;
+    if let Some(name) = req
+        .queries
+        .iter()
+        .find_map(|(n, q)| q.page.as_ref().map(|_| n))
+    {
+        return Err(super::query_paging::ir_error(
+            common::query_ir::IrError::NotPaginatable {
+                at: format!("queries.{name}"),
+                reason: "a formula document cannot be paginated".to_string(),
+            },
+        ));
+    }
 
     let multi_doc = to_multi_document(&req)?;
     let inner_envelopes: HashMap<String, common::query_ir::ResultEnvelope> = req
@@ -532,6 +583,7 @@ async fn query_ir_multi(
         graph: None,
         traces: None,
         metadata: None,
+        page: None,
         warnings: Vec::new(),
     }))
 }
@@ -670,7 +722,22 @@ pub(super) fn query_ir_ticket(
     document: &impl Serialize,
     now_ns: i64,
 ) -> Result<String, ApiError> {
-    let payload = serde_json::json!({ "document": document, "now_ns": now_ns });
+    query_ir_page_ticket(ctx, document, now_ns, None)
+}
+
+/// [`query_ir_ticket`] carrying a page for the querier to sort, resume and
+/// cut the result to.
+fn query_ir_page_ticket(
+    ctx: &TenantContext,
+    document: &impl Serialize,
+    now_ns: i64,
+    page: Option<&common::query_cursor::PageRequest>,
+) -> Result<String, ApiError> {
+    let mut payload = serde_json::json!({ "document": document, "now_ns": now_ns });
+    if let Some(page) = page {
+        payload["page"] = serde_json::to_value(page)
+            .map_err(|e| ApiError::bad_request(format!("invalid page: {e}")))?;
+    }
     let payload = serde_json::to_string(&payload)
         .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
     Ok(format!(
@@ -1051,6 +1118,7 @@ fn build_envelope(
                 graph: None,
                 traces: None,
                 metadata: None,
+                page: None,
                 warnings: Vec::new(),
             })
         }
@@ -1070,6 +1138,7 @@ fn build_envelope(
                 graph: None,
                 traces: None,
                 metadata: None,
+                page: None,
                 warnings: Vec::new(),
             })
         }
@@ -1088,6 +1157,7 @@ fn build_envelope(
                 graph: None,
                 traces: None,
                 metadata: None,
+                page: None,
                 warnings: Vec::new(),
             })
         }
@@ -1141,6 +1211,7 @@ fn build_envelope(
                 graph: None,
                 traces: None,
                 metadata: None,
+                page: None,
                 warnings: Vec::new(),
             })
         }
@@ -1157,6 +1228,7 @@ fn build_envelope(
             graph: None,
             traces: None,
             metadata: None,
+            page: None,
             warnings: Vec::new(),
         }),
         "trace" => {
@@ -1175,6 +1247,7 @@ fn build_envelope(
                 graph: None,
                 traces: Some(traces),
                 metadata: None,
+                page: None,
                 warnings: Vec::new(),
             })
         }
@@ -1191,6 +1264,7 @@ fn build_envelope(
                 heatmap: HeatmapResult::default(),
                 flamegraph: None,
                 metadata: None,
+                page: None,
                 warnings: graph_node_limit_warning(graph.dropped_nodes)
                     .into_iter()
                     .collect(),
@@ -2328,6 +2402,73 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
+    fn paged_body(pipeline: serde_json::Value, cursor: Option<&str>) -> Body {
+        let mut doc = serde_json::json!({
+            "irVersion": 14, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows", "pipeline": pipeline, "page": { "size": 10 }
+        });
+        if let Some(cursor) = cursor {
+            doc["page"]["cursor"] = serde_json::json!(cursor);
+        }
+        Body::from(serde_json::to_vec(&doc).unwrap())
+    }
+
+    async fn error_body(app: &axum::Router, body: Body) -> (StatusCode, serde_json::Value) {
+        let resp = app
+            .clone()
+            .oneshot(post("/api/v1/query", true, body))
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    #[tokio::test]
+    async fn a_paged_document_reaches_the_query_boundary() {
+        let app = test_app().await;
+        let (status, _) = error_body(&app, paged_body(serde_json::json!([]), None)).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn an_aggregate_page_is_not_paginatable_with_details() {
+        let app = test_app().await;
+        let pipeline = serde_json::json!([
+            { "aggregate": { "by": [], "aggs": [{ "fn": "count", "as": "n" }] } }
+        ]);
+        let (status, body) = error_body(&app, paged_body(pipeline, None)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["details"][0]["reason"], "not_paginatable");
+        assert_eq!(body["details"][0]["column"], "pipeline[0].aggregate");
+    }
+
+    #[tokio::test]
+    async fn an_incompatible_cursor_is_gone_and_a_corrupt_one_bad_data() {
+        let app = test_app().await;
+        let (status, body) =
+            error_body(&app, paged_body(serde_json::json!([]), Some("sdbc0.a.b"))).await;
+        assert_eq!(status, StatusCode::GONE);
+        assert_eq!(body["errorType"], "gone");
+        let (status, body) =
+            error_body(&app, paged_body(serde_json::json!([]), Some("sdbc1.a.b"))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["errorType"], "bad_data");
+    }
+
+    #[test]
+    fn a_response_without_page_carries_no_page_member() {
+        let window = ResolvedWindow {
+            start_ns: 0,
+            end_ns: 1,
+        };
+        let response = build_envelope("rows", window, &[], &serde_json::json!({})).unwrap();
+        let json = serde_json::to_value(&response).unwrap();
+        assert!(json.get("page").is_none(), "{json}");
+    }
+
     // Task 6.1 — a malformed IR body is a client error, not a 500.
     #[tokio::test]
     async fn ir_query_with_malformed_body_is_client_error() {
@@ -2785,6 +2926,7 @@ mod tests {
                 trace_id: None,
                 step: None,
                 constant: None,
+                page: None,
             },
         );
         queries.insert(
@@ -2804,6 +2946,7 @@ mod tests {
                 trace_id: None,
                 step: None,
                 constant: None,
+                page: None,
             },
         );
         assert!(check_multi_source_scopes(&scoped, &queries).is_err());
@@ -2842,6 +2985,7 @@ mod tests {
                 trace_id: None,
                 step: None,
                 constant: None,
+                page: None,
             },
         );
         let req = MultiQueryIrRequest {

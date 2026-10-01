@@ -3293,6 +3293,23 @@ pub mod types {
             value.parse()
         }
     }
+    ///A document-level `page`: walk the result `size` rows (or traces) at a time.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrPage {
+        ///The previous response's `page.next_cursor`; absent on the first page.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub cursor: ::std::option::Option<::std::string::String>,
+        /**Rows (or, for the `trace` envelope, traces) per page; the server
+        default when omitted.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub size: ::std::option::Option<i32>,
+    }
+    impl IrPage {
+        pub fn builder() -> builder::IrPage {
+            Default::default()
+        }
+    }
     ///A parser for the `extract` stage. `regex` is deferred (registry-gated).
     #[derive(
         ::serde::Deserialize,
@@ -4857,6 +4874,11 @@ pub mod types {
         ///IR document version (the server accepts a bounded range).
         #[serde(rename = "irVersion")]
         pub ir_version: i64,
+        /**Walk a `rows`/`trace` result in pages (irVersion 14+): resend the
+        same document with `page.cursor` set to the previous
+        `page.next_cursor` to continue.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub page: ::std::option::Option<IrPage>,
         ///Ordered transform stages (opaque objects; see the IR spec).
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub pipeline:
@@ -4922,6 +4944,9 @@ pub mod types {
         about, with the provenance and cost of the answer.*/
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub metadata: ::std::option::Option<MetadataResult>,
+        ///Present iff the request carried `page` (`rows`/`trace` only).
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub page: ::std::option::Option<QueryPage>,
         /**Present iff `result == "scalar"`: one `[t_ns, value]` point per
         evaluation instant, with no labels (`null` is NaN or ±Inf).*/
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
@@ -4947,6 +4972,19 @@ pub mod types {
     }
     impl QueryIrResponse {
         pub fn builder() -> builder::QueryIrResponse {
+            Default::default()
+        }
+    }
+    ///The `page` member of a paged response.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
+    pub struct QueryPage {
+        /**Present exactly when more of the result exists; send it back as
+        `page.cursor` with the same document. Opaque: never build or edit one.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub next_cursor: ::std::option::Option<::std::string::String>,
+    }
+    impl QueryPage {
+        pub fn builder() -> builder::QueryPage {
             Default::default()
         }
     }
@@ -15056,6 +15094,63 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct IrPage {
+            cursor: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            size: ::std::result::Result<::std::option::Option<i32>, ::std::string::String>,
+        }
+        impl ::std::default::Default for IrPage {
+            fn default() -> Self {
+                Self {
+                    cursor: Ok(Default::default()),
+                    size: Ok(Default::default()),
+                }
+            }
+        }
+        impl IrPage {
+            pub fn cursor<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.cursor = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for cursor: {e}"));
+                self
+            }
+            pub fn size<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i32>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.size = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for size: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrPage> for super::IrPage {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrPage,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    cursor: value.cursor?,
+                    size: value.size?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrPage> for IrPage {
+            fn from(value: super::IrPage) -> Self {
+                Self {
+                    cursor: Ok(value.cursor),
+                    size: Ok(value.size),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct IrRank {
             n: ::std::result::Result<i64, ::std::string::String>,
             of: ::std::result::Result<::std::string::String, ::std::string::String>,
@@ -19147,6 +19242,8 @@ pub mod types {
             >,
             from: ::std::result::Result<::std::string::String, ::std::string::String>,
             ir_version: ::std::result::Result<i64, ::std::string::String>,
+            page:
+                ::std::result::Result<::std::option::Option<super::IrPage>, ::std::string::String>,
             pipeline: ::std::result::Result<
                 ::std::vec::Vec<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
                 ::std::string::String,
@@ -19171,6 +19268,7 @@ pub mod types {
                     focus: Ok(Default::default()),
                     from: Err("no value supplied for from".to_string()),
                     ir_version: Err("no value supplied for ir_version".to_string()),
+                    page: Ok(Default::default()),
                     pipeline: Ok(Default::default()),
                     range: Err("no value supplied for range".to_string()),
                     result: Err("no value supplied for result".to_string()),
@@ -19242,6 +19340,16 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for ir_version: {e}"));
                 self
             }
+            pub fn page<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::IrPage>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.page = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for page: {e}"));
+                self
+            }
             pub fn pipeline<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<
@@ -19309,6 +19417,7 @@ pub mod types {
                     focus: value.focus?,
                     from: value.from?,
                     ir_version: value.ir_version?,
+                    page: value.page?,
                     pipeline: value.pipeline?,
                     range: value.range?,
                     result: value.result?,
@@ -19326,6 +19435,7 @@ pub mod types {
                     focus: Ok(value.focus),
                     from: Ok(value.from),
                     ir_version: Ok(value.ir_version),
+                    page: Ok(value.page),
                     pipeline: Ok(value.pipeline),
                     range: Ok(value.range),
                     result: Ok(value.result),
@@ -19352,6 +19462,10 @@ pub mod types {
             >,
             metadata: ::std::result::Result<
                 ::std::option::Option<super::MetadataResult>,
+                ::std::string::String,
+            >,
+            page: ::std::result::Result<
+                ::std::option::Option<super::QueryPage>,
                 ::std::string::String,
             >,
             points: ::std::result::Result<
@@ -19382,6 +19496,7 @@ pub mod types {
                     graph: Ok(Default::default()),
                     heatmap: Ok(Default::default()),
                     metadata: Ok(Default::default()),
+                    page: Ok(Default::default()),
                     points: Ok(Default::default()),
                     result: Err("no value supplied for result".to_string()),
                     rows: Ok(Default::default()),
@@ -19442,6 +19557,16 @@ pub mod types {
                 self.metadata = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for metadata: {e}"));
+                self
+            }
+            pub fn page<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::QueryPage>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.page = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for page: {e}"));
                 self
             }
             pub fn points<T>(mut self, value: T) -> Self
@@ -19542,6 +19667,7 @@ pub mod types {
                     graph: value.graph?,
                     heatmap: value.heatmap?,
                     metadata: value.metadata?,
+                    page: value.page?,
                     points: value.points?,
                     result: value.result?,
                     rows: value.rows?,
@@ -19561,6 +19687,7 @@ pub mod types {
                     graph: Ok(value.graph),
                     heatmap: Ok(value.heatmap),
                     metadata: Ok(value.metadata),
+                    page: Ok(value.page),
                     points: Ok(value.points),
                     result: Ok(value.result),
                     rows: Ok(value.rows),
@@ -19569,6 +19696,49 @@ pub mod types {
                     traces: Ok(value.traces),
                     warnings: Ok(value.warnings),
                     window: Ok(value.window),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct QueryPage {
+            next_cursor: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for QueryPage {
+            fn default() -> Self {
+                Self {
+                    next_cursor: Ok(Default::default()),
+                }
+            }
+        }
+        impl QueryPage {
+            pub fn next_cursor<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.next_cursor = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for next_cursor: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<QueryPage> for super::QueryPage {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: QueryPage,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    next_cursor: value.next_cursor?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::QueryPage> for QueryPage {
+            fn from(value: super::QueryPage) -> Self {
+                Self {
+                    next_cursor: Ok(value.next_cursor),
                 }
             }
         }
@@ -26594,6 +26764,9 @@ pub mod builder {
                     ResponseValue::from_response(response).await?,
                 )),
                 403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                410u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 422u16 => Err(Error::ErrorResponse(

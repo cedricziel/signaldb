@@ -85,6 +85,7 @@ impl MapArgs {
             trace_id: self.trace_id.clone(),
             step: None,
             constant: None,
+            page: None,
         };
 
         let client = self.connect.build_client()?;
@@ -408,6 +409,7 @@ mod tests {
             graph: Some(sample_graph()),
             heatmap: None,
             metadata: None,
+            page: None,
             points: None,
             result: "graph".to_string(),
             rows: vec![],
@@ -572,6 +574,7 @@ mod tests {
             graph: Some(empty_graph()),
             heatmap: None,
             metadata: None,
+            page: None,
             points: None,
             result: "graph".to_string(),
             rows: vec![],

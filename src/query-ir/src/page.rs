@@ -218,7 +218,7 @@ pub fn check(doc: &Document) -> Result<(), IrError> {
                 return reject(at, "only a trailing limit can be paginated".to_string());
             }
             other => {
-                return reject(at, format!("a {} stage cannot be {verb}", other.name()));
+                return reject(at, format!("the {} stage cannot be {verb}", other.name()));
             }
         }
     }

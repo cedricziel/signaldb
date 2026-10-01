@@ -59,7 +59,7 @@ body. The response is the declared result envelope (see
 
 ```jsonc
 {
-  "irVersion": 1, // 1 to 12; declare the lowest version that carries every feature you use (see Pipeline stages)
+  "irVersion": 1, // 1 to 14; declare the lowest version that carries every feature you use (see Pipeline stages)
   "from": "logs", // a registered source: "logs", "traces", "profiles", "metrics", or "exemplars"
   "range": { "from": "now-1h", "to": "now" },
   "result": "series", // v1: rows | series | table; v2 adds heatmap; flamegraph is profiles-only
@@ -128,7 +128,7 @@ joins on matching timestamps. Samples after the last instant are not
 counted. On every other source, `step` buckets are epoch-aligned
 `[t, t + step)` and labelled by their start `t`.
 
-What each `irVersion` unlocks (the server supports 1 to 12; the source of
+What each `irVersion` unlocks (the server supports 1 to 14; the source of
 truth is `src/query-ir/src/version.rs`):
 
 | Version | Adds |
@@ -145,6 +145,7 @@ truth is `src/query-ir/src/version.rs`):
 | 10 | the metric Series algebra: `sample`, `reduce`, `map`, `labels`, `filter`, `binop`, `absent`, `over_time`, `sort`, `scalar`, `vector`, `histogram_fraction`, histogram `window`, `lookback` and `per_series`, the `scalar` envelope, document `step`/`constant`, the `time`/`constant` sources |
 | 11 | `correlate` to another signal source |
 | 12 | `match` and the `trace` envelope |
+| 14 | document-level `page` ([Pagination](#pagination-ir-v14)) |
 
 Every earlier document keeps its exact meaning; a document using a feature
 while declaring a lower version is rejected naming the version it needs, never
@@ -714,6 +715,80 @@ row landed in one group labelled `null`. It is a warning rather than a
 rejection because an unpromoted attribute cannot be enumerated while planning:
 grouping by a real attribute that is simply absent from a short window is a
 legitimate query, and would otherwise fail a quiet dashboard panel.
+
+## Pagination (IR v14)
+
+A `rows` or `trace` result too large for one response is walked in pages.
+Add a document-level `page`:
+
+```jsonc
+{ "irVersion": 14, "from": "logs", "range": { "from": "now-6h", "to": "now" },
+  "result": "rows", "pipeline": [/* ... */],
+  "page": { "size": 500 } } // size optional: [querier].page_default_size (1,000)
+```
+
+The response carries `page`, with `next_cursor` present exactly while more
+of the result exists. Send the same document again with
+`"page": { "size": 500, "cursor": "<next_cursor>" }` to get the next page;
+the final page has a `page` member without `next_cursor`. A cursor is opaque:
+never build or edit one. It travels in the request and response bodies only.
+
+**Order.** A page needs a total order, so a paged result is always sorted:
+
+- by the last `order` stage's keys, when there is one;
+- else, for a `match` pipeline or the `trace` envelope, by `trace_id`, start
+  time, `span_id` ascending;
+- else newest first by the source's time column (`timestamp`;
+  `start_time_unix_nano` for traces).
+
+The server then appends the source's tie-breakers, ascending: `trace_id`,
+`span_id` for traces; `trace_id`, `span_id`, `service.name` for logs;
+`series.id` for metrics; `series.id`, `trace.id`, `span.id` for exemplars;
+`profile.id` for profiles. Rows that still share the full key (a log without
+trace context, a span delivered twice) are never split across pages, so a page
+may run past `size` to finish such a tie group. The `trace` envelope counts
+whole traces: `size` is a number of traces and a trace never spans two pages.
+Lead with the time column in a custom `order` for large walks: only a leading
+time key prunes files.
+
+**What can be paginated.** Only a single `rows` or `trace` document whose
+pipeline uses `where`, `extract`, `correlate`, `match` and `order`, plus at
+most a `limit` as the very last stage. That trailing `limit` caps the whole
+walk: `limit: 2500` with `size: 1000` yields pages of 1,000, 1,000 and 500.
+Anything else (an `aggregate`, `topk`, `bottomk`, `describe`, an earlier
+`limit`, another envelope, a formula document, or a `trace` document whose
+leading `order` key is not `trace_id`) is a 400 whose `details` name the
+offender:
+
+```jsonc
+{ "status": "error", "errorType": "bad_data",
+  "error": "page: the aggregate stage cannot be paginated",
+  "details": [{ "reason": "not_paginatable", "column": "pipeline[1].aggregate" }] }
+```
+
+**Consistency.** The first page resolves `range` to an absolute window and
+every later page reuses it, so `now-1h` does not drift during a walk. Each page
+re-runs the document over current data, strictly after the previous page's
+last sort key. No row is returned twice, and every row that exists for the
+whole walk is returned, whatever compaction does meanwhile. A row that arrives
+mid-walk shows up only if it sorts after the cursor; with the default
+newest-first order a late row inside the window does not. For a consistent
+export, page an absolute range that ended more than a few seconds ago. A row
+removed by retention during the walk stops appearing.
+
+**Errors and bounds** (all `[querier]` settings):
+
+| Situation | Response |
+| --- | --- |
+| `page.size` above `page_max_size` (10,000) | 400 |
+| a corrupted cursor, or one from another tenant, dataset or document (the cursor is bound to all three, with the rest of the document but the cursor itself) | 400 |
+| a cursor older than `page_cursor_ttl` (15m), or from an incompatible server version | 410, `errorType: "gone"`: restart the walk |
+| more than `page_max_tie_rows` (10,000) rows sharing one sort key at a page boundary | 422 `resource_limit`: add an `order` key |
+| a walk past `page_max_walk_rows` (1,000,000) | 422 `resource_limit` |
+| a page past `page_max_bytes` (16 MiB) | the page ends early at a key boundary, with `next_cursor` |
+
+Every page is an ordinary authenticated query: read scopes are checked and rate
+limits apply on each one.
 
 ## Graph envelope (`traces` only, IR v8+)
 
@@ -2252,10 +2327,9 @@ generated clients (the TypeScript client and Rust SDK), never hand-written HTTP.
 The IR is the base of a dependent stack; each sibling is a separate capability
 so it is designed and reviewed on its own risk profile. Still deferred:
 
-- **live tail** — streaming new matching records over the same document
-  (part of the streaming epic), and **pagination** for walking a large result.
-  Field discovery itself has landed: see
-  [Discovery](#discovery-what-can-i-query).
+- **live tail** — following new matching records of the same document.
+  Pagination ([Pagination](#pagination-ir-v14)) and field discovery
+  ([Discovery](#discovery-what-can-i-query)) have landed.
 - **typed wire and WAL fidelity** — duplicate attribute keys and key order are
   not preserved today (the wire carries attributes as JSON); keeping them needs a
   typed wire format, a breaking change of its own.

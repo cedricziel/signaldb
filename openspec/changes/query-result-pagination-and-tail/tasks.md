@@ -87,7 +87,7 @@ optional follow-up and outside this change's definition of done.
 
 ## 4. Router: pagination goes live (router, query-ir version, API contract)
 
-- [ ] 4.1 Write failing router tests (`endpoints::query`): a v14 `page`
+- [x] 4.1 Write failing router tests (`endpoints::query`): a v14 `page`
       document yields `page.next_cursor` until the last page; a resubmitted
       cursor continues; the window is frozen from the cursor (a relative
       range does not drift); another tenant's or dataset's cursor → 400; an
@@ -95,11 +95,14 @@ optional follow-up and outside this change's definition of done.
       with `errorType: "gone"`; `not_paginatable` → 400 with `details`; a
       document without `page` yields a byte-identical response.
       Verify with `cargo test -p router endpoints::query`
-- [ ] 4.2 Raise `MAX_IR_VERSION` to 14. Validate, decode and check the
+      (Cursor, window, binding, limit-cap and error cases are unit tests of
+      `endpoints::query_paging`; the endpoint tests cover the HTTP mapping.
+      A full walk against a querier is 4.4.)
+- [x] 4.2 Raise `MAX_IR_VERSION` to 14. Validate, decode and check the
       cursor, put `page` into the ticket, build `page.next_cursor` from the
       trailer, and map 410 → `gone` in `api_error.rs`. Add `page` to
       `QueryIrRequest`/`QueryIrResponse` with `utoipa` docs. 4.1 passes
-- [ ] 4.3 Regenerate the OpenAPI spec, `signaldb-sdk`, and the TS client
+- [x] 4.3 Regenerate the OpenAPI spec, `signaldb-sdk`, and the TS client
       (`src/ui/src/api/gen`). Verify with `pnpm --filter ./src/ui typecheck`
       and the SDK build
 - [ ] 4.4 Write a `tests-integration` test: ingest N logs, walk them with
@@ -107,7 +110,7 @@ optional follow-up and outside this change's definition of done.
       compaction mid-walk, and assert every row exactly once and the
       tenant-bound cursor rejection.
       Verify with `cargo test --profile ci-test -p tests-integration pagination`
-- [ ] 4.5 Docs (route via the `docs` skill): a "Pagination" section in
+- [x] 4.5 Docs (route via the `docs` skill): a "Pagination" section in
       `docs/users/querying-ir.md` (request/response, default order and
       tie-breakers, what cannot be paginated, consistency, bounds, 410). In
       the Roadmap section, move pagination out of "Still deferred". In the
