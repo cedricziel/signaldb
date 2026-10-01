@@ -9,8 +9,6 @@ pub mod logs;
 pub mod metric_metadata;
 pub mod metric_ops;
 pub(crate) mod metric_series;
-// Wired into `IrService::query` by the planner change that follows.
-#[allow(dead_code)]
 mod page_cut;
 mod planner;
 pub mod profile;
@@ -55,6 +53,9 @@ pub struct IrQueryParams {
     /// Server-received clock, unix epoch nanoseconds, for resolving relative
     /// time anchors deterministically.
     pub now_ns: i64,
+    /// Sort, resume and cut the result as one page (`query-result-pagination`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<common::query_cursor::PageRequest>,
 }
 
 /// Parameters carried in the `query_metric` Flight ticket (JSON-encoded).

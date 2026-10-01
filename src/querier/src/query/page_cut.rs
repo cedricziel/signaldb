@@ -8,15 +8,21 @@
 //! envelope, a trace. It reports the last emitted key and whether more
 //! follows, and drops the key columns.
 //!
+//! [`bound_to_page`] builds the plan side: the lexicographic keyset predicate
+//! that resumes after a cursor, and the bounded sort.
+//!
 //! The cut runs over the collected, already-bounded sort output rather than
 //! as a streaming operator: a sort with a fetch consumes its whole input
 //! before emitting, so stopping early would save nothing.
 
-use common::query_cursor::{KeyPart, KeyValue, PageReport};
-use common::query_ir::{PageUnit, SortKey};
+use common::query_cursor::{KeyPart, KeyValue, PageReport, PageRequest};
+use common::query_ir::{Direction, PageUnit, SortKey};
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::compute::concat_batches;
 use datafusion::arrow::row::{RowConverter, SortField};
+use datafusion::functions_window::expr_fn::dense_rank;
+use datafusion::logical_expr::{Expr, ExprFunctionExt, SortExpr, lit};
+use datafusion::prelude::{DataFrame, ident};
 use datafusion::scalar::ScalarValue;
 
 use super::error::QuerierError;
@@ -26,6 +32,131 @@ const KEY_COLUMN_PREFIX: &str = "__sdb_page_key_";
 /// The name of the column carrying sort key `index`.
 pub(crate) fn key_column(index: usize) -> String {
     format!("{KEY_COLUMN_PREFIX}{index}")
+}
+
+const RANK_COLUMN: &str = "__sdb_page_rank";
+
+/// Resume `df` after `page.after` and sort it by `page.order`, bounded to
+/// what [`cut_page`] needs: `size` rows plus a tie group's worth past them,
+/// or the first `size + 1` whole traces. `df` carries one [`key_column`]
+/// per order key.
+pub(crate) fn bound_to_page(
+    df: DataFrame,
+    page: &PageRequest,
+    max_tie_rows: usize,
+) -> Result<DataFrame, QuerierError> {
+    let mut df = df;
+    if let Some(after) = &page.after {
+        let predicate = keyset_predicate(&df, &page.order, after)?;
+        df = df.filter(predicate).map_err(QuerierError::QueryFailed)?;
+    }
+    let sort: Vec<SortExpr> = page
+        .order
+        .iter()
+        .enumerate()
+        .map(|(i, k)| ident(key_column(i)).sort(k.dir == Direction::Asc, false))
+        .collect();
+    let size = page.size as usize;
+    let df = match page.unit {
+        PageUnit::Rows => {
+            let past = if page.exact { 0 } else { max_tie_rows };
+            let fetch = size.saturating_add(past).saturating_add(1);
+            df.sort(sort)?.limit(0, Some(fetch))?
+        }
+        PageUnit::Traces => {
+            let rank = dense_rank()
+                .order_by(sort[..1].to_vec())
+                .build()?
+                .alias(RANK_COLUMN);
+            df.window(vec![rank])?
+                .filter(ident(RANK_COLUMN).lt_eq(lit(page.size as u64 + 1)))?
+                .sort(sort)?
+        }
+    };
+    Ok(df)
+}
+
+/// Rows strictly after `after` in `order`, nulls last:
+/// `(k1 ≷ v1) ∨ (k1 = v1 ∧ k2 ≷ v2) ∨ …`, plus the leading key's bound on its
+/// own so a time-leading order prunes partitions.
+fn keyset_predicate(
+    df: &DataFrame,
+    order: &[SortKey],
+    after: &[KeyPart],
+) -> Result<Expr, QuerierError> {
+    if after.len() != order.len() || after.iter().zip(order).any(|(a, k)| a.field != k.field) {
+        return Err(QuerierError::InvalidInput(
+            "the page cursor does not match the document's order".into(),
+        ));
+    }
+    let mut disjuncts = Vec::new();
+    let mut equal_prefix: Option<Expr> = None;
+    let mut leading_bound = None;
+    for (i, (key, part)) in order.iter().zip(after).enumerate() {
+        let column = ident(key_column(i));
+        let equal = match key_literal(df, &key_column(i), &key.field, &part.value)? {
+            // Nothing sorts after a null: nulls are last.
+            None => column.is_null(),
+            Some(value) => {
+                let beyond = match key.dir {
+                    Direction::Asc => column.clone().gt(value.clone()),
+                    Direction::Desc => column.clone().lt(value.clone()),
+                };
+                if i == 0 {
+                    leading_bound = Some(
+                        match key.dir {
+                            Direction::Asc => column.clone().gt_eq(value.clone()),
+                            Direction::Desc => column.clone().lt_eq(value.clone()),
+                        }
+                        .or(column.clone().is_null()),
+                    );
+                }
+                let beyond = beyond.or(column.clone().is_null());
+                disjuncts.push(match &equal_prefix {
+                    Some(prefix) => prefix.clone().and(beyond),
+                    None => beyond,
+                });
+                column.eq(value)
+            }
+        };
+        equal_prefix = Some(match equal_prefix {
+            Some(prefix) => prefix.and(equal),
+            None => equal,
+        });
+    }
+    let predicate = disjuncts.into_iter().reduce(Expr::or).unwrap_or(lit(false));
+    Ok(match leading_bound {
+        Some(bound) => bound.and(predicate),
+        None => predicate,
+    })
+}
+
+/// `value` as a literal of `column`'s type, or `None` for a null.
+fn key_literal(
+    df: &DataFrame,
+    column: &str,
+    field_name: &str,
+    value: &KeyValue,
+) -> Result<Option<Expr>, QuerierError> {
+    let scalar = match value {
+        KeyValue::Null => return Ok(None),
+        KeyValue::I64(v) => ScalarValue::Int64(Some(*v)),
+        KeyValue::F64(v) => ScalarValue::Float64(Some(*v)),
+        KeyValue::Str(v) => ScalarValue::Utf8(Some(v.clone())),
+        KeyValue::Bytes(v) => ScalarValue::Binary(Some(v.clone())),
+        KeyValue::Bool(v) => ScalarValue::Boolean(Some(*v)),
+    };
+    let field = df
+        .schema()
+        .field_with_unqualified_name(column)
+        .map_err(QuerierError::QueryFailed)?;
+    let typed = scalar.cast_to(field.data_type()).map_err(|_| {
+        QuerierError::InvalidInput(format!(
+            "the page cursor's '{field_name}' value does not fit its {} type",
+            field.data_type()
+        ))
+    })?;
+    Ok(Some(lit(typed)))
 }
 
 /// The bounds one page is cut to.

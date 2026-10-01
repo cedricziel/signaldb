@@ -926,6 +926,7 @@ mod tests {
         IrQueryParams {
             document,
             now_ns: 0,
+            page: None,
         }
     }
 

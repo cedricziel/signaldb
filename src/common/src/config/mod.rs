@@ -2564,6 +2564,22 @@ pub struct QuerierConfig {
     /// `focus` node, then the highest-traffic nodes, and reports how many
     /// it dropped in a warning.
     pub graph_max_nodes: usize,
+    /// Rows (or traces) per Query IR page when a document's `page.size` is
+    /// omitted.
+    pub page_default_size: u32,
+    /// Largest `page.size` a document may request; above it is a 400.
+    pub page_max_size: u32,
+    /// Byte budget of one page: past it the page ends early at a sort-key
+    /// boundary and still carries a cursor.
+    pub page_max_bytes: usize,
+    /// Rows that may share one full sort key at a page boundary; a larger
+    /// tie group fails the page (add an `order` key).
+    pub page_max_tie_rows: usize,
+    /// Rows (or traces) one cursor chain may walk; the page past it fails.
+    pub page_max_walk_rows: u64,
+    /// Lifetime of a page cursor from issue; an older one is a 410.
+    #[serde(with = "humantime_serde")]
+    pub page_cursor_ttl: Duration,
     /// Warm-tier containment-index prefilter tuning. See
     /// `[querier.warm_index]` in `signaldb.dist.toml`.
     pub warm_index: WarmIndexQuerierConfig,
@@ -2612,6 +2628,12 @@ impl Default for QuerierConfig {
             match_max_trace_spans: 100_000,
             match_max_trace_bytes: 64 * 1024 * 1024,
             graph_max_nodes: 200,
+            page_default_size: 1_000,
+            page_max_size: 10_000,
+            page_max_bytes: 16 * 1024 * 1024,
+            page_max_tie_rows: 10_000,
+            page_max_walk_rows: 1_000_000,
+            page_cursor_ttl: Duration::from_secs(15 * 60),
             warm_index: WarmIndexQuerierConfig::default(),
         }
     }
@@ -2818,6 +2840,18 @@ impl Configuration {
         }
         if self.querier.match_max_trace_bytes == 0 {
             return Err("[querier].match_max_trace_bytes must be greater than zero".to_string());
+        }
+        let q = &self.querier;
+        if q.page_default_size == 0 || q.page_default_size > q.page_max_size {
+            return Err(
+                "[querier].page_default_size must be between 1 and page_max_size".to_string(),
+            );
+        }
+        if q.page_max_bytes == 0 || q.page_max_tie_rows == 0 || q.page_max_walk_rows == 0 {
+            return Err(
+                "[querier].page_max_bytes, page_max_tie_rows and page_max_walk_rows must be greater than zero"
+                    .to_string(),
+            );
         }
         Ok(())
     }
@@ -3098,6 +3132,8 @@ mod tests {
         assert_eq!(config.querier.match_max_trace_spans, 100_000);
         assert_eq!(config.querier.match_max_trace_bytes, 67_108_864);
         assert_eq!(config.querier.graph_max_nodes, 200);
+        assert_eq!(config.querier.page_max_size, 10_000);
+        assert_eq!(config.querier.page_cursor_ttl, Duration::from_secs(900));
 
         Jail::expect_with(|jail| {
             jail.create_file(
@@ -3114,6 +3150,8 @@ mod tests {
                 match_max_trace_spans = 70
                 match_max_trace_bytes = 4096
                 graph_max_nodes = 50
+                page_max_size = 500
+                page_cursor_ttl = "2m"
                 "#,
             )?;
             let config: Configuration = Figment::new()
@@ -3130,6 +3168,8 @@ mod tests {
             assert_eq!(config.querier.match_max_trace_spans, 70);
             assert_eq!(config.querier.match_max_trace_bytes, 4096);
             assert_eq!(config.querier.graph_max_nodes, 50);
+            assert_eq!(config.querier.page_max_size, 500);
+            assert_eq!(config.querier.page_cursor_ttl, Duration::from_secs(120));
             Ok(())
         });
     }
