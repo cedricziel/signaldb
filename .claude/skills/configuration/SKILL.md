@@ -357,6 +357,10 @@ page_max_bytes = 16777216             # Page byte budget; past it the page ends 
 page_max_tie_rows = 10000             # Rows sharing one sort key at a page boundary; more is a 422 resource_limit
 page_max_walk_rows = 1000000          # Rows one cursor chain may walk; the page past it is a 422 resource_limit
 page_cursor_ttl = "15m"               # Page cursor lifetime from issue; older is a 410
+tail_min_settle = "10s"               # Live-tail settle floor (irVersion 15); keep >= the writer's commit lag
+tail_max_settle = "5m"                # Largest settle a tail may request; requests are clamped and echoed
+tail_max_lag = "5m"                   # A tail cursor further behind skips forward with a `tail_lagged` warning
+tail_max_span_duration = "1h"         # Longest span a traces tail delivers (tails by span end time)
 
 [querier.datafusion]
 batch_size = 1024                # Scan batch row count; 0 = DataFusion default (8192). Bounds ExternalSorter's unspillable per-batch reservation (#1359)

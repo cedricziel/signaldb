@@ -996,10 +996,12 @@ impl IrService {
             .map_err(QuerierError::from)?;
         let (batches, page) = match &params.page {
             Some(page) => {
+                let newest = page.tail.is_some_and(|t| t.newest);
                 let limits = CutLimits {
                     size: page.size as usize,
                     unit: page.unit,
-                    exact: page.exact,
+                    exact: page.exact || newest,
+                    reverse: newest,
                     max_tie_rows: self.page_max_tie_rows,
                     max_bytes: self.page_max_bytes,
                 };

@@ -2580,6 +2580,20 @@ pub struct QuerierConfig {
     /// Lifetime of a page cursor from issue; an older one is a 410.
     #[serde(with = "humantime_serde")]
     pub page_cursor_ttl: Duration,
+    /// Smallest live-tail settle delay: at least the ingest-to-queryable lag
+    /// (the writer's commit interval plus its loop tick). A requested settle
+    /// is clamped to `[tail_min_settle, tail_max_settle]`.
+    #[serde(with = "humantime_serde")]
+    pub tail_min_settle: Duration,
+    #[serde(with = "humantime_serde")]
+    pub tail_max_settle: Duration,
+    /// A tail cursor further behind than this skips forward, with a
+    /// `tail_lagged` warning.
+    #[serde(with = "humantime_serde")]
+    pub tail_max_lag: Duration,
+    /// Longest span a traces tail delivers (it tails by span end time).
+    #[serde(with = "humantime_serde")]
+    pub tail_max_span_duration: Duration,
     /// Warm-tier containment-index prefilter tuning. See
     /// `[querier.warm_index]` in `signaldb.dist.toml`.
     pub warm_index: WarmIndexQuerierConfig,
@@ -2634,6 +2648,10 @@ impl Default for QuerierConfig {
             page_max_tie_rows: 10_000,
             page_max_walk_rows: 1_000_000,
             page_cursor_ttl: Duration::from_secs(15 * 60),
+            tail_min_settle: Duration::from_secs(10),
+            tail_max_settle: Duration::from_secs(5 * 60),
+            tail_max_lag: Duration::from_secs(5 * 60),
+            tail_max_span_duration: Duration::from_secs(60 * 60),
             warm_index: WarmIndexQuerierConfig::default(),
         }
     }
@@ -2846,6 +2864,9 @@ impl Configuration {
             return Err(
                 "[querier].page_default_size must be between 1 and page_max_size".to_string(),
             );
+        }
+        if q.tail_min_settle > q.tail_max_settle {
+            return Err("[querier].tail_min_settle must not exceed tail_max_settle".to_string());
         }
         if q.page_max_bytes == 0 || q.page_max_tie_rows == 0 || q.page_max_walk_rows == 0 {
             return Err(
@@ -3134,6 +3155,8 @@ mod tests {
         assert_eq!(config.querier.graph_max_nodes, 200);
         assert_eq!(config.querier.page_max_size, 10_000);
         assert_eq!(config.querier.page_cursor_ttl, Duration::from_secs(900));
+        assert_eq!(config.querier.tail_min_settle, Duration::from_secs(10));
+        assert_eq!(config.querier.tail_max_lag, Duration::from_secs(300));
 
         Jail::expect_with(|jail| {
             jail.create_file(

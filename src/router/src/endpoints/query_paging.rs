@@ -99,6 +99,7 @@ pub(super) fn plan(
             order,
             after,
             exact,
+            tail: None,
         },
         window,
         fingerprint,

@@ -384,6 +384,17 @@ page_max_bytes = 16777216
 page_max_tie_rows = 10000
 page_max_walk_rows = 1000000
 page_cursor_ttl = "15m"
+#
+# Query IR live tail (`tail`, irVersion 15). A call reads up to `now - settle`,
+# settle clamped to [tail_min_settle, tail_max_settle]; keep tail_min_settle
+# at or above the writer's commit lag (raise it with
+# [writer].commit_interval). A cursor more than tail_max_lag behind skips
+# forward with a `tail_lagged` warning; spans longer than
+# tail_max_span_duration are not tailed.
+tail_min_settle = "10s"
+tail_max_settle = "5m"
+tail_max_lag = "5m"
+tail_max_span_duration = "1h"
 
 [querier.datafusion]
 # DataFusion scan/pushdown tuning. All three default to true (DataFusion's
