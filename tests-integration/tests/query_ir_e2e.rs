@@ -3474,6 +3474,62 @@ async fn match_incomplete_trace_warns_when_the_range_cuts_a_trace() {
     );
 }
 
+/// Issue #2123: a range that starts after the root, where the relation
+/// needs that root, leaves no span for the root's span-set. The trace does
+/// not match, and the warning counts it as unmatched.
+#[tokio::test]
+async fn match_incomplete_trace_counts_a_trace_whose_span_set_is_cut_off() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+    let root = span_with_ids("gateway", 1, 1, None, 10_000_000_000);
+    let mut child = span_with_ids("DoPut", 1, 2, Some(1), 1_000_000_000);
+    child.start_time_unix_nano += 5_000_000_000;
+    child.end_time_unix_nano += 5_000_000_000;
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(&ctx, traces_request("ingester", vec![root, child]))
+        .await
+        .expect("ingest a root with one child");
+
+    let app = build_router(&services).await;
+    wait_for_rows(&app, "traces", range(), 2).await;
+
+    let document = match_document(serde_json::json!({
+        "spansets": {
+            "root": { "field": "span.name", "op": "eq", "value": "gateway" },
+            "child": { "field": "span.name", "op": "eq", "value": "DoPut" }
+        },
+        "relations": [ { "left": "root", "op": "child", "right": "child" } ]
+    }));
+    let (status, body) = post_ir(&app, document.clone()).await;
+    assert_eq!(status, StatusCode::OK, "whole-trace match: {body}");
+    assert_eq!(trace_ids_in(&body), [trace_hex(1)], "{body}");
+    assert!(
+        !warning_codes(&body).contains(&"match_incomplete_trace".to_string()),
+        "the whole trace is in range: {body}"
+    );
+
+    let mut narrow = document;
+    narrow["range"] = serde_json::json!({
+        "from": (BASE_NS + 4_000_000_000).to_string(),
+        "to": (BASE_NS + 7_000_000_000).to_string(),
+    });
+    let (status, body) = post_ir(&app, narrow).await;
+    assert_eq!(status, StatusCode::OK, "narrow match: {body}");
+    assert!(trace_ids_in(&body).is_empty(), "{body}");
+    let warnings = body["warnings"].as_array().expect("warnings array");
+    let [warning] = warnings.as_slice() else {
+        panic!("exactly one warning: {body}");
+    };
+    assert_eq!(warning["code"], "match_incomplete_trace", "{body}");
+    let message = warning["message"].as_str().expect("message");
+    assert!(
+        message.starts_with("1 trace did not match but may match over a wider range: ")
+            && message.ends_with(&format!("Examples: {}", trace_hex(1))),
+        "{message}"
+    );
+}
+
 /// A trace larger than `[querier].match_max_trace_spans` fails the query with
 /// a 422 `resource_limit` that names the trace, instead of truncating it.
 #[tokio::test]
