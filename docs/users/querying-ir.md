@@ -2476,6 +2476,19 @@ to an attribute extraction — same query, same result either way.
   signaldb-cli query --ir --file errors.json --page-size 1000 --all-pages > errors.ndjson
   ```
 
+  `--follow` live-tails the document ([Live tail](#live-tail-ir-v15); its
+  `range.to` must be `now`), printing new rows as NDJSON until interrupted.
+  It calls again at once while the server reports a backlog, else every 2s;
+  `--settle 10s` sets the settle delay. A `tail_lagged` warning goes to stderr.
+  A transient failure (a `429`, `502`-`504`, or a transport error) is retried
+  with a growing wait up to 30s, or as long as a `429`'s `Retry-After` asks; a
+  `410` (expired cursor) restarts the tail after the last settle line it
+  delivered, with a notice on stderr:
+
+  ```bash
+  signaldb-cli query --ir --file errors-last-15m.json --follow --settle 10s
+  ```
+
 - **UI:** the Explore view's **Query** tab builds an IR document structurally and
   renders the declared envelope.
 

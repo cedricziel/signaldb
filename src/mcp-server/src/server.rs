@@ -836,6 +836,24 @@ struct QueryIrParams {
     /// `query` with it to get the next page.
     #[serde(default)]
     cursor: Option<String>,
+    /// Live-tail the document (`irVersion` 15, `range.to` of `now`): pass
+    /// `{}` to start, then the response's `tail.cursor` as `{"cursor": ...}`
+    /// on the next call. Each call returns what arrived since; poll again
+    /// at once while `tail.caught_up` is false.
+    #[serde(default)]
+    tail: Option<TailParams>,
+}
+
+/// `query_ir`'s `tail` input.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct TailParams {
+    /// The previous call's `tail.cursor`; omit on the first call.
+    #[serde(default)]
+    cursor: Option<String>,
+    /// How far behind the clock to read, e.g. `"10s"` (server-clamped).
+    #[serde(default)]
+    settle: Option<String>,
 }
 
 impl QueryIrParams {
@@ -859,6 +877,12 @@ impl QueryIrParams {
             if let Some(cursor) = &self.cursor {
                 page.cursor = Some(cursor.clone());
             }
+        }
+        if let Some(tail) = &self.tail {
+            request.tail = Some(signaldb_sdk::types::IrTail {
+                cursor: tail.cursor.clone(),
+                settle: tail.settle.clone(),
+            });
         }
         Ok(request)
     }
@@ -3300,7 +3324,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Execute a native Query IR document (the structured, versioned query surface). Provide `query` as the IR JSON object. Returns the enveloped result scoped to your tenant. Reach for this over search_traces/search_logs/query_metrics when you need a pipeline stage those dialects can't express (topk/bottomk, extract, a multi-stage aggregate with step, or — at `irVersion` 8 — a `correlate` stage joining each span to its parent so you can group by caller and callee service) or you're building from discover_sources/discover_fields/discover_field_values. A large `rows`/`trace` result can be paged (`irVersion` 14): pass `page_size`, then call again with the same `query` and `cursor` set to the response's `page.next_cursor` until it is absent; see `get_skill(\"query-ir\")` (or the `skill://query-ir/SKILL.md` resource) for the full document reference."
+        description = "Execute a native Query IR document (the structured, versioned query surface). Provide `query` as the IR JSON object. Returns the enveloped result scoped to your tenant. Reach for this over search_traces/search_logs/query_metrics when you need a pipeline stage those dialects can't express (topk/bottomk, extract, a multi-stage aggregate with step, or — at `irVersion` 8 — a `correlate` stage joining each span to its parent so you can group by caller and callee service) or you're building from discover_sources/discover_fields/discover_field_values. A large `rows`/`trace` result can be paged (`irVersion` 14): pass `page_size`, then call again with the same `query` and `cursor` set to the response's `page.next_cursor` until it is absent. To follow new rows (`irVersion` 15, `range.to: \"now\"`), pass `tail: {}`, then `tail: {\"cursor\": <tail.cursor>}` on each later call: one call per invocation, returning only what arrived since; see `get_skill(\"query-ir\")` (or the `skill://query-ir/SKILL.md` resource) for the full document reference."
     )]
     async fn query_ir(
         &self,
@@ -9094,6 +9118,21 @@ mod tests {
             zero.request().is_err(),
             "an out-of-range page_size is a tool error"
         );
+    }
+
+    #[test]
+    fn query_ir_tool_passes_a_tail_cursor_through() {
+        let params: QueryIrParams = serde_json::from_value(serde_json::json!({
+            "query": { "irVersion": 15, "from": "logs",
+                       "range": { "from": "now-15m", "to": "now" },
+                       "result": "rows", "pipeline": [] },
+            "tenant": "acme", "dataset": "production",
+            "tail": { "cursor": "sdbc1.t.u", "settle": "5s" }
+        }))
+        .unwrap();
+        let tail = params.request().unwrap().tail.expect("tail");
+        assert_eq!(tail.cursor.as_deref(), Some("sdbc1.t.u"));
+        assert_eq!(tail.settle.as_deref(), Some("5s"));
     }
 
     #[test]
