@@ -16,6 +16,9 @@ pub mod processors;
 pub mod promql;
 pub mod pyroscope;
 pub mod query;
+// Called from `query::query_ir_single` once the router accepts `page`.
+#[allow(dead_code)]
+mod query_paging;
 pub mod schema;
 pub mod session;
 pub mod source_context;
