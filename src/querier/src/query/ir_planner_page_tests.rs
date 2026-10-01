@@ -383,3 +383,54 @@ async fn a_tail_over_a_microsecond_timestamp_column_compares_in_nanoseconds() {
     let (bodies, _, _) = page(&svc, &doc, tail_request(Some(10_000), 25_000, 10)).await;
     assert_eq!(bodies, ["b"]);
 }
+
+/// A null tie-breaker sorts last, so it is the newest of its timestamp:
+/// the backwards read puts it first, and the page ends on it.
+#[tokio::test]
+async fn a_first_tail_call_keeps_null_tie_breakers_last() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new("body", DataType::Utf8, true),
+        Field::new("service_name", DataType::Utf8, true),
+        Field::new("trace_id", DataType::Utf8, true),
+        Field::new("span_id", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(TimestampNanosecondArray::from(vec![30, 40, 40])),
+            Arc::new(StringArray::from(vec!["old", "traced", "untraced"])),
+            Arc::new(StringArray::from(vec!["api"; 3])),
+            Arc::new(StringArray::from(vec![Some("a"), Some("a"), None])),
+            Arc::new(StringArray::from(vec![Some("s"), Some("s"), None])),
+        ],
+    )
+    .expect("batch");
+    let svc = IrService::new(super::tests::single_table_ctx("logs", schema, batch));
+    let doc = document(json!([]));
+
+    let (bodies, _, _) = page(&svc, &doc, tail_request(None, 40, 1)).await;
+    assert_eq!(bodies, ["untraced"]);
+    let (bodies, _, _) = page(&svc, &doc, tail_request(None, 40, 3)).await;
+    assert_eq!(bodies, ["old", "traced", "untraced"]);
+}
+
+/// The report's key is the last row emitted, the newest, so resuming after
+/// it repeats nothing.
+#[tokio::test]
+async fn a_first_tail_call_reports_the_key_of_its_newest_row() {
+    let svc = IrService::new(ctx());
+    let doc = document(json!([]));
+    let (_, report, _) = page(&svc, &doc, tail_request(None, 40, 3)).await;
+    let last_key = report.last_key.expect("last key");
+    assert_eq!(last_key[0].value, KeyValue::I64(40));
+
+    let mut next = tail_request(Some(0), 50, 10);
+    next.after = Some(last_key);
+    let (bodies, _, _) = page(&svc, &doc, next).await;
+    assert_eq!(bodies, ["r7"]);
+}

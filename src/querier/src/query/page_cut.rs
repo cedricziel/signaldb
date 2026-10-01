@@ -61,13 +61,13 @@ pub(crate) fn bound_to_page(
             .filter(ident(key_column(0)).lt_eq(lit(through)))
             .map_err(QuerierError::QueryFailed)?;
     }
-    // The first tail call reads the order backwards for the newest rows;
-    // the cut reverses them back.
+    // The first tail call reads the order backwards (nulls first) for the
+    // newest rows; the cut reverses them back.
     let sort: Vec<SortExpr> = page
         .order
         .iter()
         .enumerate()
-        .map(|(i, k)| ident(key_column(i)).sort((k.dir == Direction::Asc) != newest, false))
+        .map(|(i, k)| ident(key_column(i)).sort((k.dir == Direction::Asc) != newest, newest))
         .collect();
     let df = match page.unit {
         PageUnit::Rows => df.sort(sort)?.limit(0, Some(fetch))?,
@@ -294,9 +294,10 @@ pub(crate) fn cut_page(
         (cut, units) = (ceiling, ceiling);
     }
 
+    // The key of the last row emitted: a reversed page emits row 0 last.
     let last_key = cut
         .checked_sub(1)
-        .map(|last| key_at(order, &keys, last))
+        .map(|last| key_at(order, &keys, if limits.reverse { 0 } else { last }))
         .transpose()?;
     let mut page = all.slice(0, cut);
     for &i in key_indices.iter().rev() {
