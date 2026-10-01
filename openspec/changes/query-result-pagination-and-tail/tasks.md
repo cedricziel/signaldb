@@ -40,14 +40,14 @@ optional follow-up and outside this change's definition of done.
 
 ## 2. Cursor codec (common)
 
-- [ ] 2.1 Write failing tests in `common::query_cursor`: encode/decode
+- [x] 2.1 Write failing tests in `common::query_cursor`: encode/decode
       round-trip for page and tail cursors with typed key values (i64, string,
       bytes, null); checksum mismatch → `CursorError::Corrupt`; unknown
       version → `Expired`; TTL exceeded → `Expired`; fingerprint mismatch
       (tenant, dataset, document, irVersion) → `Mismatch`; the fingerprint
       ignores `page.cursor`/`tail.cursor` and is stable across JSON key
       order. Verify with `cargo test -p common query_cursor`
-- [ ] 2.2 Implement the `sdbc1.<payload>.<sum>` codec (design D4) on the
+- [x] 2.2 Implement the `sdbc1.<payload>.<sum>` codec (design D4) on the
       workspace `base64`/`sha2` crates. Fingerprint over the canonical
       document. 2.1 passes. Run `cargo machete --with-metadata` (no new
       dependency)
