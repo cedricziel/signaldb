@@ -538,8 +538,8 @@ impl FlightService for IcebergWriterFlightService {
             if metadata.schema_version == "v1" {
                 let mut transformed = Vec::new();
                 for batch in batches {
-                    // Per-tenant materialized labels (tenant schema
-                    // override replaces the global set). Uses the
+                    // Per-tenant materialized labels (the tenant's schema
+                    // block merged over the global one). Uses the
                     // already-routed `wal_tenant`, not the raw metadata id,
                     // so a padded id resolves to the same tenant's schema
                     // config the batch is committed under (#1334).
@@ -960,12 +960,12 @@ mod tests {
         config.tenants.tenants.insert(
             "_system".to_string(),
             common::config::TenantSchemaConfig {
-                schema: Some(common::config::SchemaConfig {
-                    materialized_labels: common::config::MaterializedLabels {
-                        logs: vec!["custom".to_string()],
+                schema: Some(common::config::TenantSchemaOverride {
+                    materialized_labels: common::config::MaterializedLabelsOverride {
+                        logs: Some(vec!["custom".to_string()]),
                         ..Default::default()
                     },
-                    ..common::config::SchemaConfig::default()
+                    ..Default::default()
                 }),
                 ..Default::default()
             },

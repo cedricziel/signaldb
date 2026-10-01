@@ -38,7 +38,8 @@ pub struct UpdateTenantRequest {
 pub struct TenantInfo {
     /// Tenant ID
     pub tenant_id: String,
-    /// Tenant-specific schema configuration
+    /// The tenant's effective schema configuration (its schema block merged
+    /// over the global one); `None` when it has no schema block
     #[schema(value_type = Object, nullable)]
     pub schema: Option<SchemaConfig>,
     /// Custom schema definitions
@@ -198,7 +199,10 @@ impl TenantApi {
             .iter()
             .map(|(tenant_id, config)| TenantInfo {
                 tenant_id: tenant_id.clone(),
-                schema: config.schema.clone(),
+                schema: config
+                    .schema
+                    .as_ref()
+                    .map(|_| self.registry.config.get_tenant_schema_config(tenant_id)),
                 custom_schemas: config.custom_schemas.clone(),
                 enabled: config.enabled,
             })
@@ -226,7 +230,10 @@ impl TenantApi {
         if let Some(config) = self.registry.config.tenants.tenants.get(tenant_id) {
             Ok(TenantInfo {
                 tenant_id: tenant_id.to_string(),
-                schema: config.schema.clone(),
+                schema: config
+                    .schema
+                    .as_ref()
+                    .map(|_| self.registry.config.get_tenant_schema_config(tenant_id)),
                 custom_schemas: config.custom_schemas.clone(),
                 enabled: config.enabled,
             })
@@ -382,7 +389,7 @@ impl TenantApi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Configuration, TenantSchemaConfig, TenantsConfig};
+    use crate::config::{Configuration, TenantSchemaConfig, TenantSchemaOverride, TenantsConfig};
 
     #[test]
     fn test_tenant_api_default_configuration() {
@@ -417,9 +424,9 @@ mod tests {
     #[test]
     fn test_tenant_api_with_custom_tenant() {
         let tenant_config = TenantSchemaConfig {
-            schema: Some(SchemaConfig {
-                catalog_type: "memory".to_string(),
-                catalog_uri: "memory://".to_string(),
+            schema: Some(TenantSchemaOverride {
+                catalog_type: Some("memory".to_string()),
+                catalog_uri: Some("memory://".to_string()),
                 ..Default::default()
             }),
             ..Default::default()

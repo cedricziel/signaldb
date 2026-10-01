@@ -220,9 +220,11 @@ dataset = "prod"     # optional; omitted applies to every dataset of the tenant
 
 A dataset entry wins over a tenant-wide one. Pinning retypes a field that data
 had already typed, for values written from then on; stored values are not
-rewritten. A changed pin applies after the writer restarts. A tenant with its
-own schema block (`[tenants.tenants.<id>.schema]`) uses only that block's pins,
-so repeat any global pin it needs. `signaldb.dist.toml` documents the block.
+rewritten. A changed pin applies after the writer restarts. A tenant's own
+pins (`[[tenants.tenants.<id>.schema.attribute_types]]`) replace the global
+pins on the same signal, level and key that they cover: all of them for a pin
+without `dataset`, only that dataset's for a pin with one. Every other global
+pin still applies to the tenant. `signaldb.dist.toml` documents the block.
 
 ## Add your own conventions
 

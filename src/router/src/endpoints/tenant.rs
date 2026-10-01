@@ -230,8 +230,8 @@ mod tests {
     use axum::http::{Request, header};
     use common::catalog::{Catalog, MembershipRole};
     use common::config::{
-        ApiKeyConfig, AuthConfig, Configuration, SchemaConfig, TenantConfig, TenantSchemaConfig,
-        TenantsConfig,
+        ApiKeyConfig, AuthConfig, Configuration, TenantConfig, TenantSchemaConfig,
+        TenantSchemaOverride, TenantsConfig,
     };
     use common::tenant_api::TenantApi;
     use std::collections::HashMap;
@@ -247,9 +247,9 @@ mod tests {
 
         // Create configuration with test tenant
         let tenant_config = TenantSchemaConfig {
-            schema: Some(SchemaConfig {
-                catalog_type: "memory".to_string(),
-                catalog_uri: "memory://test".to_string(),
+            schema: Some(TenantSchemaOverride {
+                catalog_type: Some("memory".to_string()),
+                catalog_uri: Some("memory://test".to_string()),
                 ..Default::default()
             }),
             ..TenantSchemaConfig::default()

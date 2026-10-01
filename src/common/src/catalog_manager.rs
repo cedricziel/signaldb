@@ -233,7 +233,7 @@ impl CatalogManager {
     ) -> Result<iceberg_rust::table::Table> {
         let (tenant_slug, dataset_slug) = self.slugs(tenant_id, dataset_id);
         // Per-tenant materialized-label allowlists (and warm-index config): a
-        // tenant schema override replaces the global set wholesale.
+        // tenant's schema block is merged over the global one.
         let schema_config = self.config.get_tenant_schema_config(tenant_id);
         let warm_index = crate::iceberg::schemas::TableSchema::from_table_name(table_name)
             .and_then(|table| table.attribute_type_signal())
@@ -1197,9 +1197,14 @@ mod tests {
     #[tokio::test]
     async fn tenant_override_narrows_the_set_for_that_tenant_only() {
         let narrowed = provisioning_tenant("narrow");
-        let mut schema = crate::config::SchemaConfig::default();
-        schema.default_schemas.metrics_enabled = false;
-        schema.default_schemas.profiles_enabled = false;
+        let schema = crate::config::TenantSchemaOverride {
+            default_schemas: crate::config::DefaultSchemasOverride {
+                metrics_enabled: Some(false),
+                profiles_enabled: Some(false),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
 
         let mut config = Configuration::default();
         config.schema.catalog_uri = format!(

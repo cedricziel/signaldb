@@ -206,9 +206,10 @@ profiles_enabled = true
 # directly. Keep the lists short and low-cardinality — every entry adds a
 # column. Applies to tables created after the change; older tables read the
 # key's typed home for these keys.
-# Per-tenant override: a tenant's schema block replaces the whole global
-# [schema] block, not only this list ([tenants.tenants.<id>.schema]; the block
-# needs catalog_type and catalog_uri, which have no defaults).
+# Per-tenant override: a list set in a tenant's
+# [tenants.tenants.<id>.schema.materialized_labels] replaces that signal's
+# global list (`[]` clears it); signals the tenant leaves unset keep the
+# global list.
 # [schema.materialized_labels]
 # logs = ["namespace", "pod", "container"]
 # traces = ["http.method", "http.status_code"]
@@ -218,8 +219,10 @@ profiles_enabled = true
 # Pin the canonical type of an attribute key instead of leaving it to the
 # first-observed value or a semantic-convention hint. Values of another type
 # keep arriving losslessly but are not typed-queryable. Per-tenant override:
-# a tenant schema block replaces the global list wholesale, same as
-# [schema.materialized_labels] above.
+# a tenant's [[tenants.tenants.<id>.schema.attribute_types]] entry replaces
+# the global entries on the same (signal, level, key) it covers: all of them
+# without `dataset`, only that dataset's with one. Other global entries still
+# apply to the tenant.
 # [[schema.attribute_types]]
 # signal = "logs"       # logs | traces | metrics | profiles
 # level = "record"      # resource | scope | record
@@ -233,8 +236,9 @@ profiles_enabled = true
 # key (see openspec/changes/archive/2026-09-30-otel-native-schema
 # task 4.3). Off by default
 # (empty `signals`); only takes effect on a table whose resolved schema
-# version is the typed attribute layout. Per-tenant override replaces this
-# wholesale, same as [schema.materialized_labels] above.
+# version is the typed attribute layout. Per-tenant override merges per
+# field: a tenant's [tenants.tenants.<id>.schema.warm_index] changes only the
+# fields it sets.
 # [schema.warm_index]
 # signals = ["logs"]              # logs | traces | metrics | profiles
 # datasets = ["prod"]             # optional; omitted applies to every dataset
@@ -796,12 +800,15 @@ rate_limit_delay_ms = 0               # Delay between batches in milliseconds (d
 # Multi-tenant configuration (always active)
 default_tenant = "default"
 
-# Example tenant configuration
+# Example tenant configuration. A tenant's schema block is merged over the
+# global [schema] field by field: it overrides only what it sets (see the
+# per-field notes under [schema] above).
 # [tenants.tenants.tenant1]
 # enabled = true
 # [tenants.tenants.tenant1.schema]
-# catalog_type = "sql"
-# catalog_uri = "sqlite://.data/tenant1_catalog.db"
+# catalog_uri = "sqlite://.data/tenant1_catalog.db"   # catalog_type stays global
+# [tenants.tenants.tenant1.schema.materialized_labels]
+# logs = ["team"]                                       # traces/metrics/profiles stay global
 # [tenants.tenants.tenant1.custom_schemas]
 # traces = "custom_traces_schema_definition"
 # logs = "custom_logs_schema_definition"
