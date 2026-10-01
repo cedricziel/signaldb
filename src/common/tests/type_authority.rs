@@ -208,7 +208,7 @@ async fn cached_scope_is_reused_within_the_ttl() {
 #[tokio::test]
 async fn an_expired_scope_picks_up_a_direct_retype() {
     let catalog = Catalog::new_in_memory().await.expect("catalog");
-    let authority = writer_authority(&catalog);
+    let authority = writer_authority(&catalog, Duration::ZERO);
     let scope = authority.scope("t", "d", "traces").await.expect("scope");
     let field = record_field("traces", "span.attempt");
 
@@ -278,7 +278,7 @@ async fn schema_registry_replace_reaches_the_next_scope_after_the_ttl() {
         .await
         .expect("create");
 
-    let authority = writer_authority(&catalog);
+    let authority = writer_authority(&catalog, Duration::ZERO);
     authority.scope("t", "d", "traces").await.expect("scope");
 
     router
@@ -300,13 +300,28 @@ async fn schema_registry_replace_reaches_the_next_scope_after_the_ttl() {
     );
 }
 
-fn writer_authority(catalog: &Catalog) -> TypeAuthority {
+fn writer_authority(catalog: &Catalog, ttl: Duration) -> TypeAuthority {
     TypeAuthority::new(
         catalog.clone(),
         SchemaResolver::new(catalog.clone()),
         Arc::new(Configuration::default()),
     )
-    .with_scope_ttl(Duration::ZERO)
+    .with_scope_ttl(ttl)
+}
+
+/// Long enough that two back-to-back calls land inside it.
+const SHORT_TTL: Duration = Duration::from_millis(100);
+
+async fn drop_registry_table(catalog: &Catalog) {
+    let drop = "DROP TABLE schema_registries";
+    match catalog {
+        Catalog::Sqlite(pool) => {
+            sqlx::query(drop).execute(pool).await.expect("drop table");
+        }
+        Catalog::Postgres(pool) => {
+            sqlx::query(drop).execute(pool).await.expect("drop table");
+        }
+    }
 }
 
 #[tokio::test]
@@ -317,7 +332,7 @@ async fn schema_registry_delete_reaches_the_next_scope_after_the_ttl() {
         .create("t", &acme_registry("int"))
         .await
         .expect("create");
-    let authority = writer_authority(&catalog);
+    let authority = writer_authority(&catalog, Duration::ZERO);
     authority.scope("t", "d", "traces").await.expect("scope");
 
     assert!(router.delete("t", "acme", "1.0.0").await.expect("delete"));
@@ -341,18 +356,10 @@ async fn schema_registry_delete_reaches_the_next_scope_after_the_ttl() {
 #[tokio::test]
 async fn failed_rebuild_keeps_serving_the_previous_scope() {
     let catalog = Catalog::new_in_memory().await.expect("catalog");
-    let authority = writer_authority(&catalog);
+    let authority = writer_authority(&catalog, Duration::ZERO);
     let first = authority.scope("t", "d", "traces").await.expect("scope");
 
-    let drop = "DROP TABLE schema_registries";
-    match &catalog {
-        Catalog::Sqlite(pool) => {
-            sqlx::query(drop).execute(pool).await.expect("drop table");
-        }
-        Catalog::Postgres(pool) => {
-            sqlx::query(drop).execute(pool).await.expect("drop table");
-        }
-    }
+    drop_registry_table(&catalog).await;
 
     let served = authority
         .scope("t", "d", "traces")
@@ -361,10 +368,67 @@ async fn failed_rebuild_keeps_serving_the_previous_scope() {
     assert!(Arc::ptr_eq(&first, &served));
 }
 
+/// The first call past expiry rebuilds; the rebuilt entry then serves the
+/// calls that follow instead of each rebuilding again.
+#[tokio::test]
+async fn an_expired_scope_is_rebuilt_once_then_reused() {
+    let catalog = Catalog::new_in_memory().await.expect("catalog");
+    let router = SchemaResolver::new(catalog.clone());
+    router
+        .create("t", &acme_registry("string"))
+        .await
+        .expect("create");
+    let authority = writer_authority(&catalog, SHORT_TTL);
+    let first = authority.scope("t", "d", "traces").await.expect("scope");
+    router
+        .replace("t", "acme", "1.0.0", &acme_registry("int"))
+        .await
+        .expect("replace");
+
+    tokio::time::sleep(SHORT_TTL * 2).await;
+    let rebuilt = authority.scope("t", "d", "traces").await.expect("scope");
+    let again = authority.scope("t", "d", "traces").await.expect("scope");
+
+    assert!(!Arc::ptr_eq(&first, &rebuilt));
+    assert!(Arc::ptr_eq(&rebuilt, &again));
+    assert_eq!(
+        canon(
+            &rebuilt,
+            "acme.thing.count",
+            urls_for(ACME_URL),
+            ObservedKind::String
+        )
+        .await,
+        Some(CanonicalType::Int64)
+    );
+}
+
+/// A failed rebuild claims the entry for another TTL, so an outage costs one
+/// attempt (and one warning) per TTL rather than one per call.
+#[tokio::test]
+async fn a_failed_rebuild_is_not_retried_within_the_ttl() {
+    let catalog = Catalog::new_in_memory().await.expect("catalog");
+    let authority = writer_authority(&catalog, SHORT_TTL);
+    let first = authority.scope("t", "d", "traces").await.expect("scope");
+    drop_registry_table(&catalog).await;
+    tokio::time::sleep(SHORT_TTL * 2).await;
+
+    let (warnings, _guard) =
+        common::testing::WarnCapture::install("failed to rebuild the attribute type scope");
+    for _ in 0..2 {
+        let served = authority
+            .scope("t", "d", "traces")
+            .await
+            .expect("stale scope");
+        assert!(Arc::ptr_eq(&first, &served));
+    }
+    assert_eq!(warnings.messages().len(), 1, "{:?}", warnings.messages());
+}
+
 #[tokio::test]
 async fn off_type_warning_is_not_repeated_by_a_rebuilt_scope() {
     let catalog = Catalog::new_in_memory().await.expect("catalog");
-    let authority = writer_authority(&catalog);
+    let authority = writer_authority(&catalog, Duration::ZERO);
     let (warnings, _guard) = common::testing::WarnCapture::install(
         "attribute value sent under a different type than the field's canonical",
     );
