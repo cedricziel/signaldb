@@ -9,6 +9,9 @@ pub mod logs;
 pub mod metric_metadata;
 pub mod metric_ops;
 pub(crate) mod metric_series;
+// Wired into `IrService::query` by the planner change that follows.
+#[allow(dead_code)]
+mod page_cut;
 mod planner;
 pub mod profile;
 pub mod search_filter;

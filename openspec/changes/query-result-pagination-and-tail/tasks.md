@@ -52,20 +52,25 @@ optional follow-up and outside this change's definition of done.
 
 ## 3. Querier page execution (querier, common trailer)
 
-- [ ] 3.1 Write failing tests in `common::flight`: the trailer report
+- [x] 3.1 Write failing tests in `common::flight`: the trailer report
       round-trips an optional `page { last_key, has_more, emitted }`; an
       older trailer without it still parses.
       Verify with `cargo test -p common flight::`
-- [ ] 3.2 Add the `page` member to the trailer report. 3.1 passes
-- [ ] 3.3 Write failing `PageCutExec` unit tests in
+- [x] 3.2 Add the `page` member to the trailer report. 3.1 passes
+- [x] 3.3 Write failing `PageCutExec` unit tests in
       `querier::query::page_cut`: passes `size` rows then completes the tie
       group; errors past `page_max_tie_rows`; ends early at `page_max_bytes`
       on a key boundary; `has_more` exact at the boundary (rows == size,
       size + 1); `traces` unit counts distinct `trace_id`s and never splits
       one; reports the last emitted key.
       Verify with `cargo test --profile ci-test -p querier page_cut`
-- [ ] 3.4 Implement `PageCutExec` plus the lexicographic keyset predicate
+- [x] 3.4 Implement `PageCutExec` plus the lexicographic keyset predicate
       builder (directions, NULLS LAST). 3.3 passes
+      (Implemented as `querier::query::page_cut::cut_page`, a function over
+      the collected sort output rather than an `ExecutionPlan`: the sort
+      carries a fetch, so it consumes its whole input before emitting and a
+      streaming cut would stop nothing early. The page byte bound uses the
+      batch's average row size. The keyset predicate lands with 3.6.)
 - [ ] 3.5 Write failing `ir_planner` tests: a ticket payload with `page`
       (order, after, size, window) applies the sort, keyset predicate, and
       cut **before** projection (tie-breakers not in `fields` still work);

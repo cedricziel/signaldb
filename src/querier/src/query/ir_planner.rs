@@ -989,6 +989,7 @@ impl IrService {
                 start_ns: w.start_ns,
                 end_ns: w.end_ns,
             }),
+            page: None,
         };
         if doc.result == ResultEnvelope::Flamegraph {
             return Ok((
