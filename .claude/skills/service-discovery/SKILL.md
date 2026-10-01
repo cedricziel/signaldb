@@ -48,9 +48,10 @@ Every service uses `ServiceBootstrap` at startup:
 5. On shutdown: deregisters and stops heartbeat
 
 ```rust
-// Registers in the catalog and starts the heartbeat task
-let bootstrap =
-    ServiceBootstrap::new(config, ServiceType::Writer, "0.0.0.0:50061".to_string()).await?;
+// Registers in the catalog and starts the heartbeat task.
+// advertise_addr: the *_ADVERTISE_ADDR override (may be a hostname), else the bind address
+let advertise = advertise_addr("WRITER_ADVERTISE_ADDR", flight_addr);
+let bootstrap = ServiceBootstrap::new(config, ServiceType::Writer, advertise).await?;
 // ... service runs ...
 // bootstrap.shutdown().await? deregisters gracefully; Drop also deregisters
 ```

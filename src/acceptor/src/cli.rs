@@ -105,7 +105,7 @@ pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
 
     // Initialize shared resources for both gRPC and HTTP servers
     let advertise_addr =
-        std::env::var("ACCEPTOR_ADVERTISE_ADDR").unwrap_or_else(|_| grpc_addr.to_string());
+        common::service_bootstrap::advertise_addr("ACCEPTOR_ADVERTISE_ADDR", grpc_addr);
 
     // WAL directory: --wal-dir / ACCEPTOR_WAL_DIR override wins, otherwise
     // [wal].wal_dir from the configuration with the service suffix appended.

@@ -33,6 +33,17 @@ pub(crate) fn split_host_port(addr: &str) -> Option<(&str, u16)> {
     Some((host, port))
 }
 
+/// Address to register in discovery: `env_var` if set and non-empty, else `bind`.
+pub fn advertise_addr(env_var: &str, bind: impl std::fmt::Display) -> String {
+    resolve_advertise_addr(std::env::var(env_var).ok(), bind)
+}
+
+fn resolve_advertise_addr(advertise: Option<String>, bind: impl std::fmt::Display) -> String {
+    advertise
+        .filter(|addr| !addr.is_empty())
+        .unwrap_or_else(|| bind.to_string())
+}
+
 /// Strip the `[...]` brackets from an IPv6 host literal, if present.
 fn strip_brackets(host: &str) -> &str {
     host.strip_prefix('[')
@@ -503,6 +514,26 @@ mod tests {
     use super::*;
     use crate::config::{DatabaseConfig, DiscoveryConfig};
     use std::time::Duration;
+
+    #[test]
+    fn advertise_addr_prefers_the_override() {
+        assert_eq!(
+            resolve_advertise_addr(Some("compactor-1:50055".to_string()), "0.0.0.0:50055"),
+            "compactor-1:50055"
+        );
+    }
+
+    #[test]
+    fn advertise_addr_falls_back_to_the_bind_address() {
+        assert_eq!(
+            resolve_advertise_addr(None, "0.0.0.0:50055"),
+            "0.0.0.0:50055"
+        );
+        assert_eq!(
+            resolve_advertise_addr(Some(String::new()), "0.0.0.0:50055"),
+            "0.0.0.0:50055"
+        );
+    }
 
     #[test]
     fn split_host_port_parses_valid_address() {

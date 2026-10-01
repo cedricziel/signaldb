@@ -95,7 +95,7 @@ pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()> {
 
     // Initialize service bootstrap for catalog-based discovery
     let advertise_addr =
-        std::env::var("WRITER_ADVERTISE_ADDR").unwrap_or_else(|_| flight_addr.to_string());
+        common::service_bootstrap::advertise_addr("WRITER_ADVERTISE_ADDR", flight_addr);
 
     let service_bootstrap =
         ServiceBootstrap::new(config.clone(), ServiceType::Writer, advertise_addr.clone())
