@@ -5585,14 +5585,14 @@ fn profile_summaries(response: &signaldb_sdk::types::QueryIrResponse) -> Vec<ser
                 _ => "0".to_string(),
             };
             let mut summary = serde_json::json!({
-                "profileID": text("profile.id"),
+                "profileID": text("profile_id"),
                 "timeUnixNano": number("timestamp"),
                 "durationNano": number("duration"),
-                "sampleType": text("sample.type"),
-                "sampleUnit": text("sample.unit"),
-                "serviceName": text("service.name"),
+                "sampleType": text("sample_type"),
+                "sampleUnit": text("sample_unit"),
+                "serviceName": text("service_name"),
             });
-            let span_id = text("span.id");
+            let span_id = text("span_id");
             if !span_id.is_empty() {
                 summary["spanID"] = serde_json::json!(span_id);
             }
@@ -6892,7 +6892,7 @@ mod tests {
         let (base_url, router) = mock_capturing_router(
             "POST /api/v1/query",
             200,
-            r#"{"result":"rows","window":{"start_ns":0,"end_ns":1},"columns":[{"name":"profile.id","type":"string"},{"name":"timestamp","type":"timestamp_ns"},{"name":"duration","type":"int64"},{"name":"sample.type","type":"string"},{"name":"sample.unit","type":"string"},{"name":"service.name","type":"string"},{"name":"span.id","type":"string"}],"rows":[["p1","1",2,"cpu","nanoseconds","checkout",null]]}"#,
+            r#"{"result":"rows","window":{"start_ns":0,"end_ns":1},"columns":[{"name":"profile_id","type":"string"},{"name":"timestamp","type":"timestamp_ns"},{"name":"duration","type":"int64"},{"name":"sample_type","type":"string"},{"name":"sample_unit","type":"string"},{"name":"service_name","type":"string"},{"name":"span_id","type":"string"}],"rows":[["p1","1",2,"cpu","nanoseconds","checkout",null]]}"#,
         )
         .await;
         let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
