@@ -421,8 +421,12 @@ fn test_profile_request(profile_id: [u8; 16]) -> ExportProfilesServiceRequest {
 /// Send a test profile via OTLP gRPC and return its profile ID.
 async fn send_test_profile(services: &TestServices) -> [u8; 16] {
     let profile_id = [0x77; 16];
-    let request = test_profile_request(profile_id);
+    send_profile_request(services, test_profile_request(profile_id)).await;
+    profile_id
+}
 
+/// Export `request` to the acceptor over OTLP gRPC.
+async fn send_profile_request(services: &TestServices, request: ExportProfilesServiceRequest) {
     let endpoint = format!("http://{}", services.acceptor_addr);
     let mut otlp_client = opentelemetry_proto::tonic::collector::profiles::v1development::profiles_service_client::ProfilesServiceClient::connect(endpoint)
         .await
@@ -432,8 +436,6 @@ async fn send_test_profile(services: &TestServices) -> [u8; 16] {
         .await
         .expect("OTLP profiles export timed out")
         .expect("OTLP profiles export failed");
-
-    profile_id
 }
 
 /// Poll the object store until it has persisted data or the timeout elapses.
@@ -1042,9 +1044,10 @@ async fn mcp_session(services: &TestServices) -> (axum::Router, String) {
     (mcp_app, session_id)
 }
 
-/// Call `tool` with `arguments` until `done` accepts its JSON result or the
-/// deadline elapses (the writer persists asynchronously), returning the
-/// last result.
+/// Call `tool` with `arguments` until `done` accepts its JSON result, and
+/// return that result. The writer persists asynchronously, so a reply
+/// without a JSON text block (a transient router or querier error) counts
+/// as not done; the last raw reply is reported if the deadline passes.
 async fn call_mcp_tool_until(
     mcp_app: &axum::Router,
     session_id: &str,
@@ -1056,6 +1059,7 @@ async fn call_mcp_tool_until(
     use tower::ServiceExt;
 
     let deadline = Instant::now() + Duration::from_secs(15);
+    let mut last = serde_json::Value::Null;
     for id in 2u64.. {
         let call = mcp_profiles_request(
             Some(session_id),
@@ -1071,16 +1075,21 @@ async fn call_mcp_tool_until(
             .expect("tools/call responds");
         assert_eq!(response.status(), StatusCode::OK, "tools/call HTTP status");
         let reply = read_mcp_jsonrpc_response(response, id).await;
-        let text = reply["result"]["content"][0]["text"]
+        let result = reply["result"]["content"][0]["text"]
             .as_str()
-            .unwrap_or_else(|| panic!("{tool} carries no text block: {reply}"));
-        let result: serde_json::Value = serde_json::from_str(text).expect("tool result is JSON");
-        if done(&result) || Instant::now() >= deadline {
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok());
+        if let Some(result) = result
+            && done(&result)
+        {
             return result;
+        }
+        last = reply;
+        if Instant::now() >= deadline {
+            break;
         }
         sleep(Duration::from_millis(200)).await;
     }
-    unreachable!("the id range is unbounded")
+    panic!("{tool} never returned the expected result; last reply: {last}");
 }
 
 /// The MCP server's `discover_profile_types` tool, called over a real
@@ -1094,23 +1103,18 @@ async fn mcp_discover_profile_types_lists_the_ingested_profile_type() {
     wait_for_objects_persisted(&services.object_store, Duration::from_secs(15)).await;
 
     let (mcp_app, session_id) = mcp_session(&services).await;
-    let lists_cpu = |types: &serde_json::Value| {
-        types
-            .as_array()
-            .is_some_and(|arr| arr.iter().any(|t| t["sampleType"] == "cpu"))
-    };
-    let types = call_mcp_tool_until(
+    call_mcp_tool_until(
         &mcp_app,
         &session_id,
         "discover_profile_types",
         serde_json::json!({"tenant": TEST_TENANT, "dataset": TEST_DATASET}),
-        lists_cpu,
+        |types| {
+            types
+                .as_array()
+                .is_some_and(|arr| arr.iter().any(|t| t["sampleType"] == "cpu"))
+        },
     )
     .await;
-    assert!(
-        lists_cpu(&types),
-        "expected a cpu profile type via MCP, got {types}"
-    );
 }
 
 /// The MCP server's `profiles_for_trace` tool, called over a real Streamable
@@ -1142,14 +1146,7 @@ async fn mcp_profiles_for_trace_returns_the_linked_profile_summary() {
     let profile = &mut request.resource_profiles[0].scope_profiles[0].profiles[0];
     profile.time_unix_nano = u64::try_from(now_ns).expect("now fits u64 nanoseconds");
     profile.samples[0].link_index = 1;
-    let endpoint = format!("http://{}", services.acceptor_addr);
-    let mut otlp_client = opentelemetry_proto::tonic::collector::profiles::v1development::profiles_service_client::ProfilesServiceClient::connect(endpoint)
-        .await
-        .unwrap();
-    timeout(Duration::from_secs(5), otlp_client.export(request))
-        .await
-        .expect("OTLP profiles export timed out")
-        .expect("OTLP profiles export failed");
+    send_profile_request(&services, request).await;
     wait_for_objects_persisted(&services.object_store, Duration::from_secs(15)).await;
 
     let (mcp_app, session_id) = mcp_session(&services).await;
@@ -1172,4 +1169,7 @@ async fn mcp_profiles_for_trace_returns_the_linked_profile_summary() {
     assert_eq!(summary["sampleType"], "cpu", "{summary}");
     assert_eq!(summary["serviceName"], SERVICE_NAME, "{summary}");
     assert_eq!(summary["spanID"], hex::encode(SPAN_ID), "{summary}");
+    assert_eq!(summary["sampleUnit"], "nanoseconds", "{summary}");
+    assert_ne!(summary["timeUnixNano"], "0", "{summary}");
+    assert_eq!(summary["durationNano"], "10000000000", "{summary}");
 }
