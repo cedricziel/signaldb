@@ -288,8 +288,8 @@ pub struct FlamegraphResult {
 pub struct QueryWarning {
     /// Stable machine-readable identifier — clients branch on this, not on
     /// `message`. Today `unknown_group_by_field`, `no_attribute_statistics`,
-    /// `correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`
-    /// and `graph_node_limit`.
+    /// `correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`,
+    /// `graph_node_limit` and `match_incomplete_trace`.
     #[schema(example = "unknown_group_by_field")]
     pub code: String,
     /// Human-readable explanation, safe to show verbatim.
@@ -772,14 +772,16 @@ fn unknown_group_by_warnings(
 const CORRELATE_ROW_LIMIT: &str = "correlate_row_limit";
 const CORRELATE_FANOUT_LIMIT: &str = "correlate_fanout_limit";
 const CORRELATE_WINDOW: &str = "correlate_window";
+const MATCH_INCOMPLETE_TRACE: &str = "match_incomplete_trace";
 
-/// Translate a querier [`common::flight::CorrelateReport`] into the
+/// Translate a querier [`common::flight::QueryReport`] into the
 /// `QueryWarning`s it implies. Ground truth, not a heuristic: the querier
-/// detects each condition at the join itself, streaming, before any
-/// `aggregate`/`where`/`limit` stage can shrink or hide it, and
+/// detects each condition where it happens (the join, the `match`
+/// evaluator), streaming, before any `aggregate`/`where`/`limit` stage can
+/// shrink or hide it, and
 /// [`execute_ticket`] reads the report back from the querier's Flight
 /// trailer message (see `common::flight::correlate_report_trailer`).
-fn correlate_warnings(report: &common::flight::CorrelateReport) -> Vec<QueryWarning> {
+fn correlate_warnings(report: &common::flight::QueryReport) -> Vec<QueryWarning> {
     let mut warnings = Vec::new();
     if report.row_limit {
         warnings.push(QueryWarning {
@@ -815,7 +817,50 @@ fn correlate_warnings(report: &common::flight::CorrelateReport) -> Vec<QueryWarn
             suggestions: Vec::new(),
         });
     }
+    if let Some(message) = report
+        .match_incomplete
+        .as_ref()
+        .and_then(match_incomplete_message)
+    {
+        warnings.push(QueryWarning {
+            code: MATCH_INCOMPLETE_TRACE.to_string(),
+            message,
+            field: None,
+            suggestions: Vec::new(),
+        });
+    }
     warnings
+}
+
+/// `None` when the report counts no trace.
+fn match_incomplete_message(report: &common::flight::MatchIncompleteReport) -> Option<String> {
+    let traces = |n: u64, matched: &str, outcome: &str| {
+        let s = if n == 1 { "" } else { "s" };
+        (n > 0).then(|| format!("{n} {matched}trace{s} {outcome}"))
+    };
+    let counts = [
+        traces(report.matched, "matched ", "may be missing witness spans"),
+        traces(
+            report.unmatched,
+            "",
+            "did not match but may match over a wider range",
+        ),
+    ];
+    let counts: Vec<String> = counts.into_iter().flatten().collect();
+    if counts.is_empty() {
+        return None;
+    }
+    let mut message = format!(
+        "{}: a span's parent is not in the queried range (it started before the range or \
+         was not ingested) or a span ends after the range (its children may start after \
+         it). Widen `range` to see whole traces.",
+        counts.join(" and ")
+    );
+    if !report.sample_trace_ids.is_empty() {
+        message.push_str(" Examples: ");
+        message.push_str(&report.sample_trace_ids.join(", "));
+    }
+    Some(message)
 }
 
 /// Whether `column` exists in every batch and is null on every row of a
@@ -919,12 +964,12 @@ pub(super) fn resolve_window(range: &QueryRange, now_ns: i64) -> Result<Resolved
 }
 
 /// Send a `query_ir` Flight ticket to a querier and collect the result
-/// batches, alongside the [`common::flight::CorrelateReport`] of what a
+/// batches, alongside the [`common::flight::QueryReport`] of what a
 /// `correlate` stage's join did (see [`correlate_warnings`]).
 pub(super) async fn execute_ticket(
     state: &RouterAppState,
     ticket_content: String,
-) -> Result<(Vec<RecordBatch>, common::flight::CorrelateReport), ApiError> {
+) -> Result<(Vec<RecordBatch>, common::flight::QueryReport), ApiError> {
     let (mut client, server_address) = state
         .service_registry()
         .get_flight_client_and_address_for_capability(ServiceCapability::QueryExecution)
@@ -966,7 +1011,7 @@ pub(super) async fn execute_ticket(
             // unbounded result set for up to the timeout.
             let mut data = Vec::new();
             let mut bytes: usize = 0;
-            let mut correlate_report = common::flight::CorrelateReport::default();
+            let mut correlate_report = common::flight::QueryReport::default();
             while let Some(flight_data) = stream.next().await {
                 let fd = flight_data.map_err(|e| ApiError::from_flight(&e, "query_ir"))?;
                 // The trailer the querier appends reporting a `correlate` stage
@@ -2016,19 +2061,70 @@ mod group_by_warnings {
     }
 }
 
-/// A `correlate` stage's row/fanout caps or scan window, reported through
-/// the querier's Flight trailer — the querier truncates rather than fails,
-/// and these warnings are the caller's only signal that it happened.
+/// A `correlate` stage's row/fanout caps or scan window, or a `match`
+/// stage's incomplete traces, reported through the querier's Flight trailer
+/// — the querier truncates rather than fails, and these warnings are the
+/// caller's only signal that it happened.
 #[cfg(test)]
 mod correlate_warnings_tests {
     use super::{
-        CORRELATE_FANOUT_LIMIT, CORRELATE_ROW_LIMIT, CORRELATE_WINDOW, correlate_warnings,
+        CORRELATE_FANOUT_LIMIT, CORRELATE_ROW_LIMIT, CORRELATE_WINDOW, MATCH_INCOMPLETE_TRACE,
+        correlate_warnings,
     };
-    use common::flight::{CorrelateReport, CorrelateWindowReport};
+    use common::flight::{CorrelateWindowReport, MatchIncompleteReport, QueryReport};
+
+    fn match_incomplete(matched: u64, unmatched: u64) -> QueryReport {
+        QueryReport {
+            match_incomplete: Some(MatchIncompleteReport {
+                matched,
+                unmatched,
+                sample_trace_ids: vec!["5b8e".into(), "a1f0".into()],
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn match_incomplete_warns_once_with_both_counts_and_examples() {
+        let warnings = correlate_warnings(&match_incomplete(3, 1));
+        assert_eq!(
+            warnings.iter().map(|w| w.code.as_str()).collect::<Vec<_>>(),
+            vec![MATCH_INCOMPLETE_TRACE]
+        );
+        let message = &warnings[0].message;
+        assert!(
+            message.starts_with(
+                "3 matched traces may be missing witness spans and 1 trace did not match but \
+                 may match over a wider range: "
+            ),
+            "{message}"
+        );
+        assert!(message.ends_with("Examples: 5b8e, a1f0"), "{message}");
+        assert!(message.contains("Widen `range`"), "{message}");
+    }
+
+    #[test]
+    fn match_incomplete_drops_a_zero_count() {
+        let only_matched = &correlate_warnings(&match_incomplete(1, 0))[0].message;
+        assert!(
+            only_matched.starts_with("1 matched trace may be missing witness spans: "),
+            "{only_matched}"
+        );
+        let only_unmatched = &correlate_warnings(&match_incomplete(0, 2))[0].message;
+        assert!(
+            only_unmatched.starts_with("2 traces did not match but may match over a wider range: "),
+            "{only_unmatched}"
+        );
+    }
+
+    #[test]
+    fn match_incomplete_without_counted_traces_warns_nothing() {
+        assert!(correlate_warnings(&match_incomplete(0, 0)).is_empty());
+    }
 
     #[test]
     fn row_limit_warns() {
-        let report = CorrelateReport {
+        let report = QueryReport {
             row_limit: true,
             ..Default::default()
         };
@@ -2041,7 +2137,7 @@ mod correlate_warnings_tests {
 
     #[test]
     fn fanout_limit_warns() {
-        let report = CorrelateReport {
+        let report = QueryReport {
             fanout_limit: true,
             ..Default::default()
         };
@@ -2054,7 +2150,7 @@ mod correlate_warnings_tests {
 
     #[test]
     fn window_warns() {
-        let report = CorrelateReport {
+        let report = QueryReport {
             window: Some(CorrelateWindowReport {
                 start_ns: 0,
                 end_ns: 1_000_000_000,
@@ -2071,7 +2167,7 @@ mod correlate_warnings_tests {
 
     #[test]
     fn empty_report_warns_nothing() {
-        assert!(correlate_warnings(&CorrelateReport::default()).is_empty());
+        assert!(correlate_warnings(&QueryReport::default()).is_empty());
     }
 }
 

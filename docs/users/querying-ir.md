@@ -715,6 +715,18 @@ rejection because an unpromoted attribute cannot be enumerated while planning:
 grouping by a real attribute that is simply absent from a short window is a
 legitimate query, and would otherwise fail a quiet dashboard panel.
 
+`match_incomplete_trace` is raised when a
+[`match`](#structural-matching-the-match-stage-ir-v12) stage with a relation
+evaluated traces that the `range` visibly cut (see its Semantics). The
+message counts the matched traces that may be missing witness spans and the
+unmatched traces that may have matched over a wider range, and names up to
+three example trace ids:
+
+```jsonc
+{ "code": "match_incomplete_trace",
+  "message": "1 matched trace may be missing witness spans and 2 traces did not match but may match over a wider range: a span's parent is not in the queried range (it started before the range or was not ingested) or a span ends after the range (its children may start after it). Widen `range` to see whole traces. Examples: 0102…, 0a0b…, 0c0d…" }
+```
+
 ## Graph envelope (`traces` only, IR v8+)
 
 `"result": "graph"` declares a service dependency graph — nodes and edges
