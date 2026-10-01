@@ -616,26 +616,9 @@ impl Evaluator {
             let parts: Vec<&dyn Array> = slices.iter().map(|s| s.column(i).as_ref()).collect();
             Ok(concat(&parts)?)
         };
-        let [spans, parents] = [self.span, self.parent]
-            .map(|i| column(i).and_then(|ids| Ok(cast(&ids, &DataType::Binary)?)));
-        let (spans, parents) = (spans?, parents?);
-        fn ids(a: &ArrayRef) -> Vec<Option<&[u8]>> {
-            let ids = a.as_binary::<i32>().iter();
-            ids.map(|v| v.filter(|v| !v.is_empty())).collect()
-        }
-        let flags = self
-            .flags
-            .iter()
-            .map(|&i| {
-                let flag = column(i)?;
-                let Some(flag) = flag.as_boolean_opt() else {
-                    return internal_err!("match flag column {i} is not Boolean");
-                };
-                Ok(flag.iter().map(|v| v == Some(true)).collect())
-            })
-            .collect::<DFResult<Vec<Vec<bool>>>>()?;
-        let (masks, dangling) =
-            evaluate(&self.spec.relations, &ids(&spans), &ids(&parents), &flags);
+        let flags = (self.flags.iter().map(|&i| column(i))).collect::<DFResult<Vec<_>>>()?;
+        let (spans, parents) = (column(self.span)?, column(self.parent)?);
+        let (masks, dangling) = trace_masks(&self.spec.relations, &spans, &parents, &flags)?;
         if !self.spec.relations.is_empty() {
             let end_limit = u64::try_from(self.spec.window_end_ns).unwrap_or(0);
             let open = || -> DFResult<bool> {
@@ -766,6 +749,46 @@ fn value_bytes(array: &dyn Array) -> DFResult<usize> {
             .sum::<DFResult<usize>>()?,
         _ => array.to_data().get_slice_memory_size()?,
     })
+}
+
+/// [`evaluate`] over one trace's `span_id`, `parent_span_id` and per-span-set
+/// flag columns.
+fn trace_masks(
+    relations: &[(usize, MatchOp, usize)],
+    spans: &ArrayRef,
+    parents: &ArrayRef,
+    flags: &[ArrayRef],
+) -> DFResult<(Option<Vec<Mask>>, bool)> {
+    let [spans, parents] = [spans, parents].map(|ids| cast(ids, &DataType::Binary));
+    let (spans, parents) = (spans?, parents?);
+    fn ids(a: &ArrayRef) -> Vec<Option<&[u8]>> {
+        let ids = a.as_binary::<i32>().iter();
+        ids.map(|v| v.filter(|v| !v.is_empty())).collect()
+    }
+    let flags = flags
+        .iter()
+        .enumerate()
+        .map(|(i, flag)| {
+            let Some(flag) = flag.as_boolean_opt() else {
+                return internal_err!("match flag of span-set {i} is not Boolean");
+            };
+            Ok(flag.iter().map(|v| v == Some(true)).collect())
+        })
+        .collect::<DFResult<Vec<Vec<bool>>>>()?;
+    Ok(evaluate(relations, &ids(&spans), &ids(&parents), &flags))
+}
+
+/// The per-trace work of `anc descendant desc`, for the
+/// `structural_ancestry` benchmark; not an API.
+#[cfg(feature = "benchmarks")]
+pub fn bench_descendant_masks(
+    spans: &ArrayRef,
+    parents: &ArrayRef,
+    anc: &ArrayRef,
+    desc: &ArrayRef,
+) -> DFResult<Option<Vec<u16>>> {
+    let flags = [Arc::clone(anc), Arc::clone(desc)];
+    trace_masks(&[(0, MatchOp::Descendant, 1)], spans, parents, &flags).map(|(masks, _)| masks)
 }
 
 /// Per row, a bitmask of the span-sets it witnesses (`None` when the trace
@@ -1134,6 +1157,30 @@ mod tests {
             .map(|[t, id, parent, name]| span(t, id, parent, name)),
         );
         spans
+    }
+
+    /// `a -> b -> c -> a` is cut at its smallest id, `a`, which becomes the
+    /// root; `e`'s parent is not in the trace, so `e` is a root too.
+    #[test]
+    fn trace_masks_cuts_cycles_and_roots_dangling_parents() {
+        let ids = |v: &[&str]| -> ArrayRef { Arc::new(StringArray::from(v.to_vec())) };
+        let flags = |v: &[bool]| -> ArrayRef {
+            Arc::new(datafusion::arrow::array::BooleanArray::from(v.to_vec()))
+        };
+        let spans = ids(&["a", "b", "c", "e"]);
+        let parents = ids(&["c", "a", "b", "zz"]);
+        let descendant = [(0, MatchOp::Descendant, 1)];
+        let masks = |anc: &[bool], desc: &[bool]| {
+            trace_masks(&descendant, &spans, &parents, &[flags(anc), flags(desc)])
+                .expect("trace_masks")
+        };
+
+        let a_over_c_and_e = masks(&[true, false, false, false], &[false, false, true, true]);
+        assert_eq!(a_over_c_and_e, (Some(vec![0b01, 0, 0b10, 0]), true));
+        let (c_over_a, _) = masks(&[false, false, true, false], &[true, false, false, false]);
+        assert_eq!(c_over_a, None);
+        let (e_over_a, _) = masks(&[false, false, false, true], &[true, false, false, false]);
+        assert_eq!(e_over_a, None);
     }
 
     #[tokio::test]

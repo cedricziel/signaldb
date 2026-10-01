@@ -12,7 +12,7 @@ pub(crate) mod metric_series;
 mod planner;
 pub mod profile;
 pub mod search_filter;
-mod structural_match;
+pub(crate) mod structural_match;
 pub mod table_lookup;
 pub mod table_ref;
 pub(crate) mod tags_to_ir;
