@@ -38,12 +38,14 @@ services:
       dockerfile: Dockerfile
       target: writer
     image: signaldb/writer:latest
+    # Ports are CLI flags (appended to the image's `signaldb writer` entrypoint);
+    # the advertised address must match the port bound here.
+    command: ["--flight-port", "50051"]
     environment:
       SIGNALDB_DATABASE_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
       SIGNALDB_DISCOVERY_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
       SIGNALDB__SCHEMA__CATALOG_TYPE: "sql"
       SIGNALDB__SCHEMA__CATALOG_URI: "postgres://signaldb:password@postgres:5432/signaldb"
-      WRITER_FLIGHT_ADDR: "0.0.0.0:50051"
       WRITER_ADVERTISE_ADDR: "signaldb-writer:50051"
       # WAL persistence configuration - mounted to persistent volume
       WRITER_WAL_DIR: "/data/wal"
@@ -81,13 +83,12 @@ services:
       dockerfile: Dockerfile
       target: acceptor
     image: signaldb/acceptor:latest
+    command: ["--grpc-port", "4317", "--http-port", "4318"]
     environment:
       SIGNALDB_DATABASE_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
       SIGNALDB_DISCOVERY_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
       SIGNALDB__SCHEMA__CATALOG_TYPE: "sql"
       SIGNALDB__SCHEMA__CATALOG_URI: "postgres://signaldb:password@postgres:5432/signaldb"
-      ACCEPTOR_GRPC_ADDR: "0.0.0.0:4317"
-      ACCEPTOR_HTTP_ADDR: "0.0.0.0:4318"
       # WAL persistence for acceptor durability
       ACCEPTOR_WAL_DIR: "/data/wal"
     volumes:
@@ -110,12 +111,12 @@ services:
       dockerfile: Dockerfile
       target: querier
     image: signaldb/querier:latest
+    command: ["--flight-port", "50054"]
     environment:
       SIGNALDB_DATABASE_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
       SIGNALDB_DISCOVERY_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
       SIGNALDB__SCHEMA__CATALOG_TYPE: "sql"
       SIGNALDB__SCHEMA__CATALOG_URI: "postgres://signaldb:password@postgres:5432/signaldb"
-      QUERIER_FLIGHT_ADDR: "0.0.0.0:50054"
       QUERIER_ADVERTISE_ADDR: "signaldb-querier:50054"
       # S3/MinIO storage configuration
       SIGNALDB_STORAGE_DSN: "s3://signaldb/data"
@@ -138,13 +139,12 @@ services:
       dockerfile: Dockerfile
       target: router
     image: signaldb/router:latest
+    command: ["--flight-port", "50053", "--http-port", "3001"]
     environment:
       SIGNALDB_DATABASE_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
       SIGNALDB_DISCOVERY_DSN: "postgres://signaldb:password@postgres:5432/signaldb"
       SIGNALDB__SCHEMA__CATALOG_TYPE: "sql"
       SIGNALDB__SCHEMA__CATALOG_URI: "postgres://signaldb:password@postgres:5432/signaldb"
-      ROUTER_FLIGHT_ADDR: "0.0.0.0:50053"
-      ROUTER_HTTP_ADDR: "0.0.0.0:3001"
     ports:
       - "50053:50053"  # Flight
       - "3001:3001"    # HTTP API
@@ -168,8 +168,6 @@ services:
       SIGNALDB__COMPACTOR__TICK_INTERVAL: "5m"
       SIGNALDB__COMPACTOR__TARGET_FILE_SIZE_MB: "128"
       SIGNALDB__COMPACTOR__FILE_COUNT_THRESHOLD: "10"
-      SIGNALDB__COMPACTOR__MIN_INPUT_FILE_SIZE_KB: "1024"
-      SIGNALDB__COMPACTOR__MAX_FILES_PER_JOB: "50"
       # S3/MinIO storage configuration
       SIGNALDB_STORAGE_DSN: "s3://signaldb/data"
       AWS_ENDPOINT_URL: "http://minio:9000"
