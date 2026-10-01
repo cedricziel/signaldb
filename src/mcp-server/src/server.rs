@@ -2746,7 +2746,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Discover the profile types with data for your tenant (e.g. CPU, heap): the distinct `sample.type`/`sample.unit` pairs on the `profiles` source, read through the Query IR. Optional `from`/`until` narrow the window (unix seconds/milliseconds, or `now[-<N><s|m|h|d>]`; default the 30 days up to `until`, and `until` defaults to now). Use this to construct a `search_profiles` selector.",
+        description = "Discover the profile types with data for your tenant (e.g. CPU, heap): the distinct `sample.type`/`sample.unit` pairs on the `profiles` source, read through the Query IR. Optional `from`/`until` narrow the window (unix seconds/milliseconds, or `now[-<N><s|m|h|d>]`; `from` defaults to the start of all history and `until` to now, like `/pyroscope/profile-types`). Use this to construct a `search_profiles` selector.",
         annotations(read_only_hint = true)
     )]
     async fn discover_profile_types(
@@ -2759,9 +2759,14 @@ impl McpServer {
             "irVersion": 1,
             "from": "profiles",
             "range": pyroscope_range(
-                p.from.as_deref(),
+                Some(
+                    p.from
+                        .as_deref()
+                        .filter(|v| !v.trim().is_empty())
+                        .unwrap_or("0"),
+                ),
                 p.until.as_deref(),
-                30 * DAY_SECS,
+                0,
                 PyroscopeTime::Relative(0),
             )?,
             "result": "table",
@@ -6535,6 +6540,36 @@ mod tests {
                 {"ID": "cpu:cpu:nanoseconds", "name": "cpu", "sampleType": "cpu", "sampleUnit": "nanoseconds"},
                 {"ID": "samples:samples:count", "name": "samples", "sampleType": "samples", "sampleUnit": "count"}
             ])
+        );
+    }
+
+    #[tokio::test]
+    async fn discover_profile_types_without_a_window_reads_all_history() {
+        let (base_url, router) = mock_capturing_router(
+            "POST /api/v1/query",
+            200,
+            r#"{"result":"table","window":{"start_ns":0,"end_ns":1},"columns":[{"name":"sample.type","type":"string"},{"name":"sample.unit","type":"string"},{"name":"profiles","type":"int64"}],"rows":[]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .discover_profile_types(
+                Parameters(DiscoverProfileTypesParams {
+                    from: None,
+                    until: None,
+                    tenant: "acme".to_string(),
+                    dataset: "production".to_string(),
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("discover_profile_types succeeds");
+
+        let document = captured_json_body(&router.await.expect("mock router task panicked"));
+        assert_eq!(
+            document["range"],
+            serde_json::json!({"from": "0", "to": "now"})
         );
     }
 
