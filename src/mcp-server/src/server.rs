@@ -121,9 +121,9 @@
 //! static, argument-only templates that seed an investigation using the
 //! tools above — `investigate_trace`, `find_recent_errors`,
 //! `build_promql_query`. `completion/complete` offers live autocompletion for
-//! two of their arguments (`find_recent_errors`'s `service`, backed by Tempo
-//! tag-value discovery, and `build_promql_query`'s `metric`, backed by
-//! Prometheus label discovery); every other reference/argument pair returns
+//! two of their arguments (`find_recent_errors`'s `service` and
+//! `build_promql_query`'s `metric`, both backed by the Query IR `describe`
+//! stage); every other reference/argument pair returns
 //! no suggestions rather than an error, since completions are advisory.
 
 use axum::http::request::Parts;
@@ -4879,9 +4879,9 @@ impl McpServer {
 /// A live data source [`McpServer::complete_impl`] can query for a prompt
 /// argument's suggestions.
 enum CompletionSource {
-    /// `find_recent_errors`'s `service` argument — Tempo `service.name` tag values.
+    /// `find_recent_errors`'s `service` argument — `service.name` on `traces`.
     ServiceName,
-    /// `build_promql_query`'s `metric` argument — Prometheus `__name__` label values.
+    /// `build_promql_query`'s `metric` argument — `metric.name` on `metrics`.
     MetricName,
 }
 
@@ -4896,39 +4896,49 @@ impl CompletionSource {
         }
     }
 
-    /// The error is boxed because `signaldb_sdk::Error` is large (136 bytes),
-    /// and clippy's `result_large_err` rejects carrying that inline through a
-    /// `Result` — every caller pays the size on the success path too. The one
-    /// caller only formats it into a log line, so the indirection costs
-    /// nothing that matters here.
-    async fn fetch(
-        &self,
-        client: &signaldb_sdk::Client,
-    ) -> Result<Vec<String>, Box<signaldb_sdk::Error<()>>> {
-        match self {
-            Self::ServiceName => {
-                let resp = client
-                    .search_tag_values()
-                    .tag_name("service.name")
-                    .send()
-                    .await?;
-                Ok(resp.into_inner().tag_values)
-            }
-            Self::MetricName => {
-                let resp = client.promql_label_values().name("__name__").send().await?;
-                let values = resp
-                    .into_inner()
-                    .get("data")
-                    .and_then(|d| d.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(str::to_owned))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                Ok(values)
+    /// The field's values, through the Query IR `describe` stage, bounded to
+    /// [`CompletionInfo::MAX_VALUES`]. `service.name` is answered from
+    /// maintained statistics when they cover it; otherwise, and always for
+    /// `metric.name` (no statistic covers it), the last hour of stored data is
+    /// sampled, so a name absent from that hour is not suggested.
+    async fn fetch(&self, client: &signaldb_sdk::Client) -> anyhow::Result<Vec<String>> {
+        let (source, field, try_statistics) = match self {
+            Self::ServiceName => ("traces", "service.name", true),
+            Self::MetricName => ("metrics", "metric.name", false),
+        };
+        if try_statistics {
+            let values = Self::describe_values(client, source, field, false).await?;
+            if !values.is_empty() {
+                return Ok(values);
             }
         }
+        Self::describe_values(client, source, field, true).await
+    }
+
+    async fn describe_values(
+        client: &signaldb_sdk::Client,
+        source: &str,
+        field: &str,
+        sample: bool,
+    ) -> anyhow::Result<Vec<String>> {
+        let document = describe_document(
+            source,
+            &default_discovery_from(),
+            &default_discovery_to(),
+            describe_stage(Some(field), Some(CompletionInfo::MAX_VALUES as u64), sample),
+        );
+        let request: signaldb_sdk::types::QueryIrRequest = serde_json::from_value(document)?;
+        let response = client
+            .query_ir()
+            .body(request)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(response
+            .into_inner()
+            .metadata
+            .map(|metadata| metadata.values.into_iter().map(|v| v.value).collect())
+            .unwrap_or_default())
     }
 }
 
@@ -8403,119 +8413,106 @@ mod tests {
     // `tests/prompts_and_completions.rs` for the completions that need no
     // credential, which *are* tested over a real transport.
 
-    #[tokio::test]
-    async fn completion_suggests_matching_service_names() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tokio::net::TcpListener;
-
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind mock router");
-        let addr = listener.local_addr().expect("mock router address");
-        let router = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.expect("accept request");
-            let mut request = [0_u8; 4096];
-            let request_len = socket.read(&mut request).await.expect("read request");
-            assert!(
-                std::str::from_utf8(&request[..request_len])
-                    .expect("request is UTF-8")
-                    .starts_with("GET /tempo/api/search/tag/service.name/values "),
-                "must query Tempo tag values for service.name"
-            );
-            let body = br#"{"tagValues":["checkout","checkout-worker","payments"]}"#;
-            socket
-                .write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        body.len()
-                    )
-                    .as_bytes(),
-                )
-                .await
-                .expect("write response headers");
-            socket.write_all(body).await.expect("write body");
-        });
+    /// Run `complete_impl` for one prompt argument against a mock router that
+    /// answers `POST /api/v1/query` with `response_body`, returning the
+    /// suggestions and the IR document the completion sent.
+    async fn complete_against_ir(
+        prompt: &str,
+        argument: &str,
+        prefix: &str,
+        response_body: &'static str,
+    ) -> (Vec<String>, serde_json::Value) {
+        let (base_url, router) =
+            mock_capturing_router("POST /api/v1/query", 200, response_body).await;
         let parts = RequestBuilder::new()
             .header(AUTHORIZATION, "Bearer valid-token")
             .body(())
             .expect("build request")
             .into_parts()
             .0;
-        let server = McpServer::new(format!("http://{addr}"), std::time::Duration::from_secs(1));
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        let result = server
+            .complete_impl(
+                rmcp::model::CompleteRequestParams::new(
+                    Reference::for_prompt(prompt),
+                    rmcp::model::ArgumentInfo::new(argument, prefix),
+                ),
+                Some(parts),
+            )
+            .await;
+
+        let request = router.await.expect("mock router task panicked");
+        (result.completion.values, captured_json_body(&request))
+    }
+
+    #[tokio::test]
+    async fn completion_suggests_service_names_from_maintained_statistics() {
+        const VALUES: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"values","values":[{"value":"checkout","count":3,"origin":"statistics"},{"value":"checkout-worker","count":2,"origin":"statistics"},{"value":"payments","count":1,"origin":"statistics"}],"truncated":false,"cost":{"mode":"metadata","window_scoped":false,"sampled":false,"approximate":true}}}"#;
+
+        let (values, document) =
+            complete_against_ir("find_recent_errors", "service", "checkout", VALUES).await;
+
+        assert_eq!(values, vec!["checkout", "checkout-worker"]);
+        assert_eq!(document["from"], "traces");
+        assert_eq!(document["result"], "metadata");
+        assert_eq!(
+            document["pipeline"][0]["describe"],
+            serde_json::json!({"target": "values", "field": "service.name", "limit": 100})
+        );
+    }
+
+    #[tokio::test]
+    async fn completion_samples_service_names_when_no_statistics_cover_them() {
+        const UNCOVERED: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"values","truncated":false,"hint":"sample","cost":{"mode":"none","window_scoped":false,"sampled":false,"approximate":false}}}"#;
+        const SAMPLED: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"values","values":[{"value":"checkout","count":3,"origin":"sampled"}],"truncated":false,"cost":{"mode":"sampled_scan","window_scoped":true,"sampled":true,"approximate":true}}}"#;
+        let (base_url, router) = mock_json_router_sequence(vec![
+            ("POST /api/v1/query", UNCOVERED),
+            ("POST /api/v1/query", SAMPLED),
+        ])
+        .await;
+        let parts = RequestBuilder::new()
+            .header(AUTHORIZATION, "Bearer valid-token")
+            .body(())
+            .expect("build request")
+            .into_parts()
+            .0;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
 
         let result = server
             .complete_impl(
                 rmcp::model::CompleteRequestParams::new(
                     Reference::for_prompt("find_recent_errors"),
-                    rmcp::model::ArgumentInfo::new("service", "checkout"),
+                    rmcp::model::ArgumentInfo::new("service", "check"),
                 ),
                 Some(parts),
             )
             .await;
 
+        assert_eq!(result.completion.values, vec!["checkout"]);
+        let requests = router.await.expect("mock router task panicked");
         assert_eq!(
-            result.completion.values,
-            vec!["checkout", "checkout-worker"]
+            captured_json_body(&requests[1])["pipeline"][0]["describe"],
+            serde_json::json!({"target": "values", "field": "service.name", "limit": 100, "sample": true})
         );
-        router.await.expect("mock router task panicked");
     }
 
     #[tokio::test]
     async fn completion_suggests_matching_metric_names() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tokio::net::TcpListener;
+        const VALUES: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"values","values":[{"value":"http_requests_total","count":9,"origin":"sampled"},{"value":"http_request_duration_seconds","count":4,"origin":"sampled"},{"value":"process_cpu_seconds_total","count":1,"origin":"sampled"}],"truncated":false,"cost":{"mode":"sampled_scan","window_scoped":true,"sampled":true,"approximate":true}}}"#;
 
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind mock router");
-        let addr = listener.local_addr().expect("mock router address");
-        let router = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.expect("accept request");
-            let mut request = [0_u8; 4096];
-            let request_len = socket.read(&mut request).await.expect("read request");
-            assert!(
-                std::str::from_utf8(&request[..request_len])
-                    .expect("request is UTF-8")
-                    .starts_with("GET /prometheus/api/v1/label/__name__/values "),
-                "must query Prometheus label values for __name__"
-            );
-            let body =
-                br#"{"status":"success","data":["http_requests_total","http_request_duration_seconds"]}"#;
-            socket
-                .write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        body.len()
-                    )
-                    .as_bytes(),
-                )
-                .await
-                .expect("write response headers");
-            socket.write_all(body).await.expect("write body");
-        });
-        let parts = RequestBuilder::new()
-            .header(AUTHORIZATION, "Bearer valid-token")
-            .body(())
-            .expect("build request")
-            .into_parts()
-            .0;
-        let server = McpServer::new(format!("http://{addr}"), std::time::Duration::from_secs(1));
-
-        let result = server
-            .complete_impl(
-                rmcp::model::CompleteRequestParams::new(
-                    Reference::for_prompt("build_promql_query"),
-                    rmcp::model::ArgumentInfo::new("metric", "http_request"),
-                ),
-                Some(parts),
-            )
-            .await;
+        let (values, document) =
+            complete_against_ir("build_promql_query", "metric", "http_request", VALUES).await;
 
         assert_eq!(
-            result.completion.values,
+            values,
             vec!["http_requests_total", "http_request_duration_seconds"]
         );
-        router.await.expect("mock router task panicked");
+        assert_eq!(document["from"], "metrics");
+        assert_eq!(
+            document["pipeline"][0]["describe"],
+            serde_json::json!({"target": "values", "field": "metric.name", "limit": 100, "sample": true})
+        );
     }
 
     #[tokio::test]

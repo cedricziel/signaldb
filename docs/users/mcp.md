@@ -248,10 +248,13 @@ validated for the session.
 
 Two arguments offer live autocompletion via `completion/complete`, for
 clients that ask for suggestions as you type: `find_recent_errors`'s
-`service` (backed by Tempo `service.name` tag-value discovery) and
-`build_promql_query`'s `metric` (backed by Prometheus `__name__` label
-discovery), both scoped to your tenant and filtered by the prefix you've
-typed so far. Every other reference/argument returns no suggestions rather
+`service` (the `service.name` values on `traces`) and `build_promql_query`'s
+`metric` (the `metric.name` values on `metrics`), both read through the Query
+IR `describe` stage, scoped to your tenant, at most 100 values, and filtered by
+the prefix you've typed so far. Service names come from maintained statistics
+when the compactor has recorded them; otherwise, and always for metric names,
+the last hour of stored data is sampled, so a name with no data in that hour
+is not suggested. Every other reference/argument returns no suggestions rather
 than an error — completions are advisory, so a lookup failure never breaks
 the request you're filling in.
 
