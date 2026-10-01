@@ -5369,7 +5369,9 @@ fn pyroscope_range(
     Ok(serde_json::json!({ "from": from.literal(), "to": until.literal() }))
 }
 
-/// The cell of `row` under column `name` in a `rows`/`table` response.
+/// The cell of `row` under column `name` in a `rows`/`table` response. The
+/// server names columns physically (`sample.type` comes back as
+/// `sample_type`), so `name` is the physical name.
 fn cell<'a>(
     response: &signaldb_sdk::types::QueryIrResponse,
     row: &'a [serde_json::Value],
@@ -5386,10 +5388,10 @@ fn profile_types(response: &signaldb_sdk::types::QueryIrResponse) -> Vec<serde_j
         .rows
         .iter()
         .filter_map(|row| {
-            let sample_type = cell(response, row, "sample.type")?
+            let sample_type = cell(response, row, "sample_type")?
                 .as_str()
                 .filter(|t| !t.is_empty())?;
-            let sample_unit = cell(response, row, "sample.unit")
+            let sample_unit = cell(response, row, "sample_unit")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             Some(serde_json::json!({
@@ -6505,7 +6507,7 @@ mod tests {
         let (base_url, router) = mock_capturing_router(
             "POST /api/v1/query",
             200,
-            r#"{"result":"table","window":{"start_ns":0,"end_ns":1},"columns":[{"name":"sample.type","type":"string"},{"name":"sample.unit","type":"string"},{"name":"profiles","type":"int64"}],"rows":[["samples","count",2],["cpu","nanoseconds",5],["","count",1]]}"#,
+            r#"{"result":"table","window":{"start_ns":0,"end_ns":1},"columns":[{"name":"sample_type","type":"string"},{"name":"sample_unit","type":"string"},{"name":"profiles","type":"int64"}],"rows":[["samples","count",2],["cpu","nanoseconds",5],["","count",1]]}"#,
         )
         .await;
         let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
@@ -6548,7 +6550,7 @@ mod tests {
         let (base_url, router) = mock_capturing_router(
             "POST /api/v1/query",
             200,
-            r#"{"result":"table","window":{"start_ns":0,"end_ns":1},"columns":[{"name":"sample.type","type":"string"},{"name":"sample.unit","type":"string"},{"name":"profiles","type":"int64"}],"rows":[]}"#,
+            r#"{"result":"table","window":{"start_ns":0,"end_ns":1},"columns":[{"name":"sample_type","type":"string"},{"name":"sample_unit","type":"string"},{"name":"profiles","type":"int64"}],"rows":[]}"#,
         )
         .await;
         let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
