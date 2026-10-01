@@ -185,10 +185,10 @@ describe("multi-value facets (kind)", () => {
 });
 
 describe('absent-value filters (op: "absent")', () => {
-  it('compiles to a `not exists` predicate, not `eq ""`', () => {
+  it('compiles to a `where not exists` stage, not `eq ""`', () => {
     expect(
       filterStages([{ field: "service.name", value: "", op: "absent" }]),
-    ).toEqual([{ not: { field: "service.name", op: "exists" } }]);
+    ).toEqual([{ where: { not: { field: "service.name", op: "exists" } } }]);
   });
 
   it("leaves the rest of the group's stages untouched", () => {
@@ -198,7 +198,7 @@ describe('absent-value filters (op: "absent")', () => {
         { field: "kind", value: "Server" },
       ]),
     ).toEqual([
-      { not: { field: "host.name", op: "exists" } },
+      { where: { not: { field: "host.name", op: "exists" } } },
       { where: { field: "span_kind", op: "eq", value: "Server" } },
     ]);
   });

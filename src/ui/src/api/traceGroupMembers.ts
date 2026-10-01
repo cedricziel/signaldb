@@ -8,7 +8,7 @@
  * sample. Bounded by a limit, newest first — consistent with the group
  * table's own budget.
  */
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type { IrStage, QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import {
   ROOT_SPAN_SENTINEL,
@@ -60,7 +60,7 @@ export function buildMembersDoc(
   sort: MembersSort = DEFAULT_MEMBERS_SORT,
   spanKind?: string,
 ): QueryIrRequest {
-  const scope: Record<string, unknown>[] =
+  const scope: IrStage[] =
     grain === "traces"
       ? [
           {

@@ -2,7 +2,7 @@
 // section) over `POST /api/v1/query`: one server-side graph definition the
 // Catalog Map and service page neighbourhood map both render through the
 // shared `ServiceGraph` component.
-import type { QueryWarning, ServiceGraph } from "./gen";
+import type { IrStage, QueryWarning, ServiceGraph } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 
@@ -16,7 +16,7 @@ export interface FetchServiceGraphOptions {
   depth?: number;
   /** `where` stages scoping the spans the graph is built from — the graph
    * pipeline accepts `where` only (the Overview's environment filter). */
-  where?: Record<string, unknown>[];
+  where?: IrStage[];
 }
 
 export interface ServiceGraphResult {

@@ -26,7 +26,7 @@
  * every kind, not just the ones broken out above: a span whose kind we don't
  * recognize is still downstream time, it just isn't its own row.
  */
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type { IrStage, QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 
@@ -105,7 +105,7 @@ function rangeDoc(range: ResolvedRange) {
 function baseWhere(
   serviceName: string,
   spanKind: "Client" | "Server",
-): Record<string, unknown>[] {
+): IrStage[] {
   return [
     { where: { field: "service.name", op: "eq", value: serviceName } },
     { where: { field: "span_kind", op: "eq", value: spanKind } },

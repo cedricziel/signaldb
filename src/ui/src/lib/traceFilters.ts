@@ -11,6 +11,7 @@
  */
 
 import { upsertBy } from "./collections";
+import type { IrStage } from "../api/gen";
 
 export interface TraceFilter {
   field: string;
@@ -178,12 +179,13 @@ function groupByFacet(
 export function filterStages(
   filters: TraceFilter[],
   excludeIrField?: string,
-): Record<string, unknown>[] {
+): IrStage[] {
   return groupByFacet(filters)
     .filter(({ facet }) => facet.irField !== excludeIrField)
     .flatMap(({ facet, values, absent }) => {
-      const stages: Record<string, unknown>[] = [];
-      if (absent) stages.push({ not: { field: facet.irField, op: "exists" } });
+      const stages: IrStage[] = [];
+      if (absent)
+        stages.push({ where: { not: { field: facet.irField, op: "exists" } } });
       if (values.length > 0) {
         stages.push({
           where:

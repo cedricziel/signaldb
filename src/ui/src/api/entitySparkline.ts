@@ -7,7 +7,7 @@
  * entry at all, which is what lets the cell stay empty instead of drawing a
  * flat line through zero next to columns that are real measurements.
  */
-import type { QueryIrRequest } from "./gen";
+import type { IrStage, QueryIrRequest } from "./gen";
 import type { MetricHit } from "../features/schema/api";
 import type { EntityTypeDef } from "../features/catalog/entityTypes";
 import { toLokiLabel } from "../lib/labelSuggestions";
@@ -52,7 +52,7 @@ export function buildSparklineDoc(
     result: "series" as const,
     pipeline: [
       { where: { field: "metric.name", op: "eq", value: metric.name } },
-    ],
+    ] satisfies IrStage[],
   };
 
   if (isHistogram(metric.instrument)) {

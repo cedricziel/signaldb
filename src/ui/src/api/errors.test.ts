@@ -9,6 +9,7 @@ import {
   type ErrorGroup,
 } from "./errors";
 import { client } from "./gen/client.gen";
+import type { IrStage } from "./gen";
 
 beforeEach(() => {
   client.setConfig({ baseUrl: "http://localhost" });
@@ -39,7 +40,7 @@ function tableResponse(rows: unknown[][]) {
 
 describe("buildErrorGroupDoc", () => {
   it("appends extra scope stages after the service pin", () => {
-    const scope = [
+    const scope: IrStage[] = [
       {
         where: {
           field: "deployment.environment.name",

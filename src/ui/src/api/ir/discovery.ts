@@ -5,7 +5,12 @@
  * (`api/loki.ts`), the Tempo tag-name endpoint (`tempoSearchTags`) and the
  * Pyroscope discovery endpoints (formerly `api/pyroscope.ts`, types now in `api/profileTypes.ts`).
  */
-import type { QueryIrRequest, QueryIrResponse, DiscoveredField } from "../gen";
+import type {
+  DiscoveredField,
+  IrDescribe,
+  QueryIrRequest,
+  QueryIrResponse,
+} from "../gen";
 import { msToNanos, type ResolvedRange } from "../../lib/time";
 import { runIrQuery } from "../queryIr";
 import type { ProfileType } from "../profileTypes";
@@ -16,7 +21,7 @@ const IR_VERSION = 4;
 function describeDoc(
   source: string,
   range: ResolvedRange,
-  target: Record<string, unknown>,
+  target: IrDescribe,
 ): QueryIrRequest {
   return {
     irVersion: IR_VERSION,

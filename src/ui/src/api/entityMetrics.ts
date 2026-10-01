@@ -11,7 +11,7 @@
  * name prefix only, so definitions are collected a name-family at a time and
  * narrowed back. Asking after the intersection keeps that to a call or two.
  */
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type { IrStage, QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import {
@@ -22,7 +22,7 @@ import {
 
 export const METRICS_SOURCE = "metrics";
 
-export const HISTOGRAM_ROWS = {
+export const HISTOGRAM_ROWS: IrStage = {
   where: { field: "metric.type", op: "eq", value: "histogram" },
 };
 

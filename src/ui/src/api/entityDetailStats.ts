@@ -12,7 +12,7 @@
  * max of a per-bucket count series divided by the step, not an IR aggregate —
  * there is no max-over-buckets stage either.
  */
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type { IrStage, QueryIrRequest, QueryIrResponse } from "./gen";
 import { pinsWhere, spanKindWhere, type EntityPin } from "./catalog";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
@@ -30,10 +30,7 @@ export function previousPeriod(range: ResolvedRange): ResolvedRange {
 /** The `where` stages every query in this module shares: the entity type's
  * span-kind scope (if any), then one equality/absence check per pin. Mirrors
  * `buildEntitySourceDoc`'s scope in `./catalog.ts`. */
-function scopeWhere(
-  entity: EntityTypeDef,
-  pinned: EntityPin[],
-): Record<string, unknown>[] {
+function scopeWhere(entity: EntityTypeDef, pinned: EntityPin[]): IrStage[] {
   return [...spanKindWhere(entity.spanKindScope), ...pinsWhere(pinned)];
 }
 

@@ -3,7 +3,7 @@
 // the slowest endpoints. Everything is a Query IR read; the service list,
 // error groups and service graph reuse `./catalog`, `./errors` and
 // `./serviceGraph`, scoped by the same environment `where` stage built here.
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type { IrStage, QueryIrRequest, QueryIrResponse } from "./gen";
 import { pinsWhere, spanKindWhere, type EntityPin } from "./catalog";
 import {
   buildEntityCountSeriesDoc,
@@ -31,7 +31,7 @@ export function envPins(env: string): EntityPin[] {
 }
 
 /** The environment scope as bare `where` stages. */
-export function envWhere(env: string): Record<string, unknown>[] {
+export function envWhere(env: string): IrStage[] {
   return pinsWhere(envPins(env));
 }
 
