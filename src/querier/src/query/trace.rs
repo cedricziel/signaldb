@@ -919,7 +919,7 @@ fn unix_seconds_to_nanos(name: &str, seconds: i64) -> Result<i64, QuerierError> 
     })
 }
 
-fn timestamp_bound_scalar(
+pub(super) fn timestamp_bound_scalar(
     nanos: i64,
     col_type: &DataType,
     round_up: bool,
