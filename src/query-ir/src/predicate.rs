@@ -137,7 +137,10 @@ impl<'de> Deserialize<'de> for Predicate {
 #[cfg(feature = "openapi")]
 #[derive(Serialize, utoipa::ToSchema)]
 #[serde(untagged)]
-#[expect(dead_code, reason = "schema-only: never constructed")]
+#[expect(
+    dead_code,
+    reason = "schema-only mirror of Predicate's hand-written serde"
+)]
 enum PredicateSchema {
     Leaf {
         field: String,
@@ -163,7 +166,9 @@ enum PredicateSchema {
 #[cfg(feature = "openapi")]
 impl utoipa::PartialSchema for Predicate {
     fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        PredicateSchema::schema()
+        let mut schema = PredicateSchema::schema();
+        crate::openapi::close_object_variants(&mut schema);
+        schema
     }
 }
 

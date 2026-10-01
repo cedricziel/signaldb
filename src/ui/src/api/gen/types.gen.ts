@@ -1426,6 +1426,10 @@ export type IrCorrelate = {
     kind: IrJoinKind;
     on?: null | IrCorrelateKey;
     pipeline?: Array<IrStage>;
+    /**
+     * `"parent"` for the span's parent span, or the name of another signal
+     * source.
+     */
     to: string;
     window?: null | IrCorrelateWindow;
 };
@@ -1671,6 +1675,11 @@ export type IrMapFn = 'abs' | 'ceil' | 'floor' | 'round' | 'sqrt' | 'exp' | 'ln'
  */
 export type IrMatch = {
     relations?: Array<IrMatchRelation>;
+    /**
+     * Named span-set predicates. Key order is significant: it is the
+     * declaration order, which orders the names in each row's `spansets`
+     * column.
+     */
     spansets: {
         [key: string]: IrPredicate;
     };

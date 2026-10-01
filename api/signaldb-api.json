@@ -8694,7 +8694,9 @@
             }
           },
           "to": {
-            "type": "string"
+            "type": "string",
+            "description": "`\"parent\"` for the span's parent span, or the name of another signal\nsource.",
+            "example": "parent"
           },
           "window": {
             "oneOf": [
@@ -9110,7 +9112,8 @@
               "replace": {
                 "$ref": "#/components/schemas/IrLabelReplace"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9121,7 +9124,8 @@
               "join": {
                 "$ref": "#/components/schemas/IrLabelJoin"
               }
-            }
+            },
+            "additionalProperties": false
           }
         ],
         "description": "The `labels` stage: rewrite one label of every series."
@@ -9189,6 +9193,7 @@
           },
           "spansets": {
             "type": "object",
+            "description": "Named span-set predicates. Key order is significant: it is the\ndeclaration order, which orders the names in each row's `spansets`\ncolumn.",
             "additionalProperties": {
               "$ref": "#/components/schemas/IrPredicate"
             },
@@ -9329,7 +9334,8 @@
               "value": {
                 "description": "Absent for `exists`."
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9343,7 +9349,8 @@
                   "$ref": "#/components/schemas/IrPredicate"
                 }
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9357,7 +9364,8 @@
                   "$ref": "#/components/schemas/IrPredicate"
                 }
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9368,7 +9376,8 @@
               "not": {
                 "$ref": "#/components/schemas/IrPredicate"
               }
-            }
+            },
+            "additionalProperties": false
           }
         ],
         "description": "A predicate: exactly one of a comparison leaf (`field`, `op`, and a\n`value` unless `op` is `exists`), `and`, `or`, or `not`."
@@ -9557,7 +9566,8 @@
               "where": {
                 "$ref": "#/components/schemas/IrPredicate"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9568,7 +9578,8 @@
               "extract": {
                 "$ref": "#/components/schemas/IrExtract"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9579,7 +9590,8 @@
               "aggregate": {
                 "$ref": "#/components/schemas/IrAggregate"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9590,7 +9602,8 @@
               "topk": {
                 "$ref": "#/components/schemas/IrRank"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9601,7 +9614,8 @@
               "bottomk": {
                 "$ref": "#/components/schemas/IrRank"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9615,7 +9629,8 @@
                   "$ref": "#/components/schemas/IrOrder"
                 }
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9628,7 +9643,8 @@
                 "format": "int64",
                 "minimum": 0
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9639,7 +9655,8 @@
               "heatmap": {
                 "$ref": "#/components/schemas/IrHeatmap"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9650,7 +9667,8 @@
               "histogram_quantile": {
                 "$ref": "#/components/schemas/IrHistogramQuantile"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9661,7 +9679,8 @@
               "describe": {
                 "$ref": "#/components/schemas/IrDescribe"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9672,7 +9691,8 @@
               "correlate": {
                 "$ref": "#/components/schemas/IrCorrelate"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9683,7 +9703,8 @@
               "sample": {
                 "$ref": "#/components/schemas/IrSample"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9694,7 +9715,8 @@
               "scalar": {
                 "$ref": "#/components/schemas/IrNoOperands"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9705,7 +9727,8 @@
               "vector": {
                 "$ref": "#/components/schemas/IrNoOperands"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9716,7 +9739,8 @@
               "reduce": {
                 "$ref": "#/components/schemas/IrReduce"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9727,7 +9751,8 @@
               "map": {
                 "$ref": "#/components/schemas/IrMap"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9738,7 +9763,8 @@
               "labels": {
                 "$ref": "#/components/schemas/IrLabels"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9749,7 +9775,8 @@
               "filter": {
                 "$ref": "#/components/schemas/IrFilter"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9760,7 +9787,8 @@
               "sort": {
                 "$ref": "#/components/schemas/IrDirection"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9771,7 +9799,8 @@
               "absent": {
                 "$ref": "#/components/schemas/IrAbsent"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9782,7 +9811,8 @@
               "over_time": {
                 "$ref": "#/components/schemas/IrOverTime"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9793,7 +9823,8 @@
               "binop": {
                 "$ref": "#/components/schemas/IrBinop"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9804,7 +9835,8 @@
               "histogram_fraction": {
                 "$ref": "#/components/schemas/IrHistogramFraction"
               }
-            }
+            },
+            "additionalProperties": false
           },
           {
             "type": "object",
@@ -9815,7 +9847,8 @@
               "match": {
                 "$ref": "#/components/schemas/IrMatch"
               }
-            }
+            },
+            "additionalProperties": false
           }
         ],
         "description": "A transform stage in the pipeline. Externally tagged: a single-key object\nwhose key names the stage. An unknown key is an unsupported stage and is\nrejected by name."

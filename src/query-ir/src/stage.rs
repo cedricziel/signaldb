@@ -534,7 +534,9 @@ pub struct CorrelateWindow {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrCorrelate))]
 #[serde(deny_unknown_fields)]
 pub struct Correlate {
-    #[cfg_attr(feature = "openapi", schema(value_type = String))]
+    /// `"parent"` for the span's parent span, or the name of another signal
+    /// source.
+    #[cfg_attr(feature = "openapi", schema(value_type = String, example = "parent"))]
     pub to: CorrelateTarget,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<CorrelateKey>,
@@ -614,6 +616,9 @@ impl<'de> Deserialize<'de> for SpanSets {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrMatch))]
 #[serde(deny_unknown_fields)]
 pub struct Match {
+    /// Named span-set predicates. Key order is significant: it is the
+    /// declaration order, which orders the names in each row's `spansets`
+    /// column.
     #[cfg_attr(
         feature = "openapi",
         schema(value_type = std::collections::BTreeMap<String, Predicate>)

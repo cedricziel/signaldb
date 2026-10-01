@@ -2326,6 +2326,8 @@ pub mod types {
         pub on: ::std::option::Option<IrCorrelateKey>,
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub pipeline: ::std::vec::Vec<IrStage>,
+        /**`"parent"` for the span's parent span, or the name of another signal
+        source.*/
         pub to: ::std::string::String,
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub window: ::std::option::Option<IrCorrelateWindow>,
@@ -3070,6 +3072,9 @@ pub mod types {
     pub struct IrMatch {
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub relations: ::std::vec::Vec<IrMatchRelation>,
+        /**Named span-set predicates. Key order is significant: it is the
+        declaration order, which orders the names in each row's `spansets`
+        column.*/
         pub spansets: ::std::collections::HashMap<::std::string::String, IrPredicate>,
     }
     impl IrMatch {
@@ -3342,7 +3347,7 @@ pub mod types {
     /**A predicate: exactly one of a comparison leaf (`field`, `op`, and a
     `value` unless `op` is `exists`), `and`, `or`, or `not`.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    #[serde(untagged)]
+    #[serde(untagged, deny_unknown_fields)]
     pub enum IrPredicate {
         Variant0 {
             field: ::std::string::String,

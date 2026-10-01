@@ -25,6 +25,8 @@
 pub mod alias;
 pub mod document;
 pub mod formula;
+#[cfg(feature = "openapi")]
+pub mod openapi;
 pub mod predicate;
 pub mod relation;
 pub mod resolver;
