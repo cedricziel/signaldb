@@ -4,10 +4,10 @@
 // additionally open the Storage tab.
 import { useOutletState } from "../../lib/outletState";
 import { useWhoami } from "../../lib/useWhoami";
-import type { WhoamiResponse } from "../../api/session";
+import type { WhoamiIdentityResponse } from "../../api/session";
 
 export interface SchemaSession {
-  who: WhoamiResponse | undefined;
+  who: WhoamiIdentityResponse | undefined;
   isLoading: boolean;
   isInstanceAdmin: boolean;
   isTenantAdmin: boolean;

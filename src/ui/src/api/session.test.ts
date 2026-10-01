@@ -22,13 +22,27 @@ function mockFetchOnce(body: unknown, status = 200) {
   return fn;
 }
 
-afterEach(() => {
-  vi.unstubAllGlobals();
+// The generated client needs an absolute base URL under jsdom's stricter
+// Request parsing (see management.test.ts / consent.test.ts).
+beforeEach(() => {
+  client.setConfig({ baseUrl: "http://localhost" });
 });
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+  setTenantContext({ tenant: "", dataset: "" });
+  client.setConfig({ baseUrl: "" });
+});
+
+function sentRequest(fn: ReturnType<typeof vi.fn>): Request {
+  return fn.mock.calls[0]?.[0] as Request;
+}
+
 describe("createSession", () => {
+  const RESULT = { tenant: "acme", dataset: "prod", memberships: [] };
+
   it("POSTs user credentials and returns the resolved context", async () => {
-    const fn = mockFetchOnce({ tenant: "acme", dataset: "prod" });
+    const fn = mockFetchOnce(RESULT);
     await expect(
       createSession({
         email: "alice@example.com",
@@ -36,11 +50,11 @@ describe("createSession", () => {
         tenant: "acme",
         dataset: "prod",
       }),
-    ).resolves.toEqual({ tenant: "acme", dataset: "prod" });
-    expect(String(fn.mock.calls[0]?.[0])).toBe("/ui/session");
-    const init = fn.mock.calls[0]?.[1] as RequestInit;
-    expect(init.method).toBe("POST");
-    expect(JSON.parse(String(init.body))).toEqual({
+    ).resolves.toEqual(RESULT);
+    const req = sentRequest(fn);
+    expect(new URL(req.url).pathname).toBe("/ui/session");
+    expect(req.method).toBe("POST");
+    expect(await req.clone().json()).toEqual({
       email: "alice@example.com",
       password: "secret",
       tenant: "acme",
@@ -49,14 +63,13 @@ describe("createSession", () => {
   });
 
   it("omits the dataset field when not provided", async () => {
-    const fn = mockFetchOnce({ tenant: "acme", dataset: "default" });
+    const fn = mockFetchOnce(RESULT);
     await createSession({
       email: "alice@example.com",
       password: "secret",
       tenant: "acme",
     });
-    const init = fn.mock.calls[0]?.[1] as RequestInit;
-    expect(JSON.parse(String(init.body))).toEqual({
+    expect(await sentRequest(fn).clone().json()).toEqual({
       email: "alice@example.com",
       password: "secret",
       tenant: "acme",
@@ -88,8 +101,9 @@ describe("deleteSession", () => {
   it("sends DELETE /ui/session", async () => {
     const fn = mockFetchOnce(null, 204);
     await deleteSession();
-    expect(String(fn.mock.calls[0]?.[0])).toBe("/ui/session");
-    expect((fn.mock.calls[0]?.[1] as RequestInit).method).toBe("DELETE");
+    const req = sentRequest(fn);
+    expect(new URL(req.url).pathname).toBe("/ui/session");
+    expect(req.method).toBe("DELETE");
   });
 
   it("throws on failure", async () => {
@@ -108,28 +122,33 @@ describe("whoami", () => {
     },
     memberships: [{ tenant_id: "acme", role: "admin" }],
     tenant: { id: "acme", slug: "acme", name: "Acme Corp" },
+    user_id: "user-1",
+    dataset: "production",
     datasets: [
       { id: "production", slug: "production", is_default: true },
       { id: "staging", slug: "staging", is_default: false },
     ],
     default_dataset: "production",
+    granted_tenants: [{ tenant_id: "acme" }],
   };
 
   it("returns the parsed response and attaches tenant headers", async () => {
     const fn = mockFetchOnce(BODY);
     setTenantContext({ tenant: "acme", dataset: "prod" });
-    try {
-      const res = await whoami();
-      expect(res).toEqual(BODY);
-    } finally {
-      setTenantContext({ tenant: "", dataset: "" });
-    }
-    expect(String(fn.mock.calls[0]?.[0])).toBe("/api/v1/whoami");
-    const init = fn.mock.calls[0]?.[1] as RequestInit;
-    expect(init.headers).toMatchObject({
-      "X-Tenant-ID": "acme",
-      "X-Dataset-ID": "prod",
-    });
+    await expect(whoami()).resolves.toEqual(BODY);
+    const req = sentRequest(fn);
+    expect(new URL(req.url).pathname).toBe("/api/v1/whoami");
+    expect(req.headers.get("X-Tenant-ID")).toBe("acme");
+    expect(req.headers.get("X-Dataset-ID")).toBe("prod");
+  });
+
+  it("scopes to an explicit tenant without the current context's dataset", async () => {
+    const fn = mockFetchOnce(BODY);
+    setTenantContext({ tenant: "globex", dataset: "main" });
+    await whoami("acme");
+    const req = sentRequest(fn);
+    expect(req.headers.get("X-Tenant-ID")).toBe("acme");
+    expect(req.headers.get("X-Dataset-ID")).toBeNull();
   });
 
   it("throws an ApiError carrying the status when unavailable", async () => {
@@ -140,17 +159,7 @@ describe("whoami", () => {
   });
 });
 
-// The generated client needs an absolute base URL under jsdom's stricter
-// Request parsing (see management.test.ts / consent.test.ts).
-describe("loginConfig / currentSession (generated client)", () => {
-  beforeEach(() => {
-    client.setConfig({ baseUrl: "http://localhost" });
-  });
-
-  afterEach(() => {
-    client.setConfig({ baseUrl: "" });
-  });
-
+describe("loginConfig / currentSession", () => {
   it("loginConfig() returns the probe response", async () => {
     mockFetchOnce({ password_enabled: true, oidc: null });
     await expect(loginConfig()).resolves.toEqual({

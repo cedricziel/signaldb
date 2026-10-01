@@ -2,7 +2,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
-import type { WhoamiResponse } from "../../api/session";
+import type { WhoamiIdentityResponse } from "../../api/session";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { UserMenu } from "./UserMenu";
 
@@ -14,7 +14,7 @@ function renderUserMenu(props: Parameters<typeof UserMenu>[0]) {
   );
 }
 
-const WHOAMI: WhoamiResponse = {
+const WHOAMI: WhoamiIdentityResponse = {
   user: {
     id: "user-1",
     email: "jane@acme.com",
@@ -25,6 +25,9 @@ const WHOAMI: WhoamiResponse = {
   tenant: { id: "acme", slug: "acme", name: "Acme Corp" },
   datasets: [{ id: "production", slug: "production", is_default: true }],
   default_dataset: "production",
+  user_id: "user-1",
+  dataset: "production",
+  granted_tenants: [{ tenant_id: "acme" }],
 };
 const ADMIN_PROPS = { who: WHOAMI };
 

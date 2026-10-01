@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Link, useLocation } from "react-router";
-import type { WhoamiResponse } from "../../api/session";
+import type { WhoamiIdentityResponse } from "../../api/session";
 import { DEFAULT_DATASET, DEFAULT_TENANT } from "../../api/http";
 import { useEscapeKey } from "../../hooks/useEscapeKey";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
@@ -123,7 +123,7 @@ export function useAppNavState() {
 interface NavProps {
   state: ExploreState;
   update: (patch: Partial<ExploreState>) => void;
-  who: WhoamiResponse | undefined;
+  who: WhoamiIdentityResponse | undefined;
   canManage: boolean;
   isDemo: boolean;
   nav: ReturnType<typeof useAppNavState>;
@@ -249,7 +249,7 @@ function TenantSwitcher({
 }: {
   state: ExploreState;
   update: (patch: Partial<ExploreState>) => void;
-  who: WhoamiResponse | undefined;
+  who: WhoamiIdentityResponse | undefined;
   expanded: boolean;
   large?: boolean;
 }) {

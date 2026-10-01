@@ -4,7 +4,7 @@
 // from a story/meta decorator, and always call the returned `restore()` on
 // cleanup so one story's stub can't leak `fetch` into the next.
 import { client as generatedClient } from "../api/gen/client.gen";
-import type { WhoamiResponse } from "../api/session";
+import type { WhoamiIdentityResponse } from "../api/session";
 
 export type JsonRoute = {
   match: string | RegExp;
@@ -270,8 +270,8 @@ export function describeFieldsResponse(names: string[]) {
  * shared by every story that stubs the top bar's tenant/user context
  * (`Pages/App Shell`, `Pages/Overview`). */
 export function sampleWhoami(
-  overrides: Partial<WhoamiResponse> = {},
-): WhoamiResponse {
+  overrides: Partial<WhoamiIdentityResponse> = {},
+): WhoamiIdentityResponse {
   return {
     user: {
       id: "user-1",
@@ -286,6 +286,9 @@ export function sampleWhoami(
       { id: "staging", slug: "staging", is_default: false },
     ],
     default_dataset: "production",
+    user_id: "user-1",
+    dataset: "production",
+    granted_tenants: [{ tenant_id: "acme" }],
     ...overrides,
   };
 }
@@ -293,7 +296,7 @@ export function sampleWhoami(
 /** The matching `GET /ui/session` response for {@link sampleWhoami} — same
  * user/tenant/memberships, the shape `currentSession()` returns. */
 export function sampleCurrentSession(
-  who: WhoamiResponse,
+  who: WhoamiIdentityResponse,
   extra: Record<string, unknown> = {},
 ) {
   return {

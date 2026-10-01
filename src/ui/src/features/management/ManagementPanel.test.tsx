@@ -4,9 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { ManagementPanel } from "./ManagementPanel";
-import type { WhoamiResponse } from "../../api/session";
+import type { WhoamiIdentityResponse } from "../../api/session";
 
-const WHO: WhoamiResponse = {
+const WHO: WhoamiIdentityResponse = {
   user: {
     id: "user-1",
     email: "alice@example.com",
@@ -17,6 +17,9 @@ const WHO: WhoamiResponse = {
   tenant: { id: "acme", slug: "acme", name: "Acme Corp" },
   datasets: [{ id: "production", slug: "production", is_default: true }],
   default_dataset: "production",
+  user_id: "user-1",
+  dataset: "production",
+  granted_tenants: [{ tenant_id: "acme" }],
 };
 
 function renderPanel() {
@@ -31,7 +34,7 @@ function renderPanel() {
   );
 }
 
-const WHO_WITH_TWO_DATASETS: WhoamiResponse = {
+const WHO_WITH_TWO_DATASETS: WhoamiIdentityResponse = {
   ...WHO,
   datasets: [
     { id: "default", slug: "default", is_default: true },

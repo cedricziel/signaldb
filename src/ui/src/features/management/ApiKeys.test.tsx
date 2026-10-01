@@ -175,12 +175,12 @@ describe("ApiKeys page", () => {
     await waitFor(() =>
       expect(
         fetchMock.mock.calls.some((call) =>
-          String(call[0]).includes("/api/v1/whoami"),
+          (call[0] as Request).url.includes("/api/v1/whoami"),
         ),
       ).toBe(true),
     );
     const whoamiCallsForAcme = fetchMock.mock.calls.filter((call) =>
-      String(call[0]).includes("/api/v1/whoami"),
+      (call[0] as Request).url.includes("/api/v1/whoami"),
     ).length;
 
     rerender(
@@ -191,7 +191,7 @@ describe("ApiKeys page", () => {
 
     await waitFor(() => {
       const whoamiCallsAfter = fetchMock.mock.calls.filter((call) =>
-        String(call[0]).includes("/api/v1/whoami"),
+        (call[0] as Request).url.includes("/api/v1/whoami"),
       ).length;
       expect(whoamiCallsAfter).toBeGreaterThan(whoamiCallsForAcme);
     });

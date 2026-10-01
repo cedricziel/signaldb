@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
 import { SelectTenant } from "./SelectTenant";
 import type { CurrentSessionResponse } from "../../api/session";
+import { client } from "../../api/gen/client.gen";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 
 // Mock useOutletState and useNavigate. `useSearchParams` stays real so a
@@ -185,7 +186,7 @@ describe("SelectTenant", () => {
           { status: 200, headers: { "Content-Type": "application/json" } },
         ),
       );
-    vi.stubGlobal("fetch", fetchMock);
+    client.setConfig({ baseUrl: "http://localhost", fetch: fetchMock });
 
     renderSelectTenant(sessionWithMemberships);
     expect(await screen.findByText(/Failed to load datasets/)).toBeInTheDocument();
@@ -200,10 +201,8 @@ describe("SelectTenant", () => {
   });
 
   it("other tenants are collapsed initially and fetch their own datasets on click", async () => {
-    const fetchMock = vi.fn().mockImplementation((_url, init?: RequestInit) => {
-      const tenantId = (init?.headers as Record<string, string> | undefined)?.[
-        "X-Tenant-ID"
-      ];
+    const fetchMock = vi.fn().mockImplementation((request: Request) => {
+      const tenantId = request.headers.get("X-Tenant-ID");
       const body =
         tenantId === "acme-eu"
           ? { datasets: [{ id: "europe", slug: "europe", is_default: true }] }
@@ -215,7 +214,7 @@ describe("SelectTenant", () => {
         }),
       );
     });
-    vi.stubGlobal("fetch", fetchMock);
+    client.setConfig({ baseUrl: "http://localhost", fetch: fetchMock });
 
     renderSelectTenant(sessionWithMemberships);
     expect(screen.queryByText(/europe/)).toBeNull();
@@ -228,14 +227,9 @@ describe("SelectTenant", () => {
     );
     expect(await screen.findByText(/europe/)).toBeInTheDocument();
 
-    const scopedCall = fetchMock.mock.calls.find((call) => {
-      const init = call[1] as RequestInit | undefined;
-      return (
-        (init?.headers as Record<string, string> | undefined)?.[
-          "X-Tenant-ID"
-        ] === "acme-eu"
-      );
-    });
+    const scopedCall = fetchMock.mock.calls.find(
+      (call) => (call[0] as Request).headers.get("X-Tenant-ID") === "acme-eu",
+    );
     expect(scopedCall).toBeDefined();
   });
 

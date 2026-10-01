@@ -13,7 +13,7 @@ import {
   upsertMembership,
   type ManagedTables,
 } from "../../api/management";
-import type { WhoamiResponse } from "../../api/session";
+import type { WhoamiIdentityResponse } from "../../api/session";
 import { QueryError } from "../../components/QueryError";
 import { toErrorMessage } from "../../api/http";
 import { ConfirmButton } from "../../components/ConfirmButton";
@@ -62,7 +62,7 @@ function grantSourceLabel(grantedBy: string): string {
 }
 
 interface Props {
-  who: WhoamiResponse;
+  who: WhoamiIdentityResponse;
   onClose: () => void;
   onTenantCreated: (tenant: string, dataset: string) => void;
 }

@@ -5,8 +5,8 @@
 //     `/api/v1/tenants/...` are requested verbatim against the current origin
 //     (the router serves the UI and the API from the same host); and
 //   * a request interceptor that attaches the tenant/dataset headers to every
-//     outgoing request, mirroring what the hand-written clients used to do via
-//     `tenantHeaders()`; and
+//     outgoing request that doesn't already name its tenant, mirroring what
+//     the hand-written clients used to do via `tenantHeaders()`; and
 //   * `retryingFetch` as the client's fetch, so every generated operation
 //     backs off on throttling (429) and idempotent transient failures the same
 //     way the Rust SDK does (see `client-retry-on-throttle`); and
@@ -20,6 +20,9 @@ import { withProxyLoginRecovery } from "../lib/proxyLoginRecovery";
 client.setConfig({ baseUrl: "", fetch: withProxyLoginRecovery(retryingFetch) });
 
 client.interceptors.request.use((request) => {
+  // A call that names its tenant itself (`whoami(tenant)` right after a
+  // tenant is picked at login) owns its tenant context.
+  if (request.headers.has("X-Tenant-ID")) return request;
   for (const [key, value] of Object.entries(tenantHeaders())) {
     request.headers.set(key, value);
   }
