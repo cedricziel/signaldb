@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::document::{Document, ResultEnvelope};
-use super::stage::Stage;
+use super::stage::{Direction, Stage};
 use super::validate::{IrError, require_feature};
 use super::version::{Feature, OperatorRegistry};
 
@@ -41,6 +41,130 @@ pub struct Tail {
     /// `10s`), clamped to the server's bounds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settle: Option<String>,
+}
+
+/// One key of the total order a page or tail walks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SortKey {
+    /// A logical field name of the terminal relation.
+    pub field: String,
+    pub dir: Direction,
+}
+
+impl SortKey {
+    fn new(field: &str, dir: Direction) -> Self {
+        Self {
+            field: field.to_string(),
+            dir,
+        }
+    }
+}
+
+/// What `page.size` counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PageUnit {
+    Rows,
+    /// Whole traces: the `trace` envelope never splits one across pages.
+    Traces,
+}
+
+impl PageUnit {
+    pub fn of(doc: &Document) -> Self {
+        if doc.result == ResultEnvelope::Trace {
+            PageUnit::Traces
+        } else {
+            PageUnit::Rows
+        }
+    }
+}
+
+/// A source's time column and the tie-breakers appended to every order.
+struct SourceOrder {
+    time: &'static str,
+    /// The column a tail advances on; the span end for traces, since a span
+    /// is exported after it ends.
+    tail_time: &'static str,
+    tie_breakers: &'static [&'static str],
+}
+
+fn source_order(source: &str) -> Option<SourceOrder> {
+    let (time, tail_time, tie_breakers): (_, _, &'static [&'static str]) = match source {
+        "traces" => (
+            "start_time_unix_nano",
+            "end_time_unix_nano",
+            &["trace_id", "span_id"],
+        ),
+        "logs" => (
+            "timestamp",
+            "timestamp",
+            &["trace_id", "span_id", "service.name"],
+        ),
+        "metrics" => ("timestamp", "timestamp", &["series.id"]),
+        "exemplars" => (
+            "timestamp",
+            "timestamp",
+            &["series.id", "trace.id", "span.id"],
+        ),
+        "profiles" => ("timestamp", "timestamp", &["profile.id"]),
+        _ => return None,
+    };
+    Some(SourceOrder {
+        time,
+        tail_time,
+        tie_breakers,
+    })
+}
+
+/// The total order a `page` walks `doc` in: the last `order` stage's keys,
+/// else a `match` pipeline's (and the `trace` envelope's) native
+/// `(trace_id, start, span_id)`, else the source time column newest first;
+/// then the source's tie-breakers, ascending, unless already present.
+pub fn pagination_order(doc: &Document) -> Vec<SortKey> {
+    let source = source_order(&doc.from);
+    let explicit = doc.pipeline.iter().rev().find_map(|stage| match stage {
+        Stage::Order(keys) => Some(keys),
+        _ => None,
+    });
+    let has_match = doc.pipeline.iter().any(|s| matches!(s, Stage::Match(_)));
+    let mut keys: Vec<SortKey> = match (explicit, &source) {
+        (Some(keys), _) => keys.iter().map(|k| SortKey::new(&k.of, k.dir)).collect(),
+        (None, Some(source)) if has_match || doc.result == ResultEnvelope::Trace => vec![
+            SortKey::new("trace_id", Direction::Asc),
+            SortKey::new(source.time, Direction::Asc),
+            SortKey::new("span_id", Direction::Asc),
+        ],
+        (None, Some(source)) => vec![SortKey::new(source.time, Direction::Desc)],
+        (None, None) => Vec::new(),
+    };
+    append_tie_breakers(&mut keys, source.as_ref());
+    keys
+}
+
+/// The order a `tail` delivers in: the source's tail-time ascending, then
+/// its tie-breakers.
+pub fn tail_order(doc: &Document) -> Vec<SortKey> {
+    let source = source_order(&doc.from);
+    let mut keys: Vec<SortKey> = source
+        .iter()
+        .map(|s| SortKey::new(s.tail_time, Direction::Asc))
+        .collect();
+    append_tie_breakers(&mut keys, source.as_ref());
+    keys
+}
+
+/// The source column a tail advances on, or `None` for a source that has
+/// none.
+pub fn tail_time_field(source: &str) -> Option<&'static str> {
+    source_order(source).map(|s| s.tail_time)
+}
+
+fn append_tie_breakers(keys: &mut Vec<SortKey>, source: Option<&SourceOrder>) {
+    for field in source.map_or(&[][..], |s| s.tie_breakers) {
+        if !keys.iter().any(|k| k.field == *field) {
+            keys.push(SortKey::new(field, Direction::Asc));
+        }
+    }
 }
 
 /// The schema-free rules for `page`/`tail`: the version that carries each,
@@ -168,6 +292,10 @@ mod tests {
             "range": { "from": "now-1h", "to": range_to },
             "result": "rows", "pipeline": pipeline, "tail": {}
         }))
+    }
+
+    fn keys(keys: &[SortKey]) -> Vec<(&str, Direction)> {
+        keys.iter().map(|k| (k.field.as_str(), k.dir)).collect()
     }
 
     fn not_paginatable_at(doc: &Document) -> String {
@@ -341,6 +469,115 @@ mod tests {
             cursor: None,
         });
         assert!(check_size(&d, 9).is_err());
+    }
+
+    #[test]
+    fn pagination_order_defaults_newest_first_with_tie_breakers() {
+        let logs = doc(json!({
+            "irVersion": 14, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows", "pipeline": []
+        }));
+        assert_eq!(
+            keys(&pagination_order(&logs)),
+            [
+                ("timestamp", Direction::Desc),
+                ("trace_id", Direction::Asc),
+                ("span_id", Direction::Asc),
+                ("service.name", Direction::Asc),
+            ]
+        );
+        let mut d = logs.clone();
+        for (source, expected) in [
+            (
+                "traces",
+                vec![
+                    ("start_time_unix_nano", Direction::Desc),
+                    ("trace_id", Direction::Asc),
+                    ("span_id", Direction::Asc),
+                ],
+            ),
+            (
+                "metrics",
+                vec![
+                    ("timestamp", Direction::Desc),
+                    ("series.id", Direction::Asc),
+                ],
+            ),
+            (
+                "exemplars",
+                vec![
+                    ("timestamp", Direction::Desc),
+                    ("series.id", Direction::Asc),
+                    ("trace.id", Direction::Asc),
+                    ("span.id", Direction::Asc),
+                ],
+            ),
+            (
+                "profiles",
+                vec![
+                    ("timestamp", Direction::Desc),
+                    ("profile.id", Direction::Asc),
+                ],
+            ),
+        ] {
+            d.from = source.to_string();
+            assert_eq!(keys(&pagination_order(&d)), expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn pagination_order_leads_with_explicit_order_keys() {
+        let d = paged(
+            "rows",
+            json!([{ "order": [{ "of": "duration", "dir": "desc" }, { "of": "span_id", "dir": "desc" }] }]),
+        );
+        assert_eq!(
+            keys(&pagination_order(&d)),
+            [
+                ("duration", Direction::Desc),
+                ("span_id", Direction::Desc),
+                ("trace_id", Direction::Asc),
+            ]
+        );
+    }
+
+    #[test]
+    fn match_and_trace_envelope_keep_native_trace_order() {
+        let native = [
+            ("trace_id", Direction::Asc),
+            ("start_time_unix_nano", Direction::Asc),
+            ("span_id", Direction::Asc),
+        ];
+        let m = paged(
+            "rows",
+            json!([{ "match": { "spansets": { "a": { "field": "service.name", "op": "eq", "value": "x" } } } }]),
+        );
+        assert_eq!(keys(&pagination_order(&m)), native);
+        assert_eq!(keys(&pagination_order(&paged("trace", json!([])))), native);
+    }
+
+    #[test]
+    fn tail_order_is_tail_time_ascending() {
+        let t = tailed("now", json!([]));
+        assert_eq!(
+            keys(&tail_order(&t)),
+            [
+                ("timestamp", Direction::Asc),
+                ("trace_id", Direction::Asc),
+                ("span_id", Direction::Asc),
+                ("service.name", Direction::Asc),
+            ]
+        );
+        let traces = paged("rows", json!([]));
+        assert_eq!(
+            keys(&tail_order(&traces)),
+            [
+                ("end_time_unix_nano", Direction::Asc),
+                ("trace_id", Direction::Asc),
+                ("span_id", Direction::Asc),
+            ]
+        );
+        assert_eq!(tail_time_field("traces"), Some("end_time_unix_nano"));
     }
 
     #[test]

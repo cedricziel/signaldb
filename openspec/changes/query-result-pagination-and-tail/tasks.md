@@ -25,12 +25,16 @@ optional follow-up and outside this change's definition of done.
       existing documents round-trip unchanged) and the validation from 1.1.
       Add `MAX_IR_VERSION` constants for 14/15 without raising
       `MAX_IR_VERSION`. 1.1 passes
-- [ ] 1.3 Write failing tests, then implement `pagination_order(doc,
+- [x] 1.3 Write failing tests, then implement `pagination_order(doc,
     source) -> Vec<SortKey>`: explicit `order` keys plus appended
       tie-breakers; the per-source default (time desc plus tie-breakers);
       `match` native order; `tail_order` (tail-time asc plus tie-breakers,
       traces → `end_time_unix_nano`). Cover the design D2/D7 tables.
       Verify with `cargo test -p query-ir pagination_order`
+      (Implemented in `query_ir::page`. The tie-breakers are logical field
+      names, since the planner resolves keys through the field resolver:
+      logs `service.name` and profiles `profile.id` stand for the
+      `service_name`/`profile_id` columns of design D2.)
 
 ## 2. Cursor codec (common)
 
