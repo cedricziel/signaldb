@@ -601,6 +601,11 @@ describe("App", () => {
           status: 401,
         },
         {
+          match: "/api/v1/whoami",
+          body: { error: "unauthenticated" },
+          status: 401,
+        },
+        {
           match: "/api/v1/query",
           body: { error: "unauthenticated" },
           status: 401,
@@ -614,6 +619,23 @@ describe("App", () => {
         ),
       );
       expect(queryCalls).toHaveLength(0);
+    });
+
+    it("keeps API-key auth out of /login when the probe is a 401 but whoami succeeds, with no tenant anywhere", async () => {
+      stubFetchRoutes([
+        { match: "query_range", body: emptyStreams },
+        { match: "/api/v1/query", body: emptyIrLogs },
+        {
+          match: SESSION,
+          method: "GET",
+          body: { error: "unauthenticated" },
+          status: 401,
+        },
+        { match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN },
+      ]);
+      renderApp("/logs");
+      await screen.findByText(/No log lines in this range/);
+      expect(window.location.pathname).toBe("/logs");
     });
 
     it("stays put when only the cookie-session probe is a 401 (API-key auth)", async () => {
