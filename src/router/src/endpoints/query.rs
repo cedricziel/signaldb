@@ -180,6 +180,15 @@ impl QueryIrResponse {
     }
 }
 
+/// The `page` member of a paged response.
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+pub struct QueryPage {
+    /// Present exactly when more of the result exists; send it back as
+    /// `page.cursor` with the same document. Opaque: never build or edit one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
 /// The resolved absolute time window, echoed for reproducibility/replay.
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]
 pub struct ResolvedWindow {
