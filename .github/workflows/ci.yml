@@ -69,6 +69,21 @@ jobs:
           # when the PR carries the `build-images` label (add it, then re-run
           # the workflow). Pushes to main always build and publish.
           if [ "${{ github.event_name }}" != "pull_request" ]; then
+            # A push to main that only touches openspec/ has nothing to
+            # build, test or publish either.
+            before="${{ github.event.before }}"
+            if [ "${{ github.event_name }}" = "push" ] && [ -n "$before" ] \
+              && ! echo "$before" | grep -qE '^0+$' \
+              && git cat-file -e "$before^{commit}" 2>/dev/null; then
+              pushed=$(git diff --name-only "$before" HEAD)
+              if [ -n "$pushed" ] && [ -z "$(echo "$pushed" | grep -vE '^openspec/' || true)" ]; then
+                echo "core=false" >> "$GITHUB_OUTPUT"
+                echo "ui=false" >> "$GITHUB_OUTPUT"
+                echo "images=false" >> "$GITHUB_OUTPUT"
+                echo "Only openspec/ files pushed; CI will be skipped."
+                exit 0
+              fi
+            fi
             echo "core=true" >> "$GITHUB_OUTPUT"
             echo "ui=true" >> "$GITHUB_OUTPUT"
             echo "images=true" >> "$GITHUB_OUTPUT"
@@ -517,7 +532,8 @@ jobs:
   test-beta:
     name: Test Suite (beta)
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: changes
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.core == 'true'
     steps:
       - uses: actions/checkout@v7
 
