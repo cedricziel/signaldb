@@ -4,13 +4,14 @@
 //! (`openspec/changes/query-result-pagination-and-tail`, design D4):
 //!
 //! ```text
-//! sdbc1.<base64url(payload)>.<base64url(sha256("sdbc1." || payload)[0..16])>
+//! sdbc1.<base64url(payload)>.<base64url(checksum("sdbc1." || payload)[0..16])>
 //! ```
 //!
-//! The payload is compact JSON. The checksum catches corruption and casual
-//! editing; it is not a signature, since every value in a cursor is one the
-//! caller could put in its own document. The fingerprint binds a cursor to
-//! the tenant, dataset and document that produced it.
+//! The payload is compact JSON. The checksum is an HMAC-SHA256 under a
+//! [`SigningKey`] when the server has one, so a client cannot re-checksum an
+//! edited cursor; otherwise plain SHA-256, which only catches corruption.
+//! The fingerprint binds a cursor to the tenant, dataset and document that
+//! produced it.
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -21,8 +22,35 @@ use sha2::{Digest, Sha256};
 const PREFIX: &str = "sdbc1";
 /// The payload format version inside a `sdbc1` token.
 const VERSION: u32 = 1;
-/// Bytes of the SHA-256 digest kept as the checksum.
+/// Bytes of the SHA-256 digest (or HMAC) kept as the checksum.
 const CHECKSUM_LEN: usize = 16;
+/// The longest token accepted; a real cursor is a few hundred bytes.
+const MAX_TOKEN_LEN: usize = 8 * 1024;
+/// How far in the future an issue time may lie, for clock skew between
+/// router replicas.
+const MAX_FUTURE_SKEW_NS: i64 = 60_000_000_000;
+/// Domain separation for [`SigningKey::derive`].
+const KEY_LABEL: &[u8] = b"signaldb-query-cursor-v1";
+
+/// A key that turns the cursor checksum into an HMAC, so a client cannot
+/// re-checksum an edited cursor. Without one the checksum only catches
+/// corruption, and the walk budget and lifetime are advisory.
+#[derive(Clone)]
+pub struct SigningKey([u8; 32]);
+
+impl SigningKey {
+    /// Derive the cursor key from a server secret every router replica
+    /// shares (`[auth].internal_service_key`).
+    pub fn derive(secret: &str) -> Self {
+        Self(hmac_sha256(KEY_LABEL, secret.as_bytes()))
+    }
+}
+
+impl std::fmt::Debug for SigningKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SigningKey(..)")
+    }
+}
 
 /// What a presented cursor must match.
 #[derive(Debug, Clone, Copy)]
@@ -33,6 +61,7 @@ pub struct Expected<'a> {
     pub now_ns: i64,
     /// Lifetime from issue.
     pub ttl_ns: i64,
+    pub key: Option<&'a SigningKey>,
 }
 
 /// Why a presented cursor cannot be used.
@@ -116,8 +145,8 @@ struct Payload {
 }
 
 impl Cursor {
-    /// The opaque token for this cursor.
-    pub fn encode(&self) -> Result<String, serde_json::Error> {
+    /// The opaque token for this cursor, checksummed with `key` when given.
+    pub fn encode(&self, key: Option<&SigningKey>) -> Result<String, serde_json::Error> {
         let payload = Payload {
             v: VERSION,
             k: self.kind,
@@ -130,7 +159,7 @@ impl Cursor {
             st: self.settled_through_ns,
         };
         let body = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload)?);
-        Ok(format!("{PREFIX}.{body}.{}", checksum(&body)))
+        Ok(format!("{PREFIX}.{body}.{}", checksum(&body, key)))
     }
 
     /// Decode `token` and check it against the request presenting it: the
@@ -138,6 +167,9 @@ impl Cursor {
     /// lifetime. A corrupt token is never reported as expired, and a cursor
     /// of another request never as expired either.
     pub fn decode(token: &str, expected: Expected<'_>) -> Result<Self, CursorError> {
+        if token.len() > MAX_TOKEN_LEN {
+            return Err(CursorError::Corrupt);
+        }
         let mut parts = token.split('.');
         let (Some(prefix), Some(body), Some(sum), None) =
             (parts.next(), parts.next(), parts.next(), parts.next())
@@ -151,8 +183,13 @@ impl Cursor {
                 CursorError::Corrupt
             });
         }
-        if checksum(body) != sum {
-            return Err(CursorError::Corrupt);
+        if !constant_time_eq(checksum(body, expected.key).as_bytes(), sum.as_bytes()) {
+            // Under a key this is also a cursor signed with a rotated key or
+            // by a replica with another one: expired, so a client restarts.
+            return Err(match expected.key {
+                Some(_) => CursorError::Expired("not signed with this server's key"),
+                None => CursorError::Corrupt,
+            });
         }
         let json = URL_SAFE_NO_PAD
             .decode(body)
@@ -165,6 +202,10 @@ impl Cursor {
             ));
         }
         let p: Payload = serde_json::from_value(raw).map_err(|_| CursorError::Corrupt)?;
+        if p.dir.len() != p.key.len() || p.iat > expected.now_ns.saturating_add(MAX_FUTURE_SKEW_NS)
+        {
+            return Err(CursorError::Corrupt);
+        }
         if p.k != expected.kind || p.fp != expected.fingerprint {
             return Err(CursorError::Mismatch);
         }
@@ -184,9 +225,38 @@ impl Cursor {
     }
 }
 
-fn checksum(body: &str) -> String {
-    let digest = Sha256::digest(format!("{PREFIX}.{body}").as_bytes());
+fn checksum(body: &str, key: Option<&SigningKey>) -> String {
+    let signed = format!("{PREFIX}.{body}");
+    let digest = match key {
+        Some(key) => hmac_sha256(&key.0, signed.as_bytes()),
+        None => Sha256::digest(signed.as_bytes()).into(),
+    };
     URL_SAFE_NO_PAD.encode(&digest[..CHECKSUM_LEN])
+}
+
+/// HMAC-SHA256 (RFC 2104) over the workspace `sha2`.
+fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+    const BLOCK: usize = 64;
+    let mut block = [0u8; BLOCK];
+    if key.len() > BLOCK {
+        block[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let pad = |byte: u8| block.map(|b| b ^ byte);
+    let inner = Sha256::new()
+        .chain_update(pad(0x36))
+        .chain_update(message)
+        .finalize();
+    Sha256::new()
+        .chain_update(pad(0x5c))
+        .chain_update(inner)
+        .finalize()
+        .into()
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// SHA-256 (hex) over the tenant, dataset and request document a cursor is
@@ -293,6 +363,7 @@ mod tests {
             fingerprint: "fp",
             now_ns: NOW,
             ttl_ns: TTL,
+            key: None,
         }
     }
 
@@ -301,7 +372,74 @@ mod tests {
     }
 
     fn encode(c: &Cursor) -> String {
-        c.encode().expect("encodes")
+        c.encode(None).expect("encodes")
+    }
+
+    #[test]
+    fn hmac_matches_rfc_4231_case_2() {
+        let mac = hmac_sha256(b"Jefe", b"what do ya want for nothing?");
+        assert_eq!(
+            hex::encode(mac),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+    }
+
+    #[test]
+    fn a_signed_cursor_rejects_an_edit_with_a_recomputed_checksum() {
+        let key = SigningKey::derive("internal-secret");
+        let signed = Expected {
+            key: Some(&key),
+            ..expect(CursorKind::Page)
+        };
+        let c = cursor(CursorKind::Page);
+        let token = c.encode(Some(&key)).expect("encodes");
+        assert_eq!(Cursor::decode(&token, signed), Ok(c.clone()));
+        // The client lowers `emitted` and recomputes the unkeyed checksum.
+        let forged = encode(&Cursor {
+            emitted: 0,
+            ..c.clone()
+        });
+        assert!(matches!(
+            Cursor::decode(&forged, signed),
+            Err(CursorError::Expired(_))
+        ));
+        // So is a cursor another replica signed with a rotated key.
+        let rotated = SigningKey::derive("old-secret");
+        let token = c.encode(Some(&rotated)).expect("encodes");
+        assert!(matches!(
+            Cursor::decode(&token, signed),
+            Err(CursorError::Expired(_))
+        ));
+    }
+
+    #[test]
+    fn a_cursor_issued_in_the_future_is_corrupt() {
+        let future = encode(&Cursor {
+            issued_at_ns: NOW + 61_000_000_000,
+            ..cursor(CursorKind::Page)
+        });
+        assert_eq!(decode(&future, CursorKind::Page), Err(CursorError::Corrupt));
+        let skewed = encode(&Cursor {
+            issued_at_ns: NOW + 30_000_000_000,
+            ..cursor(CursorKind::Page)
+        });
+        assert!(decode(&skewed, CursorKind::Page).is_ok());
+    }
+
+    #[test]
+    fn an_oversized_or_misshapen_cursor_is_corrupt() {
+        assert_eq!(
+            decode(&"a".repeat(9_000), CursorKind::Page),
+            Err(CursorError::Corrupt)
+        );
+        let short_dir = encode(&Cursor {
+            dir: "d".into(),
+            ..cursor(CursorKind::Page)
+        });
+        assert_eq!(
+            decode(&short_dir, CursorKind::Page),
+            Err(CursorError::Corrupt)
+        );
     }
 
     #[test]
@@ -370,7 +508,7 @@ mod tests {
         ));
 
         let body = URL_SAFE_NO_PAD.encode(br#"{"v":2}"#);
-        let token = format!("sdbc1.{body}.{}", checksum(&body));
+        let token = format!("sdbc1.{body}.{}", checksum(&body, None));
         assert!(matches!(
             decode(&token, CursorKind::Page),
             Err(CursorError::Expired(_))
