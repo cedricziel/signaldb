@@ -43,6 +43,12 @@ this capability.
 - **WHEN** a document carries `page` with `irVersion` below 14
 - **THEN** it is rejected as unsupported for that version
 
+#### Scenario: A querier that cannot page is reported
+
+- **WHEN** a paged document reaches a querier that does not report a page
+  position (one not yet upgraded)
+- **THEN** the request fails with 503, never with an unpaged result
+
 ### Requirement: Pagination requires a total order and never splits ties
 
 A paginated result SHALL be ordered by a total order. The leading keys SHALL
@@ -89,10 +95,14 @@ key. For the `trace` envelope, the page unit SHALL be a whole trace:
 Pagination SHALL be accepted only for single documents whose envelope is
 `rows` or `trace`, whose pipeline has no `aggregate`, `topk`, `bottomk`,
 `rank`, or `describe` stage, and whose `limit` stage, if any, is the last
-stage. A trailing `limit` SHALL cap the whole walk. For the `trace` envelope,
-the leading sort key SHALL be `trace_id`. Any other document carrying `page`
-SHALL be rejected at validation with a 400 whose details give the reason
-`not_paginatable` and name the offending stage or envelope.
+stage. A trailing `limit` SHALL cap the whole walk, even inside a tie group.
+For the `trace` envelope, the leading sort key SHALL be `trace_id`, and a
+trailing `limit` SHALL be rejected, since it counts spans while a trace page
+counts traces. Field names starting with `__sdb_` are reserved for the columns
+paging adds, and a paginated document naming one SHALL be rejected with a 400.
+Any other document carrying `page` SHALL be rejected at validation with a 400
+whose details give the reason `not_paginatable` and name the offending stage
+or envelope.
 
 #### Scenario: An aggregate cannot be paginated
 
@@ -140,6 +150,20 @@ response bodies.
 - **THEN** the request is rejected with a 400, not executed with a guessed
   position
 
+#### Scenario: An edited cursor is rejected when the server has a secret
+
+- **WHEN** the server has a shared secret (`[auth].internal_service_key`) and
+  a client edits a cursor and recomputes a plain checksum, or presents a
+  cursor signed under another key
+- **THEN** the request is rejected with a 410 `gone`, so the client restarts
+  its walk
+
+#### Scenario: An oversized or future-dated cursor is rejected
+
+- **WHEN** a cursor is larger than 8 KiB, or was issued more than 60 seconds
+  in the future
+- **THEN** the request is rejected with a 400
+
 #### Scenario: Scopes are rechecked on every page
 
 - **WHEN** the caller's read scope for the source is revoked between two
@@ -182,8 +206,12 @@ SHALL be reported as expired rather than silently skipping or repeating rows.
 
 Paging SHALL be bounded per page (rows and bytes) and per walk (total rows).
 A page that reaches the byte bound SHALL end early at a key boundary and
-still carry `next_cursor`. A walk that would exceed the total-row bound SHALL
-fail with an explicit resource-limit error. Paging SHALL NOT be an unbounded
+still carry `next_cursor`; a page whose first key group (or, for the `trace`
+envelope, first trace) alone exceeds the byte bound, or a trace with more
+spans than the server's span bound, SHALL fail with a resource-limit error. A
+page SHALL be clamped to the rows left in the walk bound, and a walk that
+would exceed the total-row bound SHALL fail with an explicit resource-limit
+error. Paging SHALL NOT be an unbounded
 export path, and every page SHALL be subject to the same rate limits as any
 query.
 

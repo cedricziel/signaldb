@@ -297,6 +297,8 @@ impl Modify for ClosedIrVariants {
         crate::endpoints::query::QueryIrRequest,
         crate::endpoints::query::QueryRange,
         crate::endpoints::query::QueryIrResponse,
+        crate::endpoints::query::QueryPage,
+        common::query_ir::Page,
         common::query_ir::Stage,
         common::discovery::MetadataResult,
         common::discovery::MetadataKind,
