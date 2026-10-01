@@ -2399,6 +2399,16 @@ to an attribute extraction — same query, same result either way.
   (`--ir` is one of the mutually-exclusive language flags on `query`, alongside
   `--sql`/`--promql`/`--logql`/`--traceql`/`--trace-id`.)
 
+  `--page-size N` adds a `page` to the document (see
+  [Pagination](#pagination-ir-v14)) and prints one page with its
+  `page.next_cursor`. `--all-pages` follows the cursor to the last page and
+  prints each row as one NDJSON object keyed by column name (each trace, for
+  the `trace` envelope):
+
+  ```bash
+  signaldb-cli query --ir --file errors.json --page-size 1000 --all-pages > errors.ndjson
+  ```
+
 - **UI:** the Explore view's **Query** tab builds an IR document structurally and
   renders the declared envelope.
 

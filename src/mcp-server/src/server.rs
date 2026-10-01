@@ -828,6 +828,40 @@ struct QueryIrParams {
     /// datasets, so there is no implicit session default; see
     /// `discover_datasets`.
     dataset: String,
+    /// Page a `rows`/`trace` result this many rows (or traces) at a time
+    /// (`irVersion` 14+). The response's `page.next_cursor` continues it.
+    #[serde(default)]
+    page_size: Option<u32>,
+    /// The previous response's `page.next_cursor`: resubmit the same
+    /// `query` with it to get the next page.
+    #[serde(default)]
+    cursor: Option<String>,
+}
+
+impl QueryIrParams {
+    /// The document with `page_size`/`cursor` merged into its `page`.
+    fn request(&self) -> Result<signaldb_sdk::types::QueryIrRequest, ErrorData> {
+        let mut request = <signaldb_sdk::types::QueryIrRequest as serde::Deserialize>::deserialize(
+            &self.query,
+        )
+        .map_err(|e| ErrorData::invalid_params(query_ir_parse_error(&self.query, e), None))?;
+        if self.page_size.is_some() || self.cursor.is_some() {
+            let page = request.page.get_or_insert_with(Default::default);
+            if let Some(size) = self.page_size {
+                let size = i32::try_from(size).ok().filter(|s| *s > 0).ok_or_else(|| {
+                    ErrorData::invalid_params(
+                        format!("page_size must be between 1 and {}", i32::MAX),
+                        None,
+                    )
+                })?;
+                page.size = Some(size);
+            }
+            if let Some(cursor) = &self.cursor {
+                page.cursor = Some(cursor.clone());
+            }
+        }
+        Ok(request)
+    }
 }
 
 /// Advertises `query` as a JSON object in the tool's schema. A bare
@@ -3266,7 +3300,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Execute a native Query IR document (the structured, versioned query surface). Provide `query` as the IR JSON object. Returns the enveloped result scoped to your tenant. Reach for this over search_traces/search_logs/query_metrics when you need a pipeline stage those dialects can't express (topk/bottomk, extract, a multi-stage aggregate with step, or — at `irVersion` 8 — a `correlate` stage joining each span to its parent so you can group by caller and callee service) or you're building from discover_sources/discover_fields/discover_field_values; see `get_skill(\"query-ir\")` (or the `skill://query-ir/SKILL.md` resource) for the full document reference."
+        description = "Execute a native Query IR document (the structured, versioned query surface). Provide `query` as the IR JSON object. Returns the enveloped result scoped to your tenant. Reach for this over search_traces/search_logs/query_metrics when you need a pipeline stage those dialects can't express (topk/bottomk, extract, a multi-stage aggregate with step, or — at `irVersion` 8 — a `correlate` stage joining each span to its parent so you can group by caller and callee service) or you're building from discover_sources/discover_fields/discover_field_values. A large `rows`/`trace` result can be paged (`irVersion` 14): pass `page_size`, then call again with the same `query` and `cursor` set to the response's `page.next_cursor` until it is absent; see `get_skill(\"query-ir\")` (or the `skill://query-ir/SKILL.md` resource) for the full document reference."
     )]
     async fn query_ir(
         &self,
@@ -3274,9 +3308,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let request =
-            <signaldb_sdk::types::QueryIrRequest as serde::Deserialize>::deserialize(&p.query)
-                .map_err(|e| ErrorData::invalid_params(query_ir_parse_error(&p.query, e), None))?;
+        let request = p.request()?;
         let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
         let resp = client
             .query_ir()
@@ -9024,6 +9056,44 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(params.query, ir_document);
+    }
+
+    #[test]
+    fn query_ir_tool_merges_page_size_and_cursor_into_the_document() {
+        let params: QueryIrParams = serde_json::from_value(serde_json::json!({
+            "query": {
+                "irVersion": 14, "from": "logs",
+                "range": { "from": "now-1h", "to": "now" },
+                "result": "rows", "pipeline": [], "page": { "size": 10 }
+            },
+            "tenant": "acme", "dataset": "production",
+            "page_size": 50, "cursor": "sdbc1.a.b"
+        }))
+        .unwrap();
+        let page = params.request().unwrap().page.expect("page");
+        assert_eq!(page.size, Some(50));
+        assert_eq!(page.cursor.as_deref(), Some("sdbc1.a.b"));
+
+        let plain: QueryIrParams = serde_json::from_value(serde_json::json!({
+            "query": { "irVersion": 1, "from": "logs",
+                       "range": { "from": "now-1h", "to": "now" },
+                       "result": "rows", "pipeline": [] },
+            "tenant": "acme", "dataset": "production"
+        }))
+        .unwrap();
+        assert!(plain.request().unwrap().page.is_none());
+
+        let zero: QueryIrParams = serde_json::from_value(serde_json::json!({
+            "query": { "irVersion": 14, "from": "logs",
+                       "range": { "from": "now-1h", "to": "now" },
+                       "result": "rows", "pipeline": [] },
+            "tenant": "acme", "dataset": "production", "page_size": 0
+        }))
+        .unwrap();
+        assert!(
+            zero.request().is_err(),
+            "an out-of-range page_size is a tool error"
+        );
     }
 
     #[test]

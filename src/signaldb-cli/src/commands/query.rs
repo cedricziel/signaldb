@@ -56,6 +56,15 @@ pub struct QueryArgs {
     /// argument/stdin.
     #[arg(long, short = 'f', requires = "ir")]
     file: Option<PathBuf>,
+    /// With `--ir`: page the `rows`/`trace` result this many rows (or
+    /// traces) at a time (irVersion 14+). Prints one page with its
+    /// `page.next_cursor` unless `--all-pages` is set.
+    #[arg(long, requires = "ir", value_name = "N")]
+    page_size: Option<u32>,
+    /// With `--ir`: follow `page.next_cursor` to the last page, printing each
+    /// row (or, for the `trace` envelope, each trace) as one NDJSON line.
+    #[arg(long, requires = "ir")]
+    all_pages: bool,
     /// Range start (unix seconds/ns or RFC3339). With `--promql`/`--logql`,
     /// presence of `--start` or `--end` switches to a range query.
     #[arg(long)]
@@ -190,8 +199,35 @@ impl QueryArgs {
 
     async fn run_ir(&self) -> anyhow::Result<()> {
         let ir_text = read_ir_document(self.query.clone(), self.file.as_deref())?;
-        let request: QueryIrRequest = serde_json::from_str(&ir_text)
+        let mut request: QueryIrRequest = serde_json::from_str(&ir_text)
             .map_err(|e| anyhow::anyhow!("invalid IR document: {e}"))?;
+        if self.page_size.is_some() || self.all_pages {
+            let page = request.page.get_or_insert_with(Default::default);
+            if let Some(size) = self.page_size {
+                page.size = Some(i32::try_from(size).context("--page-size is too large")?);
+            }
+        }
+        if self.all_pages {
+            let client = build_http_client(
+                &self.url,
+                self.api_key.as_deref(),
+                self.tenant_id.as_deref(),
+                self.dataset_id.as_deref(),
+            )?;
+            let fetch = |request: QueryIrRequest| {
+                let client = client.clone();
+                async move {
+                    client
+                        .query_ir()
+                        .body(request)
+                        .send()
+                        .await
+                        .map(|r| r.into_inner())
+                        .map_err(|e| anyhow::Error::new(e).context("IR query failed"))
+                }
+            };
+            return walk_pages(request, fetch, &mut std::io::stdout().lock()).await;
+        }
         let response = submit_ir(
             &self.url,
             self.api_key.as_deref(),
@@ -294,6 +330,38 @@ fn read_ir_document(
         anyhow::bail!("no IR document provided (pass it as an argument, --file, or on stdin)");
     }
     Ok(buf)
+}
+
+/// Walk a paged IR result to its last page, writing each row (as an object
+/// keyed by column name) or each trace group as one NDJSON line.
+async fn walk_pages<F, Fut>(
+    mut request: QueryIrRequest,
+    mut fetch: F,
+    out: &mut impl std::io::Write,
+) -> anyhow::Result<()>
+where
+    F: FnMut(QueryIrRequest) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<QueryIrResponse>>,
+{
+    loop {
+        let response = fetch(request.clone()).await?;
+        for trace in response.traces.iter().flatten() {
+            writeln!(out, "{}", serde_json::to_string(trace)?)?;
+        }
+        for row in &response.rows {
+            let object: serde_json::Map<String, serde_json::Value> = response
+                .columns
+                .iter()
+                .map(|c| c.name.clone())
+                .zip(row.iter().cloned())
+                .collect();
+            writeln!(out, "{}", serde_json::Value::Object(object))?;
+        }
+        let Some(cursor) = response.page.and_then(|p| p.next_cursor) else {
+            return Ok(());
+        };
+        request.page.get_or_insert_with(Default::default).cursor = Some(cursor);
+    }
 }
 
 /// Submit a Query IR request via the generated SDK and return the envelope.
@@ -525,6 +593,48 @@ mod tests {
         mock.assert_async().await;
     }
 
+    fn page(rows: Vec<serde_json::Value>, next: Option<&str>) -> QueryIrResponse {
+        serde_json::from_value(serde_json::json!({
+            "result": "rows",
+            "window": { "start_ns": 0, "end_ns": 1 },
+            "columns": [{ "name": "body", "type": "string" }, { "name": "n", "type": "int64" }],
+            "rows": rows,
+            "page": { "next_cursor": next },
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn all_pages_follows_the_cursor_and_prints_ndjson_rows() {
+        let request: QueryIrRequest = serde_json::from_value(serde_json::json!({
+            "irVersion": 14, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows", "pipeline": [], "page": { "size": 2 }
+        }))
+        .unwrap();
+        let mut sent = Vec::new();
+        let fetch = |request: QueryIrRequest| {
+            let cursor = request.page.as_ref().and_then(|p| p.cursor.clone());
+            sent.push(cursor.clone());
+            async move {
+                Ok(match cursor.as_deref() {
+                    None => page(
+                        vec![serde_json::json!(["a", 1]), serde_json::json!(["b", 2])],
+                        Some("c1"),
+                    ),
+                    Some("c1") => page(vec![serde_json::json!(["c", 3])], None),
+                    other => panic!("unexpected cursor {other:?}"),
+                })
+            }
+        };
+        let mut out = Vec::new();
+        walk_pages(request, fetch, &mut out).await.unwrap();
+        assert_eq!(sent, [None, Some("c1".to_string())]);
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "{\"body\":\"a\",\"n\":1}\n{\"body\":\"b\",\"n\":2}\n{\"body\":\"c\",\"n\":3}\n"
+        );
+    }
+
     fn sql_args(flight_url: &str, query: Option<&str>) -> QueryArgs {
         QueryArgs {
             query: query.map(str::to_string),
@@ -535,6 +645,8 @@ mod tests {
             ir: false,
             trace_id: None,
             file: None,
+            page_size: None,
+            all_pages: false,
             start: None,
             end: None,
             step: None,
