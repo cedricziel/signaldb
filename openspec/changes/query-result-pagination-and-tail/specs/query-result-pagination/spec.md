@@ -153,8 +153,15 @@ response bodies.
 #### Scenario: An edited cursor is rejected when the server has a secret
 
 - **WHEN** the server has a shared secret (`[auth].internal_service_key`) and
-  a client edits a cursor and recomputes a plain checksum, or presents an
-  oversized cursor or one issued in the future
+  a client edits a cursor and recomputes a plain checksum, or presents a
+  cursor signed under another key
+- **THEN** the request is rejected with a 410 `gone`, so the client restarts
+  its walk
+
+#### Scenario: An oversized or future-dated cursor is rejected
+
+- **WHEN** a cursor is larger than 8 KiB, or was issued more than 60 seconds
+  in the future
 - **THEN** the request is rejected with a 400
 
 #### Scenario: Scopes are rechecked on every page

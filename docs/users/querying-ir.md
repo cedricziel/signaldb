@@ -789,8 +789,9 @@ every later page reuses it, so `now-1h` does not drift during a walk. Each page
 re-runs the document over current data, strictly after the previous page's
 last sort key. No row is returned twice, and every row that exists for the
 whole walk is returned, whatever compaction does meanwhile. A row that arrives
-mid-walk shows up only if it sorts after the cursor; with the default
-newest-first order a late row inside the window does not. For a consistent
+mid-walk shows up only if it sorts after the cursor. With the default
+newest-first order, a late row older than the cursor can still appear on a
+later page, while one newer than the cursor is skipped. For a consistent
 export, page an absolute range that ended more than a few seconds ago. A row
 removed by retention during the walk stops appearing.
 

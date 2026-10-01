@@ -156,9 +156,9 @@ snapshot, plus hot data once `unflushed-data-visibility` lands) with
 - **No row present for the whole walk is skipped.**
 - A row **arriving during the walk** is returned only if its key sorts after
   the cursor at the time its page is read. With the default newest-first
-  order, a late row inside the window lands before the cursor and is not
-  returned. That is documented, not a warning, because it cannot be detected
-  cheaply.
+  order, a late row older than the cursor is returned on a later page, and
+  one newer than the cursor is not. That is documented, not a warning,
+  because it cannot be detected cheaply.
 - A row **removed** during the walk by retention or tenant deletion stops
   appearing. It is not an error: the walk returns what still exists.
 
