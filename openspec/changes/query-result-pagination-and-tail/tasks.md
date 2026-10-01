@@ -111,7 +111,7 @@ optional follow-up and outside this change's definition of done.
 - [x] 4.3 Regenerate the OpenAPI spec, `signaldb-sdk`, and the TS client
       (`src/ui/src/api/gen`). Verify with `pnpm --filter ./src/ui typecheck`
       and the SDK build
-- [ ] 4.4 Write a `tests-integration` test: ingest N logs, walk them with
+- [x] 4.4 Write a `tests-integration` test: ingest N logs, walk them with
       `page.size` < N through `POST /api/v1/query`, force a flush plus
       compaction mid-walk, and assert every row exactly once and the
       tenant-bound cursor rejection.
