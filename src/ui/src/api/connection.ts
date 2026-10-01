@@ -5,7 +5,10 @@
 // browser's own hostname.
 import "./client";
 
-import { connectionInfo as getConnectionInfo, type ConnectionInfoResponse } from "./gen";
+import {
+  connectionInfo as getConnectionInfo,
+  type ConnectionInfoResponse,
+} from "./gen";
 import { ApiError, retryAfterMsFrom } from "./http";
 
 interface SdkResult<T> {
@@ -37,6 +40,23 @@ function unwrap<T>(result: SdkResult<T>): T {
  * practice. */
 export async function connectionInfo(): Promise<ConnectionInfoResponse> {
   return unwrap(await getConnectionInfo());
+}
+
+/** The bare credential placeholder inside the server's `Authorization:
+ * Bearer <placeholder>` header, for configs that take the key on its own. */
+export function bearerCredential(authorization: string): string {
+  return authorization.replace(/^Bearer\s+/, "");
+}
+
+/** Query options for `connectionInfo`, shared so every screen that shows
+ * connection details reads one cache entry per tenant/dataset. */
+export function connectionQuery(state: { tenant: string; dataset: string }) {
+  return {
+    queryKey: ["connection", state.tenant, state.dataset],
+    queryFn: connectionInfo,
+    staleTime: 5 * 60_000,
+    retry: false,
+  } as const;
 }
 
 export type {
