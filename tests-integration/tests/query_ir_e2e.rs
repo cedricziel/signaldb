@@ -60,6 +60,8 @@ pub(crate) struct TestServices {
     /// `for_request` lookup the ingest handlers make (task 3.3).
     processor_registry: Arc<common::processors::ProcessorRegistry>,
     pub(crate) catalog: Arc<Catalog>,
+    /// The Iceberg catalog the writer commits to, for driving compaction.
+    pub(crate) catalog_manager: Arc<common::catalog_manager::CatalogManager>,
     config: Configuration,
     _temp_dir: TempDir,
 }
@@ -247,7 +249,7 @@ pub(crate) async fn setup_with(config_override: impl FnOnce(&mut Configuration))
     // Querier Flight service.
     let querier_service = QuerierFlightService::new_with_catalog_manager(
         flight_transport.clone(),
-        catalog_manager,
+        catalog_manager.clone(),
         config.querier.clone(),
     )
     .await
@@ -324,6 +326,7 @@ pub(crate) async fn setup_with(config_override: impl FnOnce(&mut Configuration))
         metrics_handler,
         processor_registry,
         catalog: processor_catalog,
+        catalog_manager,
         config,
         _temp_dir: temp_dir,
     }
@@ -500,7 +503,7 @@ pub(crate) async fn post_ir(
     post_ir_as(app, doc, "test-key-123", "test-tenant", None).await
 }
 
-async fn post_ir_as(
+pub(crate) async fn post_ir_as(
     app: &Router,
     doc: serde_json::Value,
     key: &str,
