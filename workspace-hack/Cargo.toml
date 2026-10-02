@@ -20,7 +20,7 @@ publish = false
 #     cargo hakari generate && cargo machete --with-metadata workspace-hack
 [package.metadata.cargo-machete]
 ignored = [
-    "arrayvec", "arrow", "arrow-array", "arrow-schema", "async-compression",
+    "arrayvec", "arrow-cast", "arrow-ipc", "async-compression",
     "aws-lc-rs", "axum", "axum-core", "bigdecimal", "bitflags", "blake2", "chrono", "clap",
     "clap_builder", "compression-codecs", "crc32fast", "datafusion",
     "datafusion-common", "datafusion-datasource", "datafusion-datasource-arrow",
