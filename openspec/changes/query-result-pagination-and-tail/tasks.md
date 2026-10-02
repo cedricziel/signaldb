@@ -185,20 +185,23 @@ optional follow-up and outside this change's definition of done.
 
 ## 8. Live tail surfaces: UI live mode, CLI follow, MCP
 
-- [ ] 8.1 Write failing UI tests, then switch the logs and traces views'
+- [x] 8.1 Write failing UI tests, then switch the logs and traces views'
       live mode from `refetchInterval` window re-runs to tail polls through
       the generated client: append new rows, keep the cursor in component
       state, poll immediately while `caught_up` is false, and show
       `tail_lagged` with the existing warning UI. Signals that cannot be
       tailed keep `liveRefetchInterval`. Verify with
       `pnpm --filter ./src/ui test && pnpm --filter ./src/ui typecheck`
+      (The traces views' live tables are aggregates — trace groups and
+      ordered member lists — so they keep `liveRefetchInterval`; only the
+      log list tails.)
 - [x] 8.2 Write a failing CLI test, then implement `signaldb query ir
     --follow [--settle 5s]`, polling with the tail cursor and printing
       NDJSON. Verify with `cargo test -p signaldb-cli query`
 - [x] 8.3 Extend the MCP `query_ir` tool with `tail` input/output; one call
       per tool invocation, with no server-side loop. Verify with
       `cargo test -p mcp-server query_ir`
-- [ ] 8.4 Docs: the CLI `--follow` reference, and the UI live-mode behaviour
+- [x] 8.4 Docs: the CLI `--follow` reference, and the UI live-mode behaviour
       in the Explore docs. Update the `frontend-instrumentation` skill only if
       polling spans change name. Verify that the docs build passes
 

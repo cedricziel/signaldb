@@ -58,7 +58,7 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
 - **Logs** — filter chips compiled to a Query IR `where` predicate tree, a
   per-severity volume histogram (an IR `aggregate` on `severity_text` with
   `step`), a virtualized log list with per-attribute filter/exclude actions,
-  a fields sidebar, and live tail (the same IR queries, polled). There is no
+  a fields sidebar, and live tail. There is no
   raw-query editor for logs — the [Query IR tab](querying-ir.md) is the text
   escape hatch. The add-filter key box suggests schema-registry keys; picking
   a registry key filters on that key as spelled, dots included, and a
@@ -199,7 +199,15 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   group's trace list, and the facet sidebar's value counts), Metrics, and
   single-window Profiles. It is disabled,
   with a tooltip saying why, on Catalog, Errors, and Query, and whenever the
-  time range is absolute — a fixed window has nothing to tail.
+  time range is absolute — a fixed window has nothing to tail. The log list
+  follows a [Query IR live tail](querying-ir.md#live-tail-ir-v15): it shows
+  the newest lines, then every 2s asks only for what arrived since (at once
+  while a backlog drains), prepending them; a line arriving later than the
+  tail's settle delay is not added, and a `tail_lagged` note (kept on screen)
+  says when a backgrounded tab skipped ahead. A failed poll backs off, and an
+  expired cursor restarts the tail. Everything else Live refreshes (charts,
+  group tables, profiles) is an aggregate, so it re-runs its window every
+  15s.
 - **Refresh** — the button beside the time picker re-runs the current view's
   queries on demand, and a relative range moves its "now" forward. The icon
   spins while any of them is loading (including Live polls, so it turns almost

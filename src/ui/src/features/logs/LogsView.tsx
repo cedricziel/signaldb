@@ -1,12 +1,18 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { fields as describeFields } from "../../api/ir/discovery";
-import { runLogRows, runLogVolume } from "../../api/ir/logs";
+import {
+  buildLogTailDoc,
+  runLogRows,
+  runLogVolume,
+  toLogRows,
+} from "../../api/ir/logs";
 import {
   MobileFiltersToggle,
   MobileSidebarDrawer,
 } from "../../components/MobileSidebarDrawer";
 import { QueryError } from "../../components/QueryError";
+import { useIrTail } from "../../hooks/useIrTail";
 import { useMobileSidebar } from "../../hooks/useMobileSidebar";
 import { upsertFilter, type LabelFilter } from "../../lib/filters";
 import { liveRefetchInterval } from "../../lib/live";
@@ -54,12 +60,33 @@ export function LogsView({ state, update }: Props) {
   // glance to show up.
   const refetchInterval = liveRefetchInterval(state.live, 2_000);
 
+  // Live mode over a relative range tails the IR endpoint: each poll reads
+  // only what arrived since the last one, instead of re-running the window.
+  const tailSeconds =
+    state.live && state.range.type === "relative" ? state.range.seconds : null;
+  const tailDoc = useMemo(
+    () =>
+      tailSeconds === null
+        ? null
+        : buildLogTailDoc(
+            state.filters,
+            state.search,
+            tailSeconds,
+            state.limit,
+          ),
+    [tailSeconds, state.filters, state.search, state.limit],
+  );
+  const tail = useIrTail(tailDoc, toLogRows, state.limit);
+  const tailing = tailDoc !== null;
+
   const logs = useQuery({
     queryKey: ["ir-logs", state.filters, state.search, rangeKey, state.limit],
     queryFn: () =>
       runLogRows(state.filters, state.search, range(), state.limit),
-    refetchInterval,
+    enabled: !tailing,
   });
+  const rows = tailing ? (tail.started ? tail.rows : undefined) : logs.data;
+  const rowsError = tailing ? tail.error : logs.isError ? logs.error : null;
 
   const resolvedForStep = resolveRange(state.range, Date.now());
   const step = resolveStep(resolvedForStep, state.step);
@@ -141,8 +168,8 @@ export function LogsView({ state, update }: Props) {
               in one box made a flat chart read as "truncated by the limit". */}
           <div className="logs-rowcount">
             <span className="logs-rowcount-n">
-              {logs.data ? `${logs.data.length} rows` : "…"}
-              {logs.data && logs.data.length === state.limit
+              {rows ? `${rows.length} rows` : "…"}
+              {rows && rows.length === state.limit
                 ? ` (at the ${state.limit}-row limit)`
                 : ""}
             </span>
@@ -162,13 +189,19 @@ export function LogsView({ state, update }: Props) {
               />
             </div>
           )}
-          {logs.isError && <QueryError what="logs" error={logs.error} />}
-          {logs.isPending && !logs.isError && (
+          {tailing &&
+            tail.warnings.map((w) => (
+              <div key={w.code} className="view-note" role="status">
+                {w.message}
+              </div>
+            ))}
+          {rowsError != null && <QueryError what="logs" error={rowsError} />}
+          {!rows && rowsError == null && (
             <div className="loglist-empty">Loading…</div>
           )}
-          {logs.data && (
+          {rows && (
             <LogList
-              rows={logs.data}
+              rows={rows}
               onAddFilter={addFilter}
               onOpenTrace={openTrace}
               update={update}

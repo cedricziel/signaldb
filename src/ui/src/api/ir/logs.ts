@@ -43,6 +43,17 @@ function filterWhere(f: LabelFilter): IrPredicate {
   }
 }
 
+/** The filter chips and the body search as `where` stages. */
+function wherePipeline(filters: LabelFilter[], search: string) {
+  const where = filters.map((f) => ({ where: filterWhere(f) }));
+  if (search.trim() !== "") {
+    where.push({
+      where: { field: "body", op: "contains", value: search.trim() },
+    });
+  }
+  return where;
+}
+
 function irRange(range: ResolvedRange) {
   return {
     from: String(msToNanos(range.fromMs)),
@@ -71,12 +82,7 @@ export function buildLogRowsDoc(
   range: ResolvedRange,
   limit: number,
 ): QueryIrRequest {
-  const where = filters.map((f) => ({ where: filterWhere(f) }));
-  if (search.trim() !== "") {
-    where.push({
-      where: { field: "body", op: "contains", value: search.trim() },
-    });
-  }
+  const where = wherePipeline(filters, search);
   return {
     irVersion: 1,
     from: "logs",
@@ -91,18 +97,35 @@ export function buildLogRowsDoc(
   };
 }
 
+/** The live-tail form of {@link buildLogRowsDoc} (irVersion 15): the last
+ * `seconds` up to `now`, no `order`/`limit` (a tail's order and per-call size
+ * are fixed), `size` rows per call. */
+export function buildLogTailDoc(
+  filters: LabelFilter[],
+  search: string,
+  seconds: number,
+  size: number,
+): QueryIrRequest {
+  const where = wherePipeline(filters, search);
+  return {
+    irVersion: 15,
+    from: "logs",
+    range: { from: `now-${seconds}s`, to: "now" },
+    result: "rows",
+    fields: [...ROW_FIELDS],
+    pipeline: where,
+    page: { size },
+    tail: {},
+  };
+}
+
 export function buildLogVolumeDoc(
   filters: LabelFilter[],
   search: string,
   range: ResolvedRange,
   step: string,
 ): QueryIrRequest {
-  const where = filters.map((f) => ({ where: filterWhere(f) }));
-  if (search.trim() !== "") {
-    where.push({
-      where: { field: "body", op: "contains", value: search.trim() },
-    });
-  }
+  const where = wherePipeline(filters, search);
   return {
     irVersion: 1,
     from: "logs",
@@ -165,6 +188,11 @@ function toLogRow(row: Row): LogRow {
   };
 }
 
+/** A rows response's log rows, in response order. */
+export function toLogRows(res: QueryIrResponse): LogRow[] {
+  return namedRows(res).map(toLogRow);
+}
+
 export async function runLogRows(
   filters: LabelFilter[],
   search: string,
@@ -172,7 +200,7 @@ export async function runLogRows(
   limit: number,
 ): Promise<LogRow[]> {
   const res = await runIrQuery(buildLogRowsDoc(filters, search, range, limit));
-  return namedRows(res).map(toLogRow);
+  return toLogRows(res);
 }
 
 function toHistogramSeries(
