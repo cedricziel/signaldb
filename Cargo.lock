@@ -4765,6 +4765,7 @@ checksum = "93e7820bc0a80a0238e650327316f929ba18d5be054b647490a3a6a339f3e7c0"
 dependencies = [
  "num-integer",
  "num-traits",
+ "serde",
 ]
 
 [[package]]
@@ -9806,7 +9807,7 @@ dependencies = [
  "memchr",
  "miniz_oxide 0.8.9",
  "mio",
- "num-bigint 0.4.8",
+ "num-bigint 0.5.1",
  "num-iter",
  "num-traits",
  "object 0.37.3",
