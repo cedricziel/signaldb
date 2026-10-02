@@ -9865,6 +9865,8 @@ dependencies = [
  "url",
  "uuid",
  "winapi",
+ "windows-sys 0.48.0",
+ "windows-sys 0.52.0",
  "windows-sys 0.61.2",
  "zerocopy",
  "zeroize",
