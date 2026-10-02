@@ -1,5 +1,5 @@
 //! Pagination over `POST /api/v1/query`
-//! (`openspec/changes/query-result-pagination-and-tail`, design D3/D4/D8).
+//! (`openspec/changes/archive/2026-10-02-query-result-pagination-and-tail`, design D3/D4/D8).
 //!
 //! A paged document's first page resolves `range` to an absolute window; the
 //! cursor carries that window, the last row's sort key and the rows walked so
