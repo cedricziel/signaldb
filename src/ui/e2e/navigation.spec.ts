@@ -122,6 +122,45 @@ test("the sidebar gives way to a top bar and drawer on a phone", async ({
   ).toHaveCount(0);
 });
 
+test("phone overlays open below the top bar under the demo banner", async ({
+  page,
+}) => {
+  await page.route("**/ui/session", (route) =>
+    json(route, {
+      user: {
+        id: "demo",
+        email: "demo@example.com",
+        display_name: null,
+        is_demo: true,
+        is_instance_admin: false,
+      },
+      memberships: [{ tenant_id: "acme", role: "member", name: "Acme Corp" }],
+      tenant: "acme",
+      dataset: "production",
+    }),
+  );
+  await page.route("**/api/v1/whoami", (route) => json(route, ADMIN_WHOAMI));
+  await page.setViewportSize({ width: 390, height: 800 });
+  await page.goto("/logs");
+  await expect(page.getByText("Demo · read-only")).toBeVisible();
+  await page.getByRole("button", { name: "Open navigation" }).click();
+
+  const bar = await page.locator(".app-mobilebar").boundingBox();
+  const drawer = await page
+    .getByRole("navigation", { name: "Main navigation" })
+    .boundingBox();
+  const backdrop = await page.locator(".app-drawer-backdrop").boundingBox();
+  const barBottom = bar!.y + bar!.height;
+  expect(drawer!.y).toBeCloseTo(barBottom, 0);
+  expect(backdrop!.y).toBeCloseTo(barBottom, 0);
+  expect(drawer!.y + drawer!.height).toBeCloseTo(800, 0);
+
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Account" }).click();
+  const menu = await page.getByRole("menu").boundingBox();
+  expect(menu!.y).toBeGreaterThan(barBottom);
+});
+
 test("an unknown path redirects home to /overview, preserving the query string", async ({
   page,
 }) => {

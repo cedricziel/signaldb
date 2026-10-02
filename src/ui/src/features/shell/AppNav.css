@@ -44,6 +44,7 @@
 
 @media (max-width: 719px) {
   .app-body {
+    position: relative;
     flex-direction: column;
   }
 }
@@ -326,9 +327,15 @@
   --app-sidebar-width: 58px;
 }
 
+/* Anchored to .app-mobilebar so it drops below the bar wherever the bar
+   sits (the demo banner pushes it down). */
+.user-menu--compact {
+  position: static;
+}
+
 .user-menu--compact .user-menu-popover {
-  position: fixed;
-  top: 56px;
+  position: absolute;
+  top: calc(100% + 8px);
   right: 12px;
 }
 
@@ -648,15 +655,17 @@
   flex: 1;
 }
 
+/* Anchored to .app-body, not the viewport, so they start under the top
+   bar even when the demo banner sits above it. */
 .app-drawer-backdrop {
-  position: fixed;
+  position: absolute;
   inset: 48px 0 0 0;
   z-index: 40;
   background: color-mix(in oklab, var(--text) 22%, transparent);
 }
 
 .app-drawer {
-  position: fixed;
+  position: absolute;
   top: 48px;
   left: 0;
   bottom: 0;
