@@ -369,7 +369,6 @@ dependencies = [
  "arrow-data 60.0.0",
  "arrow-schema 60.0.0",
  "chrono",
- "chrono-tz",
  "half",
  "hashbrown 0.17.1",
  "num-complex",
@@ -683,10 +682,6 @@ name = "arrow-schema"
 version = "60.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f85a9a58cd03560526b0066487574aacb9008e413504fa0ee23d61141e96c338"
-dependencies = [
- "serde_core",
- "serde_json",
-]
 
 [[package]]
 name = "arrow-select"
@@ -10007,9 +10002,8 @@ name = "workspace-hack"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
- "arrow 60.0.0",
- "arrow-array 60.0.0",
- "arrow-schema 60.0.0",
+ "arrow-cast 60.0.0",
+ "arrow-ipc 60.0.0",
  "async-compression",
  "aws-lc-rs",
  "axum",
