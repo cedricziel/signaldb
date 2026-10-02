@@ -1,7 +1,7 @@
 //! # Query IR pagination and tail cursors
 //!
 //! A cursor names a position in the total order a `page` or `tail` walks
-//! (`openspec/changes/query-result-pagination-and-tail`, design D4):
+//! (`openspec/changes/archive/2026-10-02-query-result-pagination-and-tail`, design D4):
 //!
 //! ```text
 //! sdbc1.<base64url(payload)>.<base64url(checksum("sdbc1." || payload)[0..16])>

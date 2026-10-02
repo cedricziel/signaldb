@@ -1,5 +1,5 @@
 //! The page cut of a paged Query IR result
-//! (`openspec/changes/query-result-pagination-and-tail`, design D2/D8).
+//! (`openspec/changes/archive/2026-10-02-query-result-pagination-and-tail`, design D2/D8).
 //!
 //! The planner sorts the result by the page's total order, with each sort key
 //! carried as an extra column ([`key_column`]), and bounds the sort with a

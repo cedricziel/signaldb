@@ -343,6 +343,14 @@ all physical columns implicitly. A `fields` entry absent from the terminal
 relation, or a `fields` list on a `series`, `heatmap`, `flamegraph`, or
 `metadata` result, SHALL be rejected.
 
+The `rows` and `trace` envelopes SHALL additionally carry an optional `page`
+member when the document requested pagination (IR v14, see
+`query-result-pagination`), and an optional `tail` member when the document
+requested a live tail (IR v15, see `query-live-tail`). Each member SHALL be
+present only when requested, so a response to a document without `page` or
+`tail` is unchanged. A document-level `page` or `tail` on any other envelope
+SHALL be rejected at validation.
+
 #### Scenario: Envelope mismatch is rejected
 
 - **WHEN** a query declares the `series` envelope but its terminal stage produces
@@ -377,6 +385,19 @@ relation, or a `fields` list on a `series`, `heatmap`, `flamegraph`, or
 - **WHEN** a document declares the `metadata` envelope without a terminal
   `describe` stage, or terminates in `describe` while declaring another envelope
 - **THEN** the document is rejected at validation as an envelope mismatch
+
+#### Scenario: Paging members appear only when requested
+
+- **WHEN** the same `rows` document is submitted once without `page` and once
+  with `page`
+- **THEN** the first response has no `page` member and is otherwise identical
+  to the response before this capability existed, and the second carries a
+  `page` member
+
+#### Scenario: Paging on another envelope is rejected
+
+- **WHEN** a `series` or `metadata` document carries `page` or `tail`
+- **THEN** it is rejected at validation, naming the envelope
 
 ### Requirement: Bounded two-dimensional heatmap aggregate
 

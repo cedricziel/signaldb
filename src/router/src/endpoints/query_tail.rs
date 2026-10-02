@@ -1,5 +1,5 @@
 //! Live tail over `POST /api/v1/query`
-//! (`openspec/changes/query-result-pagination-and-tail`, design D6/D7).
+//! (`openspec/changes/archive/2026-10-02-query-result-pagination-and-tail`, design D6/D7).
 //!
 //! A tail is a sequence of ordinary calls, each carrying the previous call's
 //! `tail.cursor`. A call at server time `T` reads rows whose tail-time (the

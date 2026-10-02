@@ -176,7 +176,7 @@ optional follow-up and outside this change's definition of done.
       the long span is delivered by end time, and a row ingested with a
       tail-time behind the cursor is not delivered (documented
       at-most-once). Verify with
-      `cargo test --profile ci-test -p tests-integration live_tail`
+      `cargo test --profile ci-test -p tests-integration query_ir_tail_e2e`
 - [x] 7.5 Docs: a "Live tail" section in `docs/users/querying-ir.md`
       (protocol, tail-time per source, settle and its floor before/after
       unflushed-data-visibility, late data, lag, what cannot be tailed). In
