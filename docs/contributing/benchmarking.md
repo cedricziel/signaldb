@@ -9,6 +9,7 @@ sources:
   - scripts/run-benches.sh
   - scripts/render-bench-summary.py
   - .github/workflows/benchmarks.yml
+  - .github/workflows/ci.yml
 ---
 
 # Benchmarking
@@ -43,9 +44,19 @@ No nightly results have been published yet.
 ## What is benchmarked
 
 All benches live behind a per-crate `benchmarks` feature (`harness = false`
-Criterion targets) so they never enter a normal build. CI's clippy step on core PRs
-(`--all-targets --all-features`) compiles them, so a bench that stops
-building fails CI.
+Criterion targets) so they never enter a normal build. Two CI guards cover
+them on every core PR:
+
+- **Compile.** CI's clippy step (`--all-targets --all-features`) builds them,
+  so a bench that stops compiling fails `Check & Lint`.
+- **Run once.** The `Bench smoke (Criterion --test)` job in `ci.yml` runs
+  every bench body once in Criterion's test mode (no measurement), so a bench
+  that panics fails the PR instead of the nightly. It is not a required
+  check. Reproduce it locally with:
+
+```bash
+cargo test --profile ci-test --workspace --all-features --bench '*' --no-fail-fast
+```
 
 | Crate               | Bench target                  | Measures                                                                                                                                          |
 | ------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |

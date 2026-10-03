@@ -412,6 +412,14 @@ re-read every footer on every query. The cache is sized by
 data files are immutable — DataFusion still revalidates each hit against the
 current object metadata.
 
+**Table resolution caching.** Before planning, each referenced table is
+loaded from the Iceberg catalog: a catalog query plus a metadata-JSON read
+from object store. The querier bypasses `datafusion_iceberg`'s `Mirror` cache
+so newly created tables are visible at once, and instead reuses a resolved
+table for `[querier].table_cache_ttl` (default `1s`, `0s` disables it), shared
+by every tenant catalog. A missing table is never cached, so a new table shows
+up on the next query; a newly committed snapshot shows up within the TTL.
+
 ### 5.2 Schema Design ✅ **Implemented**
 
 Flight schemas are defined in `src/common/src/flight/schema.rs` with conversions for:
