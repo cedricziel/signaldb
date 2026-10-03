@@ -916,7 +916,11 @@ fn histogram_values_and_refusals() {
         ("histogram_quantile(0.9, x offset 5m)", "offset"),
         ("histogram_fraction(0, 1, irate(x[5m]))", "irate()"),
         ("histogram_count(sum(x))", "sum()"),
-        ("histogram_stddev(x)", "histogram_stddev"),
+        ("histogram_stddev(irate(x[5m]))", "irate()"),
+        (
+            "histogram_stdvar(sum without (pod) (rate(x[5m])))",
+            "sum without",
+        ),
         ("histogram_quantile(1.5, rate(x[5m]))", "outside [0, 1]"),
         ("histogram_quantile(-0.1, rate(x[5m]))", "outside [0, 1]"),
         ("histogram_fraction(2, 1, rate(x[5m]))", "lower above upper"),
@@ -952,4 +956,30 @@ fn histogram_output_labels() {
         (vec!["service.name".to_string()], false)
     );
     assert_eq!(labels("histogram_fraction(0, 1, x)"), (vec![], true));
+}
+/// `histogram_stddev` and `histogram_stdvar` lower to their own stages, which
+/// raise the document to `irVersion` 16; documents without them stay at 10.
+#[test]
+fn histogram_stddev_and_stdvar_lower_to_moment_stages() {
+    cases(&[
+        (
+            "histogram_stddev(x)",
+            json!([name("x"), { "histogram_stddev": {
+                "by": [], "per_series": true, "step": "1m", "mode": "instant",
+                "lookback": "5m", "as": "moment" } }]),
+        ),
+        (
+            "histogram_stdvar(sum by (le, job) (rate(x[5m])))",
+            json!([name("x"), { "histogram_stdvar": {
+                "by": ["service.name"], "step": "1m", "mode": "rate",
+                "window": "5m", "as": "moment" } }]),
+        ),
+    ]);
+    assert_eq!(lower("histogram_stddev(x)")["irVersion"], json!(16));
+    assert_eq!(lower("histogram_quantile(0.5, x)")["irVersion"], json!(10));
+    assert_eq!(labels("histogram_stdvar(x)"), (vec![], true));
+    assert_eq!(
+        labels("histogram_stddev(sum by (le, job) (rate(x[5m])))"),
+        (vec!["service.name".to_string()], false)
+    );
 }

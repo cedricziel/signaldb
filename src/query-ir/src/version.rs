@@ -20,7 +20,7 @@ use super::stage::{AggFn, Parser};
 /// The lowest IR document version this server understands.
 pub const MIN_IR_VERSION: i64 = 1;
 /// The highest IR document version this server understands.
-pub const MAX_IR_VERSION: i64 = 15;
+pub const MAX_IR_VERSION: i64 = 16;
 
 /// Whether `version` is within the supported range.
 pub fn is_supported(version: i64) -> bool {
@@ -96,6 +96,8 @@ pub enum Feature {
     Page,
     /// The document-level `tail`.
     Tail,
+    /// The `histogram_avg`, `histogram_stddev` and `histogram_stdvar` stages.
+    HistogramMoments,
 }
 
 /// Comparison operators, keyed by the `irVersion` that introduced them.
@@ -173,6 +175,7 @@ const FEATURES: &[(Feature, i64)] = &[
     (Feature::FlamegraphBaseline, 13),
     (Feature::Page, 14),
     (Feature::Tail, 15),
+    (Feature::HistogramMoments, 16),
 ];
 
 fn min_version<T: PartialEq + Copy>(table: &[(T, i64)], member: T) -> Option<i64> {
@@ -250,7 +253,8 @@ mod tests {
         assert!(is_supported(13));
         assert!(is_supported(14));
         assert!(is_supported(15));
-        assert!(!is_supported(16));
+        assert!(is_supported(16));
+        assert!(!is_supported(17));
     }
 
     #[test]
@@ -410,6 +414,7 @@ mod tests {
             Feature::FlamegraphBaseline,
             Feature::Page,
             Feature::Tail,
+            Feature::HistogramMoments,
         ];
         for feature in all {
             assert!(

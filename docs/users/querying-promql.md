@@ -100,7 +100,11 @@ bounds, and malformed rows are skipped.
 
 `histogram_count` and `histogram_sum` read the stored count and sum, which
 histograms, exponential histograms and summaries all carry, so they sum rows
-of all three types.
+of all three types. `histogram_avg` divides the two. `histogram_stddev` and
+`histogram_stdvar` take the same operands as `histogram_quantile` but read
+exponential histograms only: the estimate uses each bucket's geometric
+midpoint (see [the IR stage](querying-ir.md#histogram_avg-histogram_stddev-and-histogram_stdvar-ir-v16)),
+and explicit-bucket histograms produce no sample.
 
 ## Instant query (vector)
 

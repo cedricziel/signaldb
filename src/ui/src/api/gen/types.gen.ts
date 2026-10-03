@@ -1628,6 +1628,31 @@ export type IrHistogramFraction = {
 export type IrHistogramMode = 'rate' | 'instant';
 
 /**
+ * The operands of `histogram_avg`, `histogram_stddev` and `histogram_stdvar`
+ * (`irVersion` 16), which share `histogram_fraction`'s grouping, evaluation
+ * and window operands. Each reduces the merged histogram of a group to one
+ * number: `sum / count`, or the population standard deviation / variance
+ * estimated from bucket representatives (see `docs/users/querying-ir.md`).
+ * The deviation and variance exist only for exponential histograms; a group
+ * of explicit-bucket histograms yields no value.
+ */
+export type IrHistogramMoment = {
+    as: string;
+    by?: Array<string>;
+    /**
+     * As on `histogram_quantile`.
+     */
+    lookback?: string | null;
+    mode?: IrHistogramMode;
+    /**
+     * One result per stored series instead of merging them. Excludes `by`.
+     */
+    per_series?: boolean;
+    step: string;
+    window?: string | null;
+};
+
+/**
  * A terminal quantile-over-buckets stage, available in IR v3. Only legal on
  * the `metrics` source, over its histogram rows: interpolates a percentile
  * from OTLP classic-histogram bucket data, distinct from the `aggregate` stage's
@@ -1963,6 +1988,12 @@ export type IrStage = {
     histogram_fraction: IrHistogramFraction;
 } | {
     match: IrMatch;
+} | {
+    histogram_avg: IrHistogramMoment;
+} | {
+    histogram_stddev: IrHistogramMoment;
+} | {
+    histogram_stdvar: IrHistogramMoment;
 };
 
 /**

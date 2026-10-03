@@ -2827,6 +2827,37 @@ pub mod types {
             value.parse()
         }
     }
+    /**The operands of `histogram_avg`, `histogram_stddev` and `histogram_stdvar`
+    (`irVersion` 16), which share `histogram_fraction`'s grouping, evaluation
+    and window operands. Each reduces the merged histogram of a group to one
+    number: `sum / count`, or the population standard deviation / variance
+    estimated from bucket representatives (see `docs/users/querying-ir.md`).
+    The deviation and variance exist only for exponential histograms; a group
+    of explicit-bucket histograms yields no value.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrHistogramMoment {
+        #[serde(rename = "as")]
+        pub as_: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub by: ::std::vec::Vec<::std::string::String>,
+        ///As on `histogram_quantile`.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub lookback: ::std::option::Option<::std::string::String>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub mode: ::std::option::Option<IrHistogramMode>,
+        ///One result per stored series instead of merging them. Excludes `by`.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub per_series: ::std::option::Option<bool>,
+        pub step: ::std::string::String,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub window: ::std::option::Option<::std::string::String>,
+    }
+    impl IrHistogramMoment {
+        pub fn builder() -> builder::IrHistogramMoment {
+            Default::default()
+        }
+    }
     /**A terminal quantile-over-buckets stage, available in IR v3. Only legal on
     the `metrics` source, over its histogram rows: interpolates a percentile
     from OTLP classic-histogram bucket data, distinct from the `aggregate` stage's
@@ -3814,6 +3845,12 @@ pub mod types {
         HistogramFraction(IrHistogramFraction),
         #[serde(rename = "match")]
         Match(crate::ir::IrMatch),
+        #[serde(rename = "histogram_avg")]
+        HistogramAvg(IrHistogramMoment),
+        #[serde(rename = "histogram_stddev")]
+        HistogramStddev(IrHistogramMoment),
+        #[serde(rename = "histogram_stdvar")]
+        HistogramStdvar(IrHistogramMoment),
     }
     impl ::std::convert::From<IrPredicate> for IrStage {
         fn from(value: IrPredicate) -> Self {
@@ -14878,6 +14915,142 @@ pub mod types {
                     per_series: Ok(value.per_series),
                     step: Ok(value.step),
                     upper: Ok(value.upper),
+                    window: Ok(value.window),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrHistogramMoment {
+            as_: ::std::result::Result<::std::string::String, ::std::string::String>,
+            by: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            lookback: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            mode: ::std::result::Result<
+                ::std::option::Option<super::IrHistogramMode>,
+                ::std::string::String,
+            >,
+            per_series: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+            step: ::std::result::Result<::std::string::String, ::std::string::String>,
+            window: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for IrHistogramMoment {
+            fn default() -> Self {
+                Self {
+                    as_: Err("no value supplied for as_".to_string()),
+                    by: Ok(Default::default()),
+                    lookback: Ok(Default::default()),
+                    mode: Ok(Default::default()),
+                    per_series: Ok(Default::default()),
+                    step: Err("no value supplied for step".to_string()),
+                    window: Ok(Default::default()),
+                }
+            }
+        }
+        impl IrHistogramMoment {
+            pub fn as_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.as_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for as_: {e}"));
+                self
+            }
+            pub fn by<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.by = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for by: {e}"));
+                self
+            }
+            pub fn lookback<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.lookback = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for lookback: {e}"));
+                self
+            }
+            pub fn mode<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::IrHistogramMode>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.mode = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for mode: {e}"));
+                self
+            }
+            pub fn per_series<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<bool>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.per_series = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for per_series: {e}"));
+                self
+            }
+            pub fn step<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.step = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for step: {e}"));
+                self
+            }
+            pub fn window<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.window = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for window: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrHistogramMoment> for super::IrHistogramMoment {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrHistogramMoment,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    as_: value.as_?,
+                    by: value.by?,
+                    lookback: value.lookback?,
+                    mode: value.mode?,
+                    per_series: value.per_series?,
+                    step: value.step?,
+                    window: value.window?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrHistogramMoment> for IrHistogramMoment {
+            fn from(value: super::IrHistogramMoment) -> Self {
+                Self {
+                    as_: Ok(value.as_),
+                    by: Ok(value.by),
+                    lookback: Ok(value.lookback),
+                    mode: Ok(value.mode),
+                    per_series: Ok(value.per_series),
+                    step: Ok(value.step),
                     window: Ok(value.window),
                 }
             }

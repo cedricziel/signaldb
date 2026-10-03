@@ -57,6 +57,20 @@ pub(crate) fn histogram_points(kind: &str, rows: &[(&str, i64, &[i64])]) -> Reco
     batch(columns)
 }
 
+/// `batch` with a Float64 `sum` column, one value per row.
+pub(crate) fn with_sum(batch: RecordBatch, sums: &[f64]) -> RecordBatch {
+    let mut fields: Vec<Field> = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.as_ref().clone())
+        .collect();
+    fields.push(Field::new("sum", DataType::Float64, true));
+    let mut columns = batch.columns().to_vec();
+    columns.push(Arc::new(Float64Array::from(sums.to_vec())));
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+}
+
 /// A batch of nullable columns named as given.
 fn batch(columns: Vec<(&str, ArrayRef)>) -> RecordBatch {
     let fields: Vec<Field> = columns

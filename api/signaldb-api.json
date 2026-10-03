@@ -9260,6 +9260,49 @@
           "instant"
         ]
       },
+      "IrHistogramMoment": {
+        "type": "object",
+        "description": "The operands of `histogram_avg`, `histogram_stddev` and `histogram_stdvar`\n(`irVersion` 16), which share `histogram_fraction`'s grouping, evaluation\nand window operands. Each reduces the merged histogram of a group to one\nnumber: `sum / count`, or the population standard deviation / variance\nestimated from bucket representatives (see `docs/users/querying-ir.md`).\nThe deviation and variance exist only for exponential histograms; a group\nof explicit-bucket histograms yields no value.",
+        "required": [
+          "step",
+          "as"
+        ],
+        "properties": {
+          "as": {
+            "type": "string"
+          },
+          "by": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "lookback": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "As on `histogram_quantile`."
+          },
+          "mode": {
+            "$ref": "#/components/schemas/IrHistogramMode"
+          },
+          "per_series": {
+            "type": "boolean",
+            "description": "One result per stored series instead of merging them. Excludes `by`."
+          },
+          "step": {
+            "type": "string"
+          },
+          "window": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "IrHistogramQuantile": {
         "type": "object",
         "description": "A terminal quantile-over-buckets stage, available in IR v3. Only legal on\nthe `metrics` source, over its histogram rows: interpolates a percentile\nfrom OTLP classic-histogram bucket data, distinct from the `aggregate` stage's\n`fn: \"quantile\"` (`approx_percentile_cont` over independent scalar\nvalues — a different algorithm entirely, over a different source shape).",
@@ -10140,6 +10183,42 @@
             "properties": {
               "match": {
                 "$ref": "#/components/schemas/IrMatch"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "histogram_avg"
+            ],
+            "properties": {
+              "histogram_avg": {
+                "$ref": "#/components/schemas/IrHistogramMoment"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "histogram_stddev"
+            ],
+            "properties": {
+              "histogram_stddev": {
+                "$ref": "#/components/schemas/IrHistogramMoment"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "histogram_stdvar"
+            ],
+            "properties": {
+              "histogram_stdvar": {
+                "$ref": "#/components/schemas/IrHistogramMoment"
               }
             },
             "additionalProperties": false
