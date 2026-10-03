@@ -5,6 +5,58 @@ All notable changes to the SignalDB Compactor Service will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0](https://github.com/cedricziel/signaldb/compare/compactor-v0.4.1...compactor-v0.5.0) (2026-10-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* **common:** drop legacy map-layout attribute reads ([#1808](https://github.com/cedricziel/signaldb/issues/1808))
+* remove the legacy attribute map write path ([#1793](https://github.com/cedricziel/signaldb/issues/1793))
+
+### Features
+
+* **acceptor:** target the wide metrics table under the wide layout ([#1907](https://github.com/cedricziel/signaldb/issues/1907)) ([e6fb521](https://github.com/cedricziel/signaldb/commit/e6fb521164fa99ba4ebf987de022696576916cf9))
+* **compactor:** backfill typed per-level attribute columns ([#1860](https://github.com/cedricziel/signaldb/issues/1860)) ([855c20f](https://github.com/cedricziel/signaldb/commit/855c20f5ef57c26a979986dbab4935a8d6e771fd))
+* **compactor:** count attribute presence and demand per level ([#1841](https://github.com/cedricziel/signaldb/issues/1841)) ([b11170d](https://github.com/cedricziel/signaldb/commit/b11170d5e3e56271f10f159e7c5107efc83ecc62))
+* **compactor:** decide typed per-level attribute promotions ([#1862](https://github.com/cedricziel/signaldb/issues/1862)) ([a2e8496](https://github.com/cedricziel/signaldb/commit/a2e849616edc3936614f28d53b17ab2cd3754401))
+* **compactor:** demote idle and over-budget promoted attribute columns ([#1867](https://github.com/cedricziel/signaldb/issues/1867)) ([3714e3c](https://github.com/cedricziel/signaldb/commit/3714e3cf4f0c1eb5e65b30d18e9c6b684141758f))
+* **compactor:** read the typed attribute layout for stats and label promotion ([#1769](https://github.com/cedricziel/signaldb/issues/1769)) ([1ecce83](https://github.com/cedricziel/signaldb/commit/1ecce832285fa5e62f690ac0dd8eac9719d93b48))
+* **compactor:** stop auto-promoting new label columns ([#1861](https://github.com/cedricziel/signaldb/issues/1861)) ([3d53b1e](https://github.com/cedricziel/signaldb/commit/3d53b1e5338c5f555c9660e860411f2d3dba75a4))
+* **router:** report the retention that applies to a query ([#2182](https://github.com/cedricziel/signaldb/issues/2182)) ([91ca14d](https://github.com/cedricziel/signaldb/commit/91ca14dfc6f4478155ef9095c1b84e4078a6da90))
+* **writer:** write warm-index tokens for opted-in typed tables ([#1783](https://github.com/cedricziel/signaldb/issues/1783)) ([c2c1dba](https://github.com/cedricziel/signaldb/commit/c2c1dbab6de9d9175bd4f06615d556f67ed4fe82))
+
+
+### Bug Fixes
+
+* **common:** clear attribute statistics when a table is recreated ([#2169](https://github.com/cedricziel/signaldb/issues/2169)) ([63e5286](https://github.com/cedricziel/signaldb/commit/63e5286c7d6c5b41b493d0bf98d10c1bed9a8738))
+* **compactor:** advertise COMPACTOR_ADVERTISE_ADDR instead of the bind address ([#2107](https://github.com/cedricziel/signaldb/issues/2107)) ([2b8adb7](https://github.com/cedricziel/signaldb/commit/2b8adb7f23df02ee44a7d7f72dde53bcdd436254)), closes [#1844](https://github.com/cedricziel/signaldb/issues/1844)
+* **discovery:** keep statistics coverage honest about what it bounds ([#2184](https://github.com/cedricziel/signaldb/issues/2184)) ([211cce5](https://github.com/cedricziel/signaldb/commit/211cce55e7d11d533d929f728b903004f605b03d))
+* **router:** read data for sample:true and flag partial discovery statistics ([#2176](https://github.com/cedricziel/signaldb/issues/2176)) ([ab5dcf7](https://github.com/cedricziel/signaldb/commit/ab5dcf78f47567a6e2a8f8a10dcf5dfd06cdfed5))
+* **telemetry:** namespace bare log fields flagged by weaver live-check ([#1879](https://github.com/cedricziel/signaldb/issues/1879)) ([90dbf09](https://github.com/cedricziel/signaldb/commit/90dbf09c31f7181f4f97c4a0bdb6c79f0f78aca3)), closes [#912](https://github.com/cedricziel/signaldb/issues/912)
+
+
+### Performance Improvements
+
+* **compactor:** size the compaction scan batch from bytes per row ([#2181](https://github.com/cedricziel/signaldb/issues/2181)) ([96bf899](https://github.com/cedricziel/signaldb/commit/96bf8994075bd0c01a533b12114c835e03b8fbf5)), closes [#1358](https://github.com/cedricziel/signaldb/issues/1358)
+
+
+### Code Refactoring
+
+* **common:** drop legacy map-layout attribute reads ([#1808](https://github.com/cedricziel/signaldb/issues/1808)) ([fc4c1f7](https://github.com/cedricziel/signaldb/commit/fc4c1f7beff6a8d1c788e029f7aa94f41aacbd5c))
+* **common:** let ServiceBootstrap resolve the advertised address ([#2121](https://github.com/cedricziel/signaldb/issues/2121)) ([6bef83b](https://github.com/cedricziel/signaldb/commit/6bef83b68b873ea7407d0f92981665a2b4cb420e))
+* remove the legacy attribute map write path ([#1793](https://github.com/cedricziel/signaldb/issues/1793)) ([9962ba9](https://github.com/cedricziel/signaldb/commit/9962ba962ca3da95107442dd0d7140cb0b2fd98e))
+
+
+### Tests
+
+* **compactor,router:** convert legacy attribute fixtures to the typed layout ([#1807](https://github.com/cedricziel/signaldb/issues/1807)) ([c9f06d1](https://github.com/cedricziel/signaldb/commit/c9f06d16ac6e6b1c0c610a4df40a8e67d02dea8b))
+* move metric fixtures off the legacy per-type tables ([#1966](https://github.com/cedricziel/signaldb/issues/1966)) ([4f239c7](https://github.com/cedricziel/signaldb/commit/4f239c7da68a4a7db76667044a724b19fe691127))
+
+
+### Build System
+
+* fix the beta test leg for cargo's unused-dependency lints ([#2047](https://github.com/cedricziel/signaldb/issues/2047)) ([6867d69](https://github.com/cedricziel/signaldb/commit/6867d69dceb26f2e55ccfac31e60ae42aad76418))
+
 ## [0.4.1](https://github.com/cedricziel/signaldb/compare/compactor-v0.4.0...compactor-v0.4.1) (2026-09-23)
 
 

@@ -1,5 +1,99 @@
 # Changelog
 
+## [0.5.0](https://github.com/cedricziel/signaldb/compare/router-v0.4.1...router-v0.5.0) (2026-10-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* **traceql:** `Condition` has a new public `op` field, so code that constructs one must set it.
+* `"from": "metrics_histogram"` is rejected as an unknown source. Use `"from": "metrics"`; add a `metric.type = histogram` filter where only histogram rows are wanted. `histogram_quantile` on `metrics` already reads histogram rows only.
+* **tests-integration:** metric tables are recreated as metrics/metric_exemplars; pre-cutover metric data is dropped, not migrated.
+* metric tables are recreated as metrics/metric_exemplars; pre-cutover metric data is dropped, not migrated.
+* existing tables still in the legacy map<string,string> attribute layout are dropped and recreated in the typed layout the next time they are loaded; pre-cutover data in those tables is not migrated.
+
+### Features
+
+* **acceptor:** target the wide metrics table under the wide layout ([#1907](https://github.com/cedricziel/signaldb/issues/1907)) ([e6fb521](https://github.com/cedricziel/signaldb/commit/e6fb521164fa99ba4ebf987de022696576916cf9))
+* **common:** declare the typed attribute layout as non-current schema versions ([#1761](https://github.com/cedricziel/signaldb/issues/1761)) ([1afe6b8](https://github.com/cedricziel/signaldb/commit/1afe6b81e87fd13419310b833ebc7a805f7ec40c))
+* **common:** merge discovery fields with the type authority's canonical types ([#2074](https://github.com/cedricziel/signaldb/issues/2074)) ([36b7266](https://github.com/cedricziel/signaldb/commit/36b7266ec9442a10aaec8b7eb45d654b6cb27ec7))
+* cut attribute storage over to the typed layout ([#1791](https://github.com/cedricziel/signaldb/issues/1791)) ([79b1fff](https://github.com/cedricziel/signaldb/commit/79b1fff7184ee1b3a97dfaf6fbf2d994a6199b39))
+* cut metrics over to the typed metrics layout ([#1928](https://github.com/cedricziel/signaldb/issues/1928)) ([e416d6f](https://github.com/cedricziel/signaldb/commit/e416d6f79029d36930b0b98a288517ac18a0b7ff))
+* **evals:** build eval sets from traces ([#1847](https://github.com/cedricziel/signaldb/issues/1847)) ([dfe9e60](https://github.com/cedricziel/signaldb/commit/dfe9e608f9629abee1a542f5020f164d193b8faf))
+* **evals:** eval sets pages, upload dialog and saving regressions in the UI ([#1871](https://github.com/cedricziel/signaldb/issues/1871)) ([cb05278](https://github.com/cedricziel/signaldb/commit/cb05278065450372e37f51fc149f4ac04a6ad6a7))
+* **evals:** upload eval results and gate CI on them ([#1857](https://github.com/cedricziel/signaldb/issues/1857)) ([175155a](https://github.com/cedricziel/signaldb/commit/175155a3a2d958d59e16a05961206c0b09f1e79a))
+* **processors:** diff Test panel output against the server's decoded input ([#1883](https://github.com/cedricziel/signaldb/issues/1883)) ([7711bc5](https://github.com/cedricziel/signaldb/commit/7711bc5bca22d010fb83766449d52ccdd44291e0))
+* **querier:** add histogram_avg, histogram_stddev and histogram_stdvar ([#2187](https://github.com/cedricziel/signaldb/issues/2187)) ([626a417](https://github.com/cedricziel/signaldb/commit/626a41777f5393eb364a00b9fa211cd674f2eb09))
+* **querier:** add the exemplars IR source over metric_exemplars ([#1946](https://github.com/cedricziel/signaldb/issues/1946)) ([5c2c348](https://github.com/cedricziel/signaldb/commit/5c2c3484fc7e4f25219ab05e0813ca0b9c4e3c0c))
+* **querier:** bound a Query IR page to a live-tail window ([#2146](https://github.com/cedricziel/signaldb/issues/2146)) ([10421b0](https://github.com/cedricziel/signaldb/commit/10421b0ec2a787b62f515ba61b8e193787e5940b))
+* **querier:** read IR metrics from the typed metrics layout ([#1903](https://github.com/cedricziel/signaldb/issues/1903)) ([2454e5c](https://github.com/cedricziel/signaldb/commit/2454e5c5a5bf176ebea7ebb0ebdadec4452c01b3))
+* **querier:** read the typed attribute layout in row-level readers ([#1767](https://github.com/cedricziel/signaldb/issues/1767)) ([0ed2954](https://github.com/cedricziel/signaldb/commit/0ed29540b27d478f27f8c6c8abc9ec683d54b00a))
+* **query-ir:** add document-level page and tail with their validation ([#2133](https://github.com/cedricziel/signaldb/issues/2133)) ([32732f4](https://github.com/cedricziel/signaldb/commit/32732f49d64d32e1e42929ee9836e2e2b4cd3ab3))
+* **query-ir:** add metric point streams and the Scalar relation at irVersion 10 ([#1969](https://github.com/cedricziel/signaldb/issues/1969)) ([2b529a2](https://github.com/cedricziel/signaldb/commit/2b529a28a91eacdc0b3cc8ae0d503580adcf05d8))
+* **query-ir:** add the document step and the time/constant pseudo-sources ([#1970](https://github.com/cedricziel/signaldb/issues/1970)) ([4da9e65](https://github.com/cedricziel/signaldb/commit/4da9e657c71d2d47d9f221e9021fbc1878614ad2))
+* **query-ir:** correlate to another signal with semi and anti joins (irVersion 11) ([#2052](https://github.com/cedricziel/signaldb/issues/2052)) ([ad0cd64](https://github.com/cedricziel/signaldb/commit/ad0cd644101af8f140dd7ae89fdc09f94dab9ca2))
+* **query-ir:** differential flamegraph over a baseline window (irVersion 13) ([#2100](https://github.com/cedricziel/signaldb/issues/2100)) ([5e36ddb](https://github.com/cedricziel/signaldb/commit/5e36ddbea6b114c7c2077eca2ee28b9b0fa8089f))
+* **query-ir:** trace result envelope (irVersion 12) ([#2063](https://github.com/cedricziel/signaldb/issues/2063)) ([934b6bc](https://github.com/cedricziel/signaldb/commit/934b6bccf5d5fdb12595c07191804091664ae145))
+* remove the metrics_histogram IR source ([#1945](https://github.com/cedricziel/signaldb/issues/1945)) ([c16f82c](https://github.com/cedricziel/signaldb/commit/c16f82c100199ef0f297e366208c07d8242501c5))
+* **router:** eval sets API for offline agent evals ([#1837](https://github.com/cedricziel/signaldb/issues/1837)) ([b3ce35a](https://github.com/cedricziel/signaldb/commit/b3ce35a7fb9671494e4d78cd29b2673f20205531))
+* **router:** list discovery fields with their canonical authority type ([#2075](https://github.com/cedricziel/signaldb/issues/2075)) ([621aa46](https://github.com/cedricziel/signaldb/commit/621aa4674399a628470b73810e033963288a3866))
+* **router:** live-tail Query IR rows and trace results (IR v15) ([#2148](https://github.com/cedricziel/signaldb/issues/2148)) ([57ac3c7](https://github.com/cedricziel/signaldb/commit/57ac3c74646037f2198b86f787da3b7a161d6ffd))
+* **router:** paginate Query IR rows and trace results (IR v14) ([#2142](https://github.com/cedricziel/signaldb/issues/2142)) ([67023cc](https://github.com/cedricziel/signaldb/commit/67023cc0f71ab345f23d6278f9a917ee3d349941))
+* **router:** plan a Query IR live-tail call from its cursor ([#2147](https://github.com/cedricziel/signaldb/issues/2147)) ([52a4eb9](https://github.com/cedricziel/signaldb/commit/52a4eb95c72a27aaa687a9c87822fcc4247a513b))
+* **router:** plan a Query IR page from its cursor ([#2141](https://github.com/cedricziel/signaldb/issues/2141)) ([0b4a30b](https://github.com/cedricziel/signaldb/commit/0b4a30bda720145847e27294b582b5ee769ea4ee))
+* **router:** publish the Query IR stage grammar as typed OpenAPI schemas ([#2088](https://github.com/cedricziel/signaldb/issues/2088)) ([55e79d8](https://github.com/cedricziel/signaldb/commit/55e79d8fdcb6b5703d1d66801477ae7c714ce6e3))
+* **router:** publish UI login/logout and the full whoami response in OpenAPI ([#2110](https://github.com/cedricziel/signaldb/issues/2110)) ([664c8fe](https://github.com/cedricziel/signaldb/commit/664c8fe52a51505ef5fc46a63293e1e35a1a1913))
+* **router:** render raw attribute bags from the IR as JSON objects ([#1774](https://github.com/cedricziel/signaldb/issues/1774)) ([c89062c](https://github.com/cedricziel/signaldb/commit/c89062cc07408e21b7135c5156dc526de2205d8a))
+* **router:** report the retention that applies to a query ([#2182](https://github.com/cedricziel/signaldb/issues/2182)) ([91ca14d](https://github.com/cedricziel/signaldb/commit/91ca14dfc6f4478155ef9095c1b84e4078a6da90))
+* **router:** run the Prometheus query endpoints on the Query IR ([#2040](https://github.com/cedricziel/signaldb/issues/2040)) ([aa66d18](https://github.com/cedricziel/signaldb/commit/aa66d1825b7165312114ec4e111e512e684f5e73))
+* **router:** scalar result envelope and metric Series labels ([#2001](https://github.com/cedricziel/signaldb/issues/2001)) ([2d72dc1](https://github.com/cedricziel/signaldb/commit/2d72dc1b719ee880ad87101fc042d21465f3affc))
+* **router:** type the Query IR request pipeline as IrStage ([#2095](https://github.com/cedricziel/signaldb/issues/2095)) ([414ed92](https://github.com/cedricziel/signaldb/commit/414ed92b136367e2650b1c8de8f0cd12250cce5b))
+* **router:** warn match_incomplete_trace from the query report trailer ([#2090](https://github.com/cedricziel/signaldb/issues/2090)) ([7ee6f46](https://github.com/cedricziel/signaldb/commit/7ee6f464d3512df3a2c4fddc06f90302c3c55b16))
+* **schema-registry:** accept definition/2 custom registry uploads ([#1823](https://github.com/cedricziel/signaldb/issues/1823)) ([a8c8196](https://github.com/cedricziel/signaldb/commit/a8c819648bd5778478be6e86241802ae4f6f880f))
+* **traceql:** support !=, =~ and !~ and surface search errors over MCP ([#2178](https://github.com/cedricziel/signaldb/issues/2178)) ([ce929f5](https://github.com/cedricziel/signaldb/commit/ce929f5f321e5d826e2ba43edc67d7e26de67659))
+
+
+### Bug Fixes
+
+* **config:** merge a tenant's schema block over the global [schema] ([#2086](https://github.com/cedricziel/signaldb/issues/2086)) ([0832345](https://github.com/cedricziel/signaldb/commit/0832345521808cf865d627580dc1a0621692adcc))
+* **discovery:** keep statistics coverage honest about what it bounds ([#2184](https://github.com/cedricziel/signaldb/issues/2184)) ([211cce5](https://github.com/cedricziel/signaldb/commit/211cce55e7d11d533d929f728b903004f605b03d))
+* **querier:** address metric Series review findings ([#2003](https://github.com/cedricziel/signaldb/issues/2003)) ([e8a13d1](https://github.com/cedricziel/signaldb/commit/e8a13d12226e7a63162a6e2539cd4b7ee7b9785d))
+* **querier:** keep the correlate trailer compatible across adjacent releases ([#2051](https://github.com/cedricziel/signaldb/issues/2051)) ([706f25e](https://github.com/cedricziel/signaldb/commit/706f25ed1c9d01b5d08ea6b368ff31cd5fc199f7))
+* **query-ir:** keep the newest flamegraph profiles and reject inverted windows ([#2098](https://github.com/cedricziel/signaldb/issues/2098)) ([dda9bad](https://github.com/cedricziel/signaldb/commit/dda9bad2c86140ee9be861ee0e4cd5f2788cf8a9))
+* **router:** harden the Prometheus query endpoints on the IR ([#2041](https://github.com/cedricziel/signaldb/issues/2041)) ([22a3369](https://github.com/cedricziel/signaldb/commit/22a33699346ac63517f0ef5b7f18a4980b9dd444))
+* **router:** read data for sample:true and flag partial discovery statistics ([#2176](https://github.com/cedricziel/signaldb/issues/2176)) ([ab5dcf7](https://github.com/cedricziel/signaldb/commit/ab5dcf78f47567a6e2a8f8a10dcf5dfd06cdfed5))
+
+
+### Performance Improvements
+
+* **common:** share registry documents from SchemaResolver::get ([#1819](https://github.com/cedricziel/signaldb/issues/1819)) ([2fe61c1](https://github.com/cedricziel/signaldb/commit/2fe61c16af8956b49c4d223795c0549dc94727e7))
+* **router:** decode querier results as they arrive ([#2165](https://github.com/cedricziel/signaldb/issues/2165)) ([60f55b7](https://github.com/cedricziel/signaldb/commit/60f55b7c05267a4f869b0d24c3ded8630fc92a0a)), closes [#938](https://github.com/cedricziel/signaldb/issues/938)
+
+
+### Documentation
+
+* describe PromQL execution through the Query IR ([#2042](https://github.com/cedricziel/signaldb/issues/2042)) ([3375b34](https://github.com/cedricziel/signaldb/commit/3375b344ff68b1c6f1b546bf36f7de00dd508357))
+
+
+### Code Refactoring
+
+* build SchemaConfig literals with struct update syntax ([#1779](https://github.com/cedricziel/signaldb/issues/1779)) ([9b46397](https://github.com/cedricziel/signaldb/commit/9b46397790ee6edc1f5ed0757ee57c89f2d1df09))
+* **common:** let ServiceBootstrap resolve the advertised address ([#2121](https://github.com/cedricziel/signaldb/issues/2121)) ([6bef83b](https://github.com/cedricziel/signaldb/commit/6bef83b68b873ea7407d0f92981665a2b4cb420e))
+* drop the dead MetricsLayout switch and *_with_layout helpers ([#1961](https://github.com/cedricziel/signaldb/issues/1961)) ([4a98be3](https://github.com/cedricziel/signaldb/commit/4a98be3e108b2c67be847db23de0f768c1ad2a58))
+* **querier:** define the metrics IR sources over the metrics table ([#1940](https://github.com/cedricziel/signaldb/issues/1940)) ([4a26403](https://github.com/cedricziel/signaldb/commit/4a26403a3e606dfdd69ad55842e359b08f4bea31))
+* **querier:** report correlate bounds as a structured Flight trailer ([#2050](https://github.com/cedricziel/signaldb/issues/2050)) ([d538baf](https://github.com/cedricziel/signaldb/commit/d538baf416f8710b922b3c275a65873edd4cdd86))
+* share typed attribute container helpers ([#1815](https://github.com/cedricziel/signaldb/issues/1815)) ([45be827](https://github.com/cedricziel/signaldb/commit/45be827a12365bca5b39443db66ae3f16764fbc8))
+
+
+### Tests
+
+* **compactor,router:** convert legacy attribute fixtures to the typed layout ([#1807](https://github.com/cedricziel/signaldb/issues/1807)) ([c9f06d1](https://github.com/cedricziel/signaldb/commit/c9f06d16ac6e6b1c0c610a4df40a8e67d02dea8b))
+* **tests-integration:** add an end-to-end metrics cutover test ([#1929](https://github.com/cedricziel/signaldb/issues/1929)) ([bb47677](https://github.com/cedricziel/signaldb/commit/bb4767732f40a82ca1af1e4eab88a8dc11580829))
+
+
+### Build System
+
+* fix the beta test leg for cargo's unused-dependency lints ([#2047](https://github.com/cedricziel/signaldb/issues/2047)) ([6867d69](https://github.com/cedricziel/signaldb/commit/6867d69dceb26f2e55ccfac31e60ae42aad76418))
+
 ## [0.4.1](https://github.com/cedricziel/signaldb/compare/router-v0.4.0...router-v0.4.1) (2026-09-23)
 
 

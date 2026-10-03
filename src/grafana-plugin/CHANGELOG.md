@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.3.2](https://github.com/cedricziel/signaldb/compare/grafana-plugin-v1.3.1...grafana-plugin-v1.3.2) (2026-10-03)
+
+
+### Build System
+
+* **deps-dev:** bump css-loader from 7.1.4 to 7.1.5 ([#2113](https://github.com/cedricziel/signaldb/issues/2113)) ([ce67b81](https://github.com/cedricziel/signaldb/commit/ce67b81f69864c0c39fb0680abfe69b1d7bfe033))
+* **deps-dev:** bump prettier from 3.9.6 to 3.9.9 ([#2116](https://github.com/cedricziel/signaldb/issues/2116)) ([12bb01e](https://github.com/cedricziel/signaldb/commit/12bb01e5276133f6c17c45d6818ed15c896b66bf))
+* **deps-dev:** bump the typescript-eslint group with 2 updates ([#2112](https://github.com/cedricziel/signaldb/issues/2112)) ([069d9a6](https://github.com/cedricziel/signaldb/commit/069d9a6b5194e608720209ca06890e7ee32a661f))
+* **deps:** bump thiserror in /src/grafana-plugin/backend ([#1906](https://github.com/cedricziel/signaldb/issues/1906)) ([10412a5](https://github.com/cedricziel/signaldb/commit/10412a575b7192f2dab164837da8100efe16cbc1))
+
 ## [1.3.1](https://github.com/cedricziel/signaldb/compare/grafana-plugin-v1.3.0...grafana-plugin-v1.3.1) (2026-09-23)
 
 

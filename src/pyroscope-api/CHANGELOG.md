@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/cedricziel/signaldb/compare/pyroscope-api-v0.1.3...pyroscope-api-v0.1.4) (2026-10-03)
+
+
+### Build System
+
+* fix the beta test leg for cargo's unused-dependency lints ([#2047](https://github.com/cedricziel/signaldb/issues/2047)) ([6867d69](https://github.com/cedricziel/signaldb/commit/6867d69dceb26f2e55ccfac31e60ae42aad76418))
+
 ## [0.1.3](https://github.com/cedricziel/signaldb/compare/pyroscope-api-v0.1.2...pyroscope-api-v0.1.3) (2026-09-12)
 
 

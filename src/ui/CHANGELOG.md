@@ -1,5 +1,125 @@
 # Changelog
 
+## [0.3.0](https://github.com/cedricziel/signaldb/compare/signaldb-ui-v0.2.2...signaldb-ui-v0.3.0) (2026-10-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* **traceql:** `Condition` has a new public `op` field, so code that constructs one must set it.
+
+### Features
+
+* **common:** merge discovery fields with the type authority's canonical types ([#2074](https://github.com/cedricziel/signaldb/issues/2074)) ([36b7266](https://github.com/cedricziel/signaldb/commit/36b7266ec9442a10aaec8b7eb45d654b6cb27ec7))
+* **evals:** build eval sets from traces ([#1847](https://github.com/cedricziel/signaldb/issues/1847)) ([dfe9e60](https://github.com/cedricziel/signaldb/commit/dfe9e608f9629abee1a542f5020f164d193b8faf))
+* **evals:** eval sets pages, upload dialog and saving regressions in the UI ([#1871](https://github.com/cedricziel/signaldb/issues/1871)) ([cb05278](https://github.com/cedricziel/signaldb/commit/cb05278065450372e37f51fc149f4ac04a6ad6a7))
+* **evals:** list and compare eval runs from MCP and the CLI ([#1866](https://github.com/cedricziel/signaldb/issues/1866)) ([665f458](https://github.com/cedricziel/signaldb/commit/665f4588808aad9ae567df358c7732f70881aec9))
+* **evals:** upload eval results and gate CI on them ([#1857](https://github.com/cedricziel/signaldb/issues/1857)) ([175155a](https://github.com/cedricziel/signaldb/commit/175155a3a2d958d59e16a05961206c0b09f1e79a))
+* **processors:** diff Test panel output against the server's decoded input ([#1883](https://github.com/cedricziel/signaldb/issues/1883)) ([7711bc5](https://github.com/cedricziel/signaldb/commit/7711bc5bca22d010fb83766449d52ccdd44291e0))
+* **querier:** add histogram_avg, histogram_stddev and histogram_stdvar ([#2187](https://github.com/cedricziel/signaldb/issues/2187)) ([626a417](https://github.com/cedricziel/signaldb/commit/626a41777f5393eb364a00b9fa211cd674f2eb09))
+* **query-ir:** correlate to another signal with semi and anti joins (irVersion 11) ([#2052](https://github.com/cedricziel/signaldb/issues/2052)) ([ad0cd64](https://github.com/cedricziel/signaldb/commit/ad0cd644101af8f140dd7ae89fdc09f94dab9ca2))
+* **query-ir:** differential flamegraph over a baseline window (irVersion 13) ([#2100](https://github.com/cedricziel/signaldb/issues/2100)) ([5e36ddb](https://github.com/cedricziel/signaldb/commit/5e36ddbea6b114c7c2077eca2ee28b9b0fa8089f))
+* **query-ir:** trace result envelope (irVersion 12) ([#2063](https://github.com/cedricziel/signaldb/issues/2063)) ([934b6bc](https://github.com/cedricziel/signaldb/commit/934b6bccf5d5fdb12595c07191804091664ae145))
+* recognise AI agents as the gen_ai.agent entity ([#1803](https://github.com/cedricziel/signaldb/issues/1803)) ([e0fcaa0](https://github.com/cedricziel/signaldb/commit/e0fcaa0b3cd8133e23e0ccc8f9e28e43986c41f5))
+* **router:** eval sets API for offline agent evals ([#1837](https://github.com/cedricziel/signaldb/issues/1837)) ([b3ce35a](https://github.com/cedricziel/signaldb/commit/b3ce35a7fb9671494e4d78cd29b2673f20205531))
+* **router:** list discovery fields with their canonical authority type ([#2075](https://github.com/cedricziel/signaldb/issues/2075)) ([621aa46](https://github.com/cedricziel/signaldb/commit/621aa4674399a628470b73810e033963288a3866))
+* **router:** live-tail Query IR rows and trace results (IR v15) ([#2148](https://github.com/cedricziel/signaldb/issues/2148)) ([57ac3c7](https://github.com/cedricziel/signaldb/commit/57ac3c74646037f2198b86f787da3b7a161d6ffd))
+* **router:** paginate Query IR rows and trace results (IR v14) ([#2142](https://github.com/cedricziel/signaldb/issues/2142)) ([67023cc](https://github.com/cedricziel/signaldb/commit/67023cc0f71ab345f23d6278f9a917ee3d349941))
+* **router:** publish the Query IR stage grammar as typed OpenAPI schemas ([#2088](https://github.com/cedricziel/signaldb/issues/2088)) ([55e79d8](https://github.com/cedricziel/signaldb/commit/55e79d8fdcb6b5703d1d66801477ae7c714ce6e3))
+* **router:** publish UI login/logout and the full whoami response in OpenAPI ([#2110](https://github.com/cedricziel/signaldb/issues/2110)) ([664c8fe](https://github.com/cedricziel/signaldb/commit/664c8fe52a51505ef5fc46a63293e1e35a1a1913))
+* **router:** report the retention that applies to a query ([#2182](https://github.com/cedricziel/signaldb/issues/2182)) ([91ca14d](https://github.com/cedricziel/signaldb/commit/91ca14dfc6f4478155ef9095c1b84e4078a6da90))
+* **router:** scalar result envelope and metric Series labels ([#2001](https://github.com/cedricziel/signaldb/issues/2001)) ([2d72dc1](https://github.com/cedricziel/signaldb/commit/2d72dc1b719ee880ad87101fc042d21465f3affc))
+* **router:** type the Query IR request pipeline as IrStage ([#2095](https://github.com/cedricziel/signaldb/issues/2095)) ([414ed92](https://github.com/cedricziel/signaldb/commit/414ed92b136367e2650b1c8de8f0cd12250cce5b))
+* **router:** warn match_incomplete_trace from the query report trailer ([#2090](https://github.com/cedricziel/signaldb/issues/2090)) ([7ee6f46](https://github.com/cedricziel/signaldb/commit/7ee6f464d3512df3a2c4fddc06f90302c3c55b16))
+* **schema-registry:** accept definition/2 custom registry uploads ([#1823](https://github.com/cedricziel/signaldb/issues/1823)) ([a8c8196](https://github.com/cedricziel/signaldb/commit/a8c819648bd5778478be6e86241802ae4f6f880f))
+* **schema:** let registry metric definitions declare aliases ([#2188](https://github.com/cedricziel/signaldb/issues/2188)) ([0817836](https://github.com/cedricziel/signaldb/commit/08178369ba741145ea42dc6ff3aeb2517e2ad1bc))
+* show span links in the Query IR, MCP get_trace and the trace view ([#2177](https://github.com/cedricziel/signaldb/issues/2177)) ([b873eab](https://github.com/cedricziel/signaldb/commit/b873eabee7f7e4e836a530a3fc75fe5261cafb49))
+* **traceql:** support !=, =~ and !~ and surface search errors over MCP ([#2178](https://github.com/cedricziel/signaldb/issues/2178)) ([ce929f5](https://github.com/cedricziel/signaldb/commit/ce929f5f321e5d826e2ba43edc67d7e26de67659))
+* **ui:** add a Connect dialog to the app shell for MCP, CLI and API access ([#2093](https://github.com/cedricziel/signaldb/issues/2093)) ([0539ecf](https://github.com/cedricziel/signaldb/commit/0539ecfebdd29201ef44dca7d9d7d0e9dee2eb9c))
+* **ui:** add platform-aware labels to the Real users page ([#1923](https://github.com/cedricziel/signaldb/issues/1923)) ([1fb60b6](https://github.com/cedricziel/signaldb/commit/1fb60b6088f40e8dd4ce85acf8958d0594701f03))
+* **ui:** add Query IR reads for the Real users page ([#1842](https://github.com/cedricziel/signaldb/issues/1842)) ([a6cf3f8](https://github.com/cedricziel/signaldb/commit/a6cf3f820acd48fb203119df145af843a13e49ea))
+* **ui:** add RUM network and resources IR queries ([#1889](https://github.com/cedricziel/signaldb/issues/1889)) ([8e71d12](https://github.com/cedricziel/signaldb/commit/8e71d12de0f08a96cea5335789e24fa82439ba10))
+* **ui:** add RUM per-route views/vitals/errors query builders ([#1896](https://github.com/cedricziel/signaldb/issues/1896)) ([c04f0b8](https://github.com/cedricziel/signaldb/commit/c04f0b8673aac14b987a4a2c0e996d8788e596ad))
+* **ui:** add RUM route-detail query builders ([#1897](https://github.com/cedricziel/signaldb/issues/1897)) ([4897b31](https://github.com/cedricziel/signaldb/commit/4897b31666870202b663a760ae698c61d6e4f33d))
+* **ui:** add RUM traced-request KPIs and the Frontend → backend panel ([#1891](https://github.com/cedricziel/signaldb/issues/1891)) ([85481b0](https://github.com/cedricziel/signaldb/commit/85481b0b32f5a4261bc09cf3e3dfaf9cd5ede1c5))
+* **ui:** add the Errors tab detail's queries and hooks ([#1921](https://github.com/cedricziel/signaldb/issues/1921)) ([34b70f5](https://github.com/cedricziel/signaldb/commit/34b70f5c2f2214946ef2a711b61d36261f817d31))
+* **ui:** add the Pages tab's route detail panel ([#1899](https://github.com/cedricziel/signaldb/issues/1899)) ([01428a3](https://github.com/cedricziel/signaldb/commit/01428a3c210258b30f18549688ff06cd727ae8db))
+* **ui:** add the Real users Errors tab ([#1920](https://github.com/cedricziel/signaldb/issues/1920)) ([9b424bd](https://github.com/cedricziel/signaldb/commit/9b424bd21bfb96a79aee31b218a3d1ed2047468d))
+* **ui:** add the Real users Errors tab selected-group detail UI ([#1922](https://github.com/cedricziel/signaldb/issues/1922)) ([849eb71](https://github.com/cedricziel/signaldb/commit/849eb71cdd581103a180fb3a282192c4babf9a90))
+* **ui:** add the Real users Interactions tab ([#1900](https://github.com/cedricziel/signaldb/issues/1900)) ([734715f](https://github.com/cedricziel/signaldb/commit/734715f02c8c2e8b4d1cedfcf02cd54017564ce4))
+* **ui:** add the Real users Network tab ([#1890](https://github.com/cedricziel/signaldb/issues/1890)) ([cc2e1c8](https://github.com/cedricziel/signaldb/commit/cc2e1c888ada02bc62d9f0f664f8f18f8f541cab))
+* **ui:** add the Real users page ([#1850](https://github.com/cedricziel/signaldb/issues/1850)) ([0edde84](https://github.com/cedricziel/signaldb/commit/0edde8455f4bd312951c7bbeb986fd74b28c0264))
+* **ui:** add the Real users Pages tab's route list ([#1898](https://github.com/cedricziel/signaldb/issues/1898)) ([2ecf4a6](https://github.com/cedricziel/signaldb/commit/2ecf4a6ea0369cd5e305a2d6f94708205afcc8bb))
+* **ui:** add the Real users session detail view assembly ([#1915](https://github.com/cedricziel/signaldb/issues/1915)) ([5a45629](https://github.com/cedricziel/signaldb/commit/5a45629f55bf1e547afed9c34c36192ff112bdba))
+* **ui:** add the Real users sessions list query ([#1910](https://github.com/cedricziel/signaldb/issues/1910)) ([f570467](https://github.com/cedricziel/signaldb/commit/f570467092b1909ba461dc0e04e6e3ac5cdbbf34))
+* **ui:** add the Real users Sessions tab list ([#1912](https://github.com/cedricziel/signaldb/issues/1912)) ([2dee9d5](https://github.com/cedricziel/signaldb/commit/2dee9d502c074cd040375798697e843f68e43265))
+* **ui:** add the session detail lane timeline component ([#1914](https://github.com/cedricziel/signaldb/issues/1914)) ([3b54260](https://github.com/cedricziel/signaldb/commit/3b542600393d435560d76b07c2ae0642be9d1943))
+* **ui:** add the session detail's exception panel ([#1917](https://github.com/cedricziel/signaldb/issues/1917)) ([6a57710](https://github.com/cedricziel/signaldb/commit/6a57710ed494a62b93af2be681abbe24584ed2fb))
+* **ui:** add the Sessions list's free-text filter ([#1911](https://github.com/cedricziel/signaldb/issues/1911)) ([224502e](https://github.com/cedricziel/signaldb/commit/224502e0dbb936bb68a12b9134a8e3deb9aa882f))
+* **ui:** AppShell component, synced to Claude Design ([#1839](https://github.com/cedricziel/signaldb/issues/1839)) ([41c3312](https://github.com/cedricziel/signaldb/commit/41c331209f798a463c9b480096db2fd10a844013))
+* **ui:** complete the Setup tab's browser instrumentation snippets ([#1925](https://github.com/cedricziel/signaldb/issues/1925)) ([50056ab](https://github.com/cedricziel/signaldb/commit/50056abd43e97c452e1b967b0f6f548641ecd012))
+* **ui:** Evaluate section for offline agent evals ([#1830](https://github.com/cedricziel/signaldb/issues/1830)) ([4779181](https://github.com/cedricziel/signaldb/commit/477918102436070fbbc0f06670ea15c51098fe29))
+* **ui:** load more rows of an Explore IR query page by page ([#2145](https://github.com/cedricziel/signaldb/issues/2145)) ([e011352](https://github.com/cedricziel/signaldb/commit/e01135294ab1c4e636848645769c027fd5d81930))
+* **ui:** open a session from a pasted id in the command palette ([#1918](https://github.com/cedricziel/signaldb/issues/1918)) ([d0d702a](https://github.com/cedricziel/signaldb/commit/d0d702aed5a98f7c937afad3df29279643a83ffc))
+* **ui:** read every metric type from the metrics source ([#1944](https://github.com/cedricziel/signaldb/issues/1944)) ([918d7ab](https://github.com/cedricziel/signaldb/commit/918d7ab05edae9ae58f844892cc859df444f5c9f))
+* **ui:** recover from an expired reverse-proxy login ([#1804](https://github.com/cedricziel/signaldb/issues/1804)) ([a60aa4b](https://github.com/cedricziel/signaldb/commit/a60aa4b445cb998f6340e4337b94cb0ab64ae90b))
+* **ui:** route login, logout and whoami through the generated client ([#2111](https://github.com/cedricziel/signaldb/issues/2111)) ([40a5735](https://github.com/cedricziel/signaldb/commit/40a5735ea0b72cbc1080f768bd6d8180a33c1287))
+* **ui:** RUM self-instrumentation (route template, browser identity, clicks) ([#1836](https://github.com/cedricziel/signaldb/issues/1836)) ([d1a8655](https://github.com/cedricziel/signaldb/commit/d1a865590235912ab4cfa15f7530a236473229fe))
+* **ui:** show a request's backend trace in the session detail ([#1916](https://github.com/cedricziel/signaldb/issues/1916)) ([49419b4](https://github.com/cedricziel/signaldb/commit/49419b46aa514b11b0a39d068c3a5c6502e2c81c))
+* **ui:** tail the Logs list in live mode instead of re-running the window ([#2151](https://github.com/cedricziel/signaldb/issues/2151)) ([deaf256](https://github.com/cedricziel/signaldb/commit/deaf25620cabc285dd248c0e75d544c696273a52))
+* **ui:** theming, responsive layout and navigation fixes from the UI audit ([#1846](https://github.com/cedricziel/signaldb/issues/1846)) ([64c1ba9](https://github.com/cedricziel/signaldb/commit/64c1ba9bcfbf45552daa2ae82e2371dd16b807c0))
+* **ui:** touch-resizable panes and an overflow cue on the Overview map ([#1884](https://github.com/cedricziel/signaldb/issues/1884)) ([0404236](https://github.com/cedricziel/signaldb/commit/0404236559294f6ee5dc0e4aaccc055ff9e53b4a))
+
+
+### Bug Fixes
+
+* **querier:** IR range aggregates difference each series against itself ([#2009](https://github.com/cedricziel/signaldb/issues/2009)) ([4a1cbc4](https://github.com/cedricziel/signaldb/commit/4a1cbc4a7a9ff455de450f8db419f76496f60440))
+* **query-ir:** keep the newest flamegraph profiles and reject inverted windows ([#2098](https://github.com/cedricziel/signaldb/issues/2098)) ([dda9bad](https://github.com/cedricziel/signaldb/commit/dda9bad2c86140ee9be861ee0e4cd5f2788cf8a9))
+* **router:** read data for sample:true and flag partial discovery statistics ([#2176](https://github.com/cedricziel/signaldb/issues/2176)) ([ab5dcf7](https://github.com/cedricziel/signaldb/commit/ab5dcf78f47567a6e2a8f8a10dcf5dfd06cdfed5))
+* **ui:** always show PWA updates, and recover from a crashed stale build ([#1795](https://github.com/cedricziel/signaldb/issues/1795)) ([5817557](https://github.com/cedricziel/signaldb/commit/58175578f2dfb8769aaf0818789016d31d1b0d7a))
+* **ui:** anchor phone nav overlays below the top bar ([#2160](https://github.com/cedricziel/signaldb/issues/2160)) ([7fbef44](https://github.com/cedricziel/signaldb/commit/7fbef4434c8289c33c41748341f22c4171c07b73))
+* **ui:** clean up visual issues from the Storybook page audit ([#1876](https://github.com/cedricziel/signaldb/issues/1876)) ([33af317](https://github.com/cedricziel/signaldb/commit/33af31767794d2d6611715bd9dcd8fefb446346e))
+* **ui:** clear the Real users page's route/session/error-group selection when switching apps ([#1924](https://github.com/cedricziel/signaldb/issues/1924)) ([cbf01cf](https://github.com/cedricziel/signaldb/commit/cbf01cfb19113d20851a92a4baf7e01d4c12353b))
+* **ui:** correct colour and label semantics in catalog, errors and overview ([#1875](https://github.com/cedricziel/signaldb/issues/1875)) ([1db984b](https://github.com/cedricziel/signaldb/commit/1db984b56fe6075d9b038081326e9a00d46515fd))
+* **ui:** correct data and chart glitches on the eval pages ([#1882](https://github.com/cedricziel/signaldb/issues/1882)) ([f1b5aaa](https://github.com/cedricziel/signaldb/commit/f1b5aaa08b17df23fdeb78ef42d44ee48278f09f))
+* **ui:** finish the Processors pages and clean up the test-run diff ([#1873](https://github.com/cedricziel/signaldb/issues/1873)) ([62f7e25](https://github.com/cedricziel/signaldb/commit/62f7e2555d607c5ab907c08cefdf8f5aec5f4db6))
+* **ui:** hold data queries until the session is known ([#2127](https://github.com/cedricziel/signaldb/issues/2127)) ([42acfde](https://github.com/cedricziel/signaldb/commit/42acfdefeeb4f0a357f5f9517824137ffe660422))
+* **ui:** pass the Setup tab's log exporter as an options object ([#1953](https://github.com/cedricziel/signaldb/issues/1953)) ([746a678](https://github.com/cedricziel/signaldb/commit/746a67876ce60a98e7c229330d29708e70ec478a))
+* **ui:** polish the Metrics view chart, legend and query builder ([#1874](https://github.com/cedricziel/signaldb/issues/1874)) ([f537b51](https://github.com/cedricziel/signaldb/commit/f537b51aadd1ddeba8e51bec0896c6b941cee02c))
+* **ui:** polish the Traces view from the Storybook audit ([#1877](https://github.com/cedricziel/signaldb/issues/1877)) ([d7f38de](https://github.com/cedricziel/signaldb/commit/d7f38de76309a5826ded1ba6826acb2ac5eea253))
+* **ui:** responsive tables and page-story checks at every width ([#1853](https://github.com/cedricziel/signaldb/issues/1853)) ([665b576](https://github.com/cedricziel/signaldb/commit/665b576a69a3066eb965c61c6fcbc4b996d37616))
+* **ui:** stop RUM formula names colliding with their query names ([#1952](https://github.com/cedricziel/signaldb/issues/1952)) ([225e9ca](https://github.com/cedricziel/signaldb/commit/225e9cad6a9556ec884bc77b0f1898528ef66f11))
+* **ui:** treat the all-zero parent span id as no parent in trace detail ([#1799](https://github.com/cedricziel/signaldb/issues/1799)) ([a62fce2](https://github.com/cedricziel/signaldb/commit/a62fce2aadbbd657762d6012c1a90093bffc9d3e))
+
+
+### Documentation
+
+* describe PromQL execution through the Query IR ([#2042](https://github.com/cedricziel/signaldb/issues/2042)) ([3375b34](https://github.com/cedricziel/signaldb/commit/3375b344ff68b1c6f1b546bf36f7de00dd508357))
+* **openspec:** archive real-user-monitoring with what shipped ([#1878](https://github.com/cedricziel/signaldb/issues/1878)) ([9c3ede8](https://github.com/cedricziel/signaldb/commit/9c3ede8869da4e696a30529384c4362e04b9f985))
+
+
+### Code Refactoring
+
+* **agents:** delegate implementation to oss:coder ([#1796](https://github.com/cedricziel/signaldb/issues/1796)) ([57403d8](https://github.com/cedricziel/signaldb/commit/57403d8880cd4a99fc9f131869a8f58d084728ef))
+* **ui:** build Query IR stages with the generated Ir* types ([#2094](https://github.com/cedricziel/signaldb/issues/2094)) ([962ebd4](https://github.com/cedricziel/signaldb/commit/962ebd4a26a2f9aa88db3ed35c28d2e15974702d))
+
+
+### Tests
+
+* **ui:** add app-scoped RUM error groups and backend-cause batch ([#1919](https://github.com/cedricziel/signaldb/issues/1919)) ([5a88ca8](https://github.com/cedricziel/signaldb/commit/5a88ca815a222c430a7035535b00f134193e54af))
+* **ui:** add failing tests for session detail lane/event merging ([#1913](https://github.com/cedricziel/signaldb/issues/1913)) ([ead67be](https://github.com/cedricziel/signaldb/commit/ead67be892be38db65a70f4a6e2b07f937a05316))
+* **ui:** add per-tab Connect stories and register the dialog for design-sync ([#2106](https://github.com/cedricziel/signaldb/issues/2106)) ([625ca5b](https://github.com/cedricziel/signaldb/commit/625ca5b77d3fae1acffd555bb03b34900a0547d1))
+* **ui:** give the RUM inline trace waterfall test room for its wait ([#2020](https://github.com/cedricziel/signaldb/issues/2020)) ([1437fc5](https://github.com/cedricziel/signaldb/commit/1437fc57b9167de1cd27f3c464dca8ecb7b9fbf0))
+* **ui:** give the RUM session-detail tests room for their waits ([#2004](https://github.com/cedricziel/signaldb/issues/2004)) ([ef9bd17](https://github.com/cedricziel/signaldb/commit/ef9bd17d4712a3842e8019ca4885f9bebcb4d06d))
+* **ui:** let every RUM Sessions test wait for the tab to settle ([#2037](https://github.com/cedricziel/signaldb/issues/2037)) ([be6da37](https://github.com/cedricziel/signaldb/commit/be6da376263e06bf8ed48c19cdff2c616b7976d5))
+* **ui:** wait for the RUM app list before clicking session timeline marks ([#2031](https://github.com/cedricziel/signaldb/issues/2031)) ([a767dbe](https://github.com/cedricziel/signaldb/commit/a767dbef6e4f9bd8ab7f4f68c22cc1116e75600c))
+* **ui:** wait for the RUM timeline to remount before selecting an event ([#2036](https://github.com/cedricziel/signaldb/issues/2036)) ([6ec67a5](https://github.com/cedricziel/signaldb/commit/6ec67a53adef7981eaf6fb0f7178180bb1d4e3c9))
+
+
+### Build System
+
+* **deps-dev:** bump typescript-eslint from 8.67.0 to 8.70.1 ([#2115](https://github.com/cedricziel/signaldb/issues/2115)) ([278a6b5](https://github.com/cedricziel/signaldb/commit/278a6b5b3d76a9118ba5dea3336e13446d9cafea))
+* **deps:** bump @opentelemetry/api-logs from 0.221.0 to 0.222.0 ([#2114](https://github.com/cedricziel/signaldb/issues/2114)) ([696c396](https://github.com/cedricziel/signaldb/commit/696c39667eed08f19cbdda651d241ca9a4e6e23e))
+
 ## [0.2.2](https://github.com/cedricziel/signaldb/compare/signaldb-ui-v0.2.1...signaldb-ui-v0.2.2) (2026-09-23)
 
 
