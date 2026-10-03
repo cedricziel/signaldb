@@ -189,6 +189,7 @@ impl QueryIrResponse {
             metadata: Some(metadata),
             page: None,
             tail: None,
+            retention: None,
             warnings,
         }
     }
@@ -343,8 +344,9 @@ pub struct QueryWarning {
     /// Stable machine-readable identifier — clients branch on this, not on
     /// `message`. Today `unknown_group_by_field`, `no_attribute_statistics`,
     /// `correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`,
-    /// `graph_node_limit`, `match_incomplete_trace` and `tail_lagged` (a
-    /// live tail skipped forward).
+    /// `graph_node_limit`, `match_incomplete_trace`, `tail_lagged` (a
+    /// live tail skipped forward) and `range_before_retention` (the window
+    /// starts before the retention cutoff).
     #[schema(example = "unknown_group_by_field")]
     pub code: String,
     /// Human-readable explanation, safe to show verbatim.
@@ -421,6 +423,110 @@ pub struct QueryIrResponse {
     /// Present iff the request carried `tail` (`rows`/`trace` only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tail: Option<QueryTail>,
+    /// How far back this answer can reach. Present for a single-document
+    /// query against a signal source (`traces`, `logs`, `metrics`,
+    /// `profiles`); omitted for a formula document and for sources that are
+    /// not signals. The window is never clamped to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<QueryRetention>,
+}
+
+/// The retention policy that applies to the queried signal for the caller's
+/// tenant and dataset. The compactor deletes data older than `cutoff_ns`, so
+/// a window reaching further back is answered only from what remains.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct QueryRetention {
+    /// The retention period as a humantime string, for example `30d`.
+    #[schema(example = "30d")]
+    pub period: String,
+    /// The retention period in seconds.
+    pub period_s: u64,
+    /// Which setting supplied the period: `global`, `tenant` or `dataset`.
+    #[schema(example = "global")]
+    pub source: String,
+    /// `true` when the compactor deletes expired data: retention is enabled
+    /// and not in dry-run mode.
+    pub enforced: bool,
+    /// Server time minus the retention period and its grace period, in unix
+    /// nanoseconds. Data older than this is subject to deletion.
+    pub cutoff_ns: i64,
+}
+
+impl QueryRetention {
+    /// Resolve the retention for `source` as the caller's tenant and dataset
+    /// see it. `None` for a source that is not a signal, or when the cutoff
+    /// cannot be represented.
+    pub(super) fn resolve(
+        config: &common::config::RetentionConfig,
+        ctx: &TenantContext,
+        source: &str,
+        now_ns: i64,
+    ) -> Option<Self> {
+        use common::retention::SignalType;
+        // The IR's `exemplars` source reads the metric exemplars table.
+        let signal = match source {
+            "exemplars" => SignalType::Metrics,
+            source => SignalType::from_table_name(source).ok()?,
+        };
+        let resolved = config.resolve_period(&ctx.tenant_id, &ctx.dataset_id, signal);
+        let effective = resolved.period.checked_add(config.grace_period)?;
+        let effective_ns = i64::try_from(effective.as_nanos()).ok()?;
+        Some(QueryRetention {
+            period: format_period(resolved.period),
+            period_s: resolved.period.as_secs(),
+            source: resolved.source.as_str().to_string(),
+            enforced: config.enabled && !config.dry_run,
+            cutoff_ns: now_ns.checked_sub(effective_ns)?,
+        })
+    }
+
+    /// The `range_before_retention` warning when the window starts before the
+    /// cutoff of an enforced policy.
+    pub(super) fn warning(&self, window: &ResolvedWindow) -> Option<QueryWarning> {
+        if !self.enforced || window.start_ns >= self.cutoff_ns {
+            return None;
+        }
+        let cutoff = chrono::DateTime::from_timestamp_nanos(self.cutoff_ns)
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        Some(QueryWarning {
+            code: "range_before_retention".to_string(),
+            message: format!(
+                "data older than {cutoff} is deleted by retention ({}, {} setting), so the answer cannot reach before it",
+                self.period, self.source
+            ),
+            field: Some("range.from".to_string()),
+            suggestions: Vec::new(),
+        })
+    }
+}
+
+/// A retention period as a compact humantime string using the largest whole
+/// unit: `30d`, `36h`, `90m`, `45s`.
+fn format_period(period: std::time::Duration) -> String {
+    let secs = period.as_secs();
+    for (unit, size) in [("d", 86_400), ("h", 3_600), ("m", 60)] {
+        if secs >= size && secs.is_multiple_of(size) {
+            return format!("{}{unit}", secs / size);
+        }
+    }
+    format!("{secs}s")
+}
+
+/// Attach the retention member and its warning to a single-document answer.
+fn annotate_retention(
+    response: &mut QueryIrResponse,
+    config: &common::config::RetentionConfig,
+    ctx: &TenantContext,
+    source: &str,
+    now_ns: i64,
+) {
+    let Some(retention) = QueryRetention::resolve(config, ctx, source, now_ns) else {
+        return;
+    };
+    response
+        .warnings
+        .extend(retention.warning(&response.window));
+    response.retention = Some(retention);
 }
 
 /// Submit a native Query IR document — either a single query or a
@@ -531,6 +637,13 @@ async fn query_ir_single(
     if let Some(tailing) = tailing.as_ref().filter(|t| t.is_empty()) {
         let mut response = build_envelope(&req.result, window, &[], &document)?;
         response.tail = Some(tailing.response(None, now)?);
+        annotate_retention(
+            &mut response,
+            &state.config().compactor.retention,
+            ctx,
+            &req.from,
+            now,
+        );
         return Ok(axum::Json(response));
     }
     let ticket = match (&tailing, &paging) {
@@ -566,6 +679,13 @@ async fn query_ir_single(
     response
         .warnings
         .extend(correlate_warnings(&correlate_report));
+    annotate_retention(
+        &mut response,
+        &state.config().compactor.retention,
+        ctx,
+        &req.from,
+        now,
+    );
     Ok(axum::Json(response))
 }
 
@@ -662,6 +782,7 @@ async fn query_ir_multi(
         metadata: None,
         page: None,
         tail: None,
+        retention: None,
         warnings: Vec::new(),
     }))
 }
@@ -1260,6 +1381,7 @@ fn build_envelope(
                 metadata: None,
                 page: None,
                 tail: None,
+                retention: None,
                 warnings: Vec::new(),
             })
         }
@@ -1281,6 +1403,7 @@ fn build_envelope(
                 metadata: None,
                 page: None,
                 tail: None,
+                retention: None,
                 warnings: Vec::new(),
             })
         }
@@ -1301,6 +1424,7 @@ fn build_envelope(
                 metadata: None,
                 page: None,
                 tail: None,
+                retention: None,
                 warnings: Vec::new(),
             })
         }
@@ -1356,6 +1480,7 @@ fn build_envelope(
                 metadata: None,
                 page: None,
                 tail: None,
+                retention: None,
                 warnings: Vec::new(),
             })
         }
@@ -1374,6 +1499,7 @@ fn build_envelope(
             metadata: None,
             page: None,
             tail: None,
+            retention: None,
             warnings: Vec::new(),
         }),
         "trace" => {
@@ -1394,6 +1520,7 @@ fn build_envelope(
                 metadata: None,
                 page: None,
                 tail: None,
+                retention: None,
                 warnings: Vec::new(),
             })
         }
@@ -1412,6 +1539,7 @@ fn build_envelope(
                 metadata: None,
                 page: None,
                 tail: None,
+                retention: None,
                 warnings: graph_node_limit_warning(graph.dropped_nodes)
                     .into_iter()
                     .collect(),
@@ -3514,5 +3642,144 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // --- retention member and range_before_retention warning ---
+
+    const DAY_NS: i64 = 86_400 * 1_000_000_000;
+    const NOW_NS: i64 = 1_000 * DAY_NS;
+
+    fn retention_ctx() -> TenantContext {
+        scoped_context(vec!["traces:read", "logs:read"])
+    }
+
+    fn response_over(start_ns: i64) -> super::QueryIrResponse {
+        let window = ResolvedWindow {
+            start_ns,
+            end_ns: NOW_NS,
+        };
+        build_envelope("rows", window, &[], &serde_json::json!({}))
+            .expect("an empty rows envelope builds")
+    }
+
+    fn annotated(
+        config: &common::config::RetentionConfig,
+        source: &str,
+        start_ns: i64,
+    ) -> super::QueryIrResponse {
+        let mut response = response_over(start_ns);
+        super::annotate_retention(&mut response, config, &retention_ctx(), source, NOW_NS);
+        response
+    }
+
+    #[test]
+    fn retention_reports_period_source_and_cutoff() {
+        let config = common::config::RetentionConfig::default();
+        let response = annotated(&config, "traces", NOW_NS - DAY_NS);
+        let retention = response.retention.expect("traces is a signal source");
+        assert_eq!(retention.period, "30d");
+        assert_eq!(retention.period_s, 30 * 86_400);
+        assert_eq!(retention.source, "global");
+        assert!(retention.enforced);
+        // 30d period + 1h default grace.
+        assert_eq!(
+            retention.cutoff_ns,
+            NOW_NS - 30 * DAY_NS - 3_600_000_000_000
+        );
+    }
+
+    #[test]
+    fn retention_source_follows_the_override_hierarchy() {
+        use common::retention::{DatasetRetentionConfig, TenantRetentionConfig};
+        let mut config = common::config::RetentionConfig::default();
+        let mut tenant = TenantRetentionConfig {
+            traces: Some(std::time::Duration::from_secs(7 * 86_400)),
+            logs: None,
+            metrics: None,
+            profiles: None,
+            dataset_overrides: std::collections::HashMap::new(),
+        };
+        tenant.dataset_overrides.insert(
+            "default".to_string(),
+            DatasetRetentionConfig {
+                traces: None,
+                logs: Some(std::time::Duration::from_secs(36 * 3_600)),
+                metrics: None,
+                profiles: None,
+            },
+        );
+        config.tenant_overrides.insert("acme".to_string(), tenant);
+
+        let traces = annotated(&config, "traces", NOW_NS).retention.unwrap();
+        assert_eq!(
+            (traces.period.as_str(), traces.source.as_str()),
+            ("7d", "tenant")
+        );
+        let logs = annotated(&config, "logs", NOW_NS).retention.unwrap();
+        assert_eq!(
+            (logs.period.as_str(), logs.source.as_str()),
+            ("36h", "dataset")
+        );
+    }
+
+    #[test]
+    fn non_signal_sources_carry_no_retention() {
+        let config = common::config::RetentionConfig::default();
+        assert!(annotated(&config, "scalar", 0).retention.is_none());
+        assert!(annotated(&config, "scalar", 0).warnings.is_empty());
+    }
+
+    #[test]
+    fn a_window_older_than_the_cutoff_warns() {
+        let config = common::config::RetentionConfig::default();
+        let response = annotated(&config, "logs", NOW_NS - 60 * DAY_NS);
+        let [warning] = response.warnings.as_slice() else {
+            panic!("expected one warning, got {:?}", response.warnings);
+        };
+        assert_eq!(warning.code, "range_before_retention");
+        assert_eq!(warning.field.as_deref(), Some("range.from"));
+        assert!(
+            warning.message.contains("30d, global setting"),
+            "{}",
+            warning.message
+        );
+        assert!(
+            warning.message.contains("1972-08-27T23:00:00Z"),
+            "{}",
+            warning.message
+        );
+        // The window is reported as requested, not clamped.
+        assert_eq!(response.window.start_ns, NOW_NS - 60 * DAY_NS);
+    }
+
+    #[test]
+    fn a_recent_window_does_not_warn() {
+        let config = common::config::RetentionConfig::default();
+        assert!(
+            annotated(&config, "logs", NOW_NS - DAY_NS)
+                .warnings
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn disabled_or_dry_run_retention_reports_but_never_warns() {
+        for (enabled, dry_run) in [(false, false), (true, true)] {
+            let config = common::config::RetentionConfig {
+                enabled,
+                dry_run,
+                ..Default::default()
+            };
+            let response = annotated(&config, "logs", NOW_NS - 60 * DAY_NS);
+            let retention = response.retention.expect("still reported");
+            assert!(!retention.enforced);
+            assert!(response.warnings.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_response_without_retention_omits_the_member() {
+        let json = serde_json::to_value(response_over(0)).unwrap();
+        assert!(json.get("retention").is_none());
     }
 }

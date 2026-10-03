@@ -11609,6 +11609,17 @@
             "type": "string",
             "description": "The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`,\n`graph`, `metadata`, `scalar`, or `trace`."
           },
+          "retention": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/QueryRetention",
+                "description": "How far back this answer can reach. Present for a single-document\nquery against a signal source (`traces`, `logs`, `metrics`,\n`profiles`); omitted for a formula document and for sources that are\nnot signals. The window is never clamped to it."
+              }
+            ]
+          },
           "rows": {
             "type": "array",
             "items": {
@@ -11694,6 +11705,44 @@
           }
         }
       },
+      "QueryRetention": {
+        "type": "object",
+        "description": "The retention policy that applies to the queried signal for the caller's\ntenant and dataset. The compactor deletes data older than `cutoff_ns`, so\na window reaching further back is answered only from what remains.",
+        "required": [
+          "period",
+          "period_s",
+          "source",
+          "enforced",
+          "cutoff_ns"
+        ],
+        "properties": {
+          "cutoff_ns": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Server time minus the retention period and its grace period, in unix\nnanoseconds. Data older than this is subject to deletion."
+          },
+          "enforced": {
+            "type": "boolean",
+            "description": "`true` when the compactor deletes expired data: retention is enabled\nand not in dry-run mode."
+          },
+          "period": {
+            "type": "string",
+            "description": "The retention period as a humantime string, for example `30d`.",
+            "example": "30d"
+          },
+          "period_s": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The retention period in seconds.",
+            "minimum": 0
+          },
+          "source": {
+            "type": "string",
+            "description": "Which setting supplied the period: `global`, `tenant` or `dataset`.",
+            "example": "global"
+          }
+        }
+      },
       "QueryTail": {
         "type": "object",
         "description": "The `tail` member of a live-tail response.",
@@ -11734,7 +11783,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable machine-readable identifier — clients branch on this, not on\n`message`. Today `unknown_group_by_field`, `no_attribute_statistics`,\n`correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`,\n`graph_node_limit`, `match_incomplete_trace` and `tail_lagged` (a\nlive tail skipped forward).",
+            "description": "Stable machine-readable identifier — clients branch on this, not on\n`message`. Today `unknown_group_by_field`, `no_attribute_statistics`,\n`correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`,\n`graph_node_limit`, `match_incomplete_trace`, `tail_lagged` (a\nlive tail skipped forward) and `range_before_retention` (the window\nstarts before the retention cutoff).",
             "example": "unknown_group_by_field"
           },
           "field": {

@@ -2589,6 +2589,7 @@ export type QueryIrResponse = {
      * `graph`, `metadata`, `scalar`, or `trace`.
      */
     result: string;
+    retention?: null | QueryRetention;
     rows?: Array<Array<unknown>>;
     series?: Array<ResultSeries>;
     step_ns?: number | null;
@@ -2632,6 +2633,36 @@ export type QueryRange = {
 };
 
 /**
+ * The retention policy that applies to the queried signal for the caller's
+ * tenant and dataset. The compactor deletes data older than `cutoff_ns`, so
+ * a window reaching further back is answered only from what remains.
+ */
+export type QueryRetention = {
+    /**
+     * Server time minus the retention period and its grace period, in unix
+     * nanoseconds. Data older than this is subject to deletion.
+     */
+    cutoff_ns: number;
+    /**
+     * `true` when the compactor deletes expired data: retention is enabled
+     * and not in dry-run mode.
+     */
+    enforced: boolean;
+    /**
+     * The retention period as a humantime string, for example `30d`.
+     */
+    period: string;
+    /**
+     * The retention period in seconds.
+     */
+    period_s: number;
+    /**
+     * Which setting supplied the period: `global`, `tenant` or `dataset`.
+     */
+    source: string;
+};
+
+/**
  * The `tail` member of a live-tail response.
  */
 export type QueryTail = {
@@ -2664,8 +2695,9 @@ export type QueryWarning = {
      * Stable machine-readable identifier — clients branch on this, not on
      * `message`. Today `unknown_group_by_field`, `no_attribute_statistics`,
      * `correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`,
-     * `graph_node_limit`, `match_incomplete_trace` and `tail_lagged` (a
-     * live tail skipped forward).
+     * `graph_node_limit`, `match_incomplete_trace`, `tail_lagged` (a
+     * live tail skipped forward) and `range_before_retention` (the window
+     * starts before the retention cutoff).
      */
     code: string;
     /**

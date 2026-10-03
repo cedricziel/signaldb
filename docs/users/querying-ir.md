@@ -729,6 +729,8 @@ rejection because an unpromoted attribute cannot be enumerated while planning:
 grouping by a real attribute that is simply absent from a short window is a
 legitimate query, and would otherwise fail a quiet dashboard panel.
 
+`range_before_retention` is described under [Retention](#retention).
+
 `match_incomplete_trace` is raised when a
 [`match`](#structural-matching-the-match-stage-ir-v12) stage with a relation
 saw traces that the `range` visibly cut (see its Semantics for which traces
@@ -740,6 +742,35 @@ to three example trace ids:
 { "code": "match_incomplete_trace",
   "message": "1 matched trace may be missing witness spans and 2 traces did not match but may match over a wider range: a span's parent is not in the queried range (it started before the range or was not ingested) or a span ends after the range (its children may start after it). Widen `range` to see whole traces. Examples: 0102…, 0a0b…, 0c0d…" }
 ```
+
+### Retention
+
+A single-document response over a signal source (`traces`, `logs`,
+`metrics`, `profiles`) carries a `retention` member saying how far back the
+answer can reach. The compactor deletes expired data, so the window is never
+clamped: it stays as you requested it and `retention` reports the policy.
+The member is absent for a [formula](#formulas-cross-query-arithmetic-d5)
+document, for a `describe` document, and for sources that are not signals.
+
+```jsonc
+{ "result": "rows", "window": {...}, "rows": [...],
+  "retention": { "period": "30d", "period_s": 2592000, "source": "global",
+                 "enforced": true, "cutoff_ns": 1767225600000000000 } }
+```
+
+- `period`, `period_s`: the retention period for this tenant, dataset and
+  signal, as a humantime string and in seconds.
+- `source`: which `[compactor.retention]` setting supplied it, `global`,
+  `tenant` or `dataset`.
+- `enforced`: `true` when retention is enabled and not in dry-run mode.
+- `cutoff_ns`: server time minus the period and the grace period, in unix
+  nanoseconds. Data older than this is subject to deletion.
+
+When `enforced` is true and `window.start_ns` is before `cutoff_ns`, the
+response also carries a `range_before_retention` warning on `range.from`.
+The message names the cutoff as an RFC 3339 time, the period and its source.
+It does not appear for a recent window, with retention disabled, or in
+dry-run mode.
 
 ## Pagination (IR v14)
 
