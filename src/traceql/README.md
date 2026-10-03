@@ -1,6 +1,6 @@
 # traceql-parser
 
-A parser for the equality subset of Grafana Tempo's TraceQL, in Rust.
+A parser for the matcher subset of Grafana Tempo's TraceQL, in Rust.
 
 ```toml
 [dependencies]
@@ -24,12 +24,14 @@ It does **not** execute a query or know how traces are stored.
 
 ## Supported subset
 
-A single spanset of `&&`-conjoined equality matchers. `{}` is valid and selects
+A single spanset of `&&`-conjoined matchers. `{}` is valid and selects
 everything.
 
 ```
-{ resource.service.name = "api" && span.http.method = "GET" }
+{ resource.service.name = "api" && span.http.method != "GET" && .env =~ "prod-.*" }
 ```
+
+- **Operators**: `=`, `!=`, `=~`, `!~` (a regex operand is a quoted string)
 
 - **Intrinsics**: `name`, `status`, `kind`, and service name as either
   `resource.service.name` or `.service.name`
@@ -45,7 +47,7 @@ search.
 | Input                                                         | Variant                   |
 | ------------------------------------------------------------- | ------------------------- |
 | not TraceQL (`notbraces`, `{ foo }`, `{ zzz = 1 }`)           | `ParseError::Syntax`      |
-| valid TraceQL, unimplemented (`\|\|`, `!=`, `=~`, `duration`) | `ParseError::Unsupported` |
+| valid TraceQL, unimplemented (`\|\|`, `>`, `<=`, `duration`)  | `ParseError::Unsupported` |
 
 The distinction is the point: a caller serving HTTP maps the first to a client
 error and the second to not-implemented, so a user can tell a wrong query from
@@ -53,8 +55,9 @@ one the backend cannot yet run.
 
 ## Stability
 
-Pre-1.0. `Selector`, `FilterValue`, and `ParseError` are `#[non_exhaustive]`;
-`Condition` is not, since a matcher is exactly a selector and a value.
+Pre-1.0. `Selector`, `FilterValue`, `MatchOp` and `ParseError` are
+`#[non_exhaustive]`; `Condition` is not, since a matcher is exactly a
+selector, an operator and a value.
 
 ## Provenance
 
