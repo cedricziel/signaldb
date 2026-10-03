@@ -746,7 +746,7 @@ to three example trace ids:
 ### Retention
 
 A single-document response over a signal source (`traces`, `logs`,
-`metrics`, `profiles`) carries a `retention` member saying how far back the
+`metrics`, `exemplars`, `profiles`) carries a `retention` member saying how far back the
 answer can reach. The compactor deletes expired data, so the window is never
 clamped: it stays as you requested it and `retention` reports the policy.
 The member is absent for a [formula](#formulas-cross-query-arithmetic-d5)

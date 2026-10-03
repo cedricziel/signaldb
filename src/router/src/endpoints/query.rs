@@ -3723,6 +3723,48 @@ mod tests {
     }
 
     #[test]
+    fn retention_overrides_are_keyed_by_id_not_slug() {
+        use common::retention::DatasetRetentionConfig;
+        let day = |n: u64| Some(std::time::Duration::from_secs(n * 86_400));
+        let dataset = |traces| DatasetRetentionConfig {
+            traces,
+            logs: None,
+            metrics: None,
+            profiles: None,
+        };
+        let mut config = common::config::RetentionConfig::default();
+        for (tenant_key, dataset_key, traces) in
+            [("t-id", "d-id", day(1)), ("t-slug", "d-slug", day(2))]
+        {
+            let tenant = common::retention::TenantRetentionConfig {
+                traces: None,
+                logs: None,
+                metrics: None,
+                profiles: None,
+                dataset_overrides: [(dataset_key.to_string(), dataset(traces))].into(),
+            };
+            config
+                .tenant_overrides
+                .insert(tenant_key.to_string(), tenant);
+        }
+        let ctx = TenantContext::new(
+            "t-id".into(),
+            "d-id".into(),
+            "t-slug".into(),
+            "d-slug".into(),
+            None,
+            TenantSource::Database,
+        );
+
+        let retention = super::QueryRetention::resolve(&config, &ctx, "traces", NOW_NS)
+            .expect("traces is a signal source");
+        assert_eq!(
+            (retention.period.as_str(), retention.source.as_str()),
+            ("1d", "dataset")
+        );
+    }
+
+    #[test]
     fn non_signal_sources_carry_no_retention() {
         let config = common::config::RetentionConfig::default();
         assert!(annotated(&config, "scalar", 0).retention.is_none());
