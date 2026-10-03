@@ -2869,7 +2869,7 @@ mod tests {
     #[tokio::test]
     async fn raw_sql_streams_and_holds_its_permit_until_drained() {
         let service = make_service_with_limits(QuerierConfig {
-            max_concurrent_queries_per_tenant: Some(1),
+            max_concurrent_queries_per_tenant: 1,
             ..QuerierConfig::default()
         })
         .await;
