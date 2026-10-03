@@ -361,7 +361,7 @@ struct ConnectionInfoParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct GetSkillParams {
-    /// Skill name, e.g. `"query-ir"` (see `list_skills`).
+    /// Skill name, e.g. `"query-ir"` or `"query-ir/aggregate"` (see `list_skills`).
     name: String,
 }
 
@@ -3327,7 +3327,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Execute a native Query IR document (the structured, versioned query surface). Provide `query` as the IR JSON object. Returns the enveloped result scoped to your tenant. Reach for this over search_traces/search_logs/query_metrics when you need a pipeline stage those dialects can't express (topk/bottomk, extract, a multi-stage aggregate with step, or — at `irVersion` 8 — a `correlate` stage joining each span to its parent so you can group by caller and callee service) or you're building from discover_sources/discover_fields/discover_field_values. A large `rows`/`trace` result can be paged (`irVersion` 14): pass `page_size`, then call again with the same `query` and `cursor` set to the response's `page.next_cursor` until it is absent. To follow new rows (`irVersion` 15, `range.to: \"now\"`), pass `tail: {}`, then `tail: {\"cursor\": <tail.cursor>}` on each later call: one call per invocation, returning only what arrived since; see `get_skill(\"query-ir\")` (or the `skill://query-ir/SKILL.md` resource) for the full document reference."
+        description = "Execute a native Query IR document (the structured, versioned query surface). Provide `query` as the IR JSON object. Returns the enveloped result scoped to your tenant. Reach for this over search_traces/search_logs/query_metrics when you need a pipeline stage those dialects can't express (topk/bottomk, extract, a multi-stage aggregate with step, or — at `irVersion` 8 — a `correlate` stage joining each span to its parent so you can group by caller and callee service) or you're building from discover_sources/discover_fields/discover_field_values. A large `rows`/`trace` result can be paged (`irVersion` 14): pass `page_size`, then call again with the same `query` and `cursor` set to the response's `page.next_cursor` until it is absent. To follow new rows (`irVersion` 15, `range.to: \"now\"`), pass `tail: {}`, then `tail: {\"cursor\": <tail.cursor>}` on each later call: one call per invocation, returning only what arrived since; the smallest complete document is `{\"irVersion\": 9, \"from\": \"traces\", \"range\": {\"from\": \"now-1h\", \"to\": \"now\"}, \"result\": \"table\", \"pipeline\": [{\"aggregate\": {\"by\": [\"service.name\"], \"aggs\": [{\"fn\": \"count\", \"as\": \"spans\"}, {\"fn\": \"count_distinct\", \"of\": \"trace.id\", \"as\": \"traces\"}]}}]}` (irVersion, from, range and result are required). `get_skill(\"query-ir\")` indexes the reference; read one section with `get_skill(\"query-ir/<section>\")`, e.g. `query-ir/aggregate`, and a validation error names the section to read."
     )]
     async fn query_ir(
         &self,
@@ -3342,7 +3342,7 @@ impl McpServer {
             .body(request)
             .send()
             .await
-            .map_err(|e| map_api_error_body(e, "query_ir"))?;
+            .map_err(|e| with_query_ir_section_hint(map_api_error_body(e, "query_ir")))?;
         json_result(&resp.into_inner())
     }
 
@@ -3355,7 +3355,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Read one guidance document by name (see `list_skills`), e.g. \"query-ir\". Also served as the `skill://<name>/SKILL.md` resource.",
+        description = "Read one guidance document by name (see `list_skills`), e.g. \"query-ir\" (the Query IR index) or one of its sections such as \"query-ir/aggregate\". Also served as the `skill://<name>/SKILL.md` resource.",
         annotations(read_only_hint = true)
     )]
     async fn get_skill(
@@ -5101,8 +5101,8 @@ impl ServerHandler for McpServer {
              OpenTelemetry's. `prompts/list` has ready-made investigation templates, and clients \
              with the MCP Apps extension get `get_trace`/`get_profile` rendered as interactive \
              waterfalls/flamegraphs. Longer guides are available on demand via `list_skills` / \
-             `get_skill` (also as `skill://` resources) — read `query-ir` before building a \
-             `query_ir` document.",
+             `get_skill` (also as `skill://` resources) — read `query-ir` (a minimal document \
+             and an index of its sections) before building a `query_ir` document.",
         )
     }
 
@@ -6009,14 +6009,26 @@ fn query_ir_parse_error(query: &serde_json::Value, e: serde_json::Error) -> Stri
         None => QUERY_IR_REQUIRED_FIELDS.to_vec(),
     };
     if missing.is_empty() {
-        format!("invalid IR document: {e}")
+        let message = format!("invalid IR document: {e}");
+        let hint = docs::query_ir_section_hint(&message);
+        format!("{message}{hint}")
     } else {
         format!(
-            "invalid IR document: {e} (missing required field{}: {}; see get_skill(\"query-ir\") for the full reference)",
+            "invalid IR document: {e} (missing required field{}: {}; see get_skill(\"query-ir/document\"))",
             if missing.len() == 1 { "" } else { "s" },
             missing.join(", ")
         )
     }
+}
+
+/// Point a rejected `query_ir` document at the reference section that covers
+/// what the router objected to.
+fn with_query_ir_section_hint(mut err: ErrorData) -> ErrorData {
+    if err.code == rmcp::model::ErrorCode::INVALID_PARAMS {
+        let hint = docs::query_ir_section_hint(&err.message);
+        err.message = format!("{}{hint}", err.message).into();
+    }
+    err
 }
 
 /// Map a schema-API error to an MCP error, keeping the router's typed body
@@ -6243,6 +6255,51 @@ mod tests {
             "irVersion was present, should not be listed as missing: {message}"
         );
         assert!(message.contains("query-ir"), "got {message}");
+    }
+
+    #[test]
+    fn query_ir_parse_error_points_at_the_document_section() {
+        let query = serde_json::json!({ "irVersion": 9 });
+        let e = serde_json::from_value::<signaldb_sdk::types::QueryIrRequest>(query.clone())
+            .expect_err("missing fields should fail to parse");
+        let message = query_ir_parse_error(&query, e);
+        assert!(message.contains("query-ir/document"), "got {message}");
+    }
+
+    #[test]
+    fn a_rejected_query_ir_document_names_the_section_to_read() {
+        let err = with_query_ir_section_hint(ErrorData::invalid_params(
+            "query_ir: aggregate: unknown function 'median'",
+            None,
+        ));
+        assert!(
+            err.message
+                .ends_with("(see get_skill(\"query-ir/aggregate\"))"),
+            "got {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn a_query_ir_server_error_gets_no_section_hint() {
+        let err = with_query_ir_section_hint(ErrorData::internal_error("query_ir: boom", None));
+        assert_eq!(err.message, "query_ir: boom");
+    }
+
+    #[test]
+    fn the_query_ir_description_carries_the_minimal_example() {
+        serde_json::from_str::<signaldb_sdk::types::QueryIrRequest>(docs::QUERY_IR_MINIMAL_EXAMPLE)
+            .expect("the minimal example is a valid document");
+        let tool = McpServer::tool_router()
+            .list_all()
+            .into_iter()
+            .find(|tool| tool.name == "query_ir")
+            .expect("query_ir is registered");
+        let description = tool.description.expect("query_ir has a description");
+        assert!(
+            description.contains(docs::QUERY_IR_MINIMAL_EXAMPLE),
+            "the description must quote docs::QUERY_IR_MINIMAL_EXAMPLE verbatim"
+        );
     }
 
     #[test]
