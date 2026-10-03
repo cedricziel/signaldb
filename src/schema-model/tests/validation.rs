@@ -433,3 +433,54 @@ fn blank_alias_is_rejected() {
     let errs = errors_of(&ALIASED_METRIC.replace("legacy.mem]", "\" \"]"));
     assert_eq!(errs, vec!["groups[0].aliases[1]: alias must not be empty"]);
 }
+
+const TWO_METRICS: &str = r#"
+name: acme
+version: 1.0.0
+groups:
+  - id: metric.acme.mem
+    type: metric
+    metric_name: acme.mem
+    brief: m
+    instrument: gauge
+    unit: By
+    aliases: [legacy.mem]
+  - id: metric.acme.cpu
+    type: metric
+    metric_name: acme.cpu
+    brief: c
+    instrument: gauge
+    unit: "1"
+    aliases: [legacy.cpu]
+"#;
+
+#[test]
+fn alias_resolves_to_the_canonical_definition() {
+    let doc = RegistryDocument::from_yaml(TWO_METRICS).expect("yaml parses");
+    let otel = otel_resolved();
+    let resolved = Registry::resolve(&doc, &[&otel]).expect("resolves");
+    let by_alias = resolved.metric("legacy.mem").expect("alias resolves");
+    assert_eq!(Some(by_alias), resolved.metric("acme.mem"));
+    assert_eq!(by_alias.name, "acme.mem");
+    assert!(resolved.metric("no.such.metric").is_none());
+}
+
+#[test]
+fn alias_equal_to_another_metrics_name_is_rejected() {
+    let errs = errors_of(&TWO_METRICS.replace("legacy.cpu", "acme.mem"));
+    assert_eq!(
+        errs,
+        vec![
+            "groups[1].aliases[0]: metric `acme.cpu` lists alias `acme.mem`, which is another metric's name"
+        ]
+    );
+}
+
+#[test]
+fn alias_equal_to_another_metrics_alias_is_rejected() {
+    let errs = errors_of(&TWO_METRICS.replace("legacy.cpu", "legacy.mem"));
+    assert_eq!(
+        errs,
+        vec!["groups[1].aliases[0]: alias `legacy.mem` is already an alias of metric `acme.mem`"]
+    );
+}

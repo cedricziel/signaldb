@@ -571,7 +571,7 @@ impl SchemaResolver {
                 continue;
             }
             if let Some(hit) = visible.iter().find_map(|v| {
-                v.resolved.metrics.get(&name).map(|def| MetricHit {
+                v.resolved.metric(&name).map(|def| MetricHit {
                     namespace: v.resolved.namespace.clone(),
                     version: v.resolved.version.clone(),
                     source: v.source,
@@ -617,7 +617,7 @@ impl SchemaResolver {
         let hits = visible
             .iter()
             .filter_map(|v| {
-                v.resolved.metrics.get(name).map(|def| MetricHit {
+                v.resolved.metric(name).map(|def| MetricHit {
                     namespace: v.resolved.namespace.clone(),
                     version: v.resolved.version.clone(),
                     source: v.source,

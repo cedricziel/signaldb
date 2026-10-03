@@ -166,11 +166,24 @@ pub struct ResolvedRegistry {
     pub metrics: BTreeMap<String, MetricDef>,
     #[serde(default)]
     entity_metrics: BTreeMap<String, Vec<String>>,
+    /// Alias -> canonical metric name.
+    #[serde(default)]
+    metric_aliases: BTreeMap<String, String>,
     #[serde(default)]
     attribute_entities: BTreeMap<String, Vec<EntityRole>>,
 }
 
 impl ResolvedRegistry {
+    /// The metric called `name`, whether `name` is its canonical name or one
+    /// of its aliases.
+    pub fn metric(&self, name: &str) -> Option<&MetricDef> {
+        self.metrics.get(name).or_else(|| {
+            self.metric_aliases
+                .get(name)
+                .and_then(|canonical| self.metrics.get(canonical))
+        })
+    }
+
     /// Metrics whose `entity_associations` name `entity`.
     pub fn metrics_for_entity(&self, entity: &str) -> impl Iterator<Item = &str> {
         self.entity_metrics
@@ -209,6 +222,8 @@ impl Registry {
         deps: &[&ResolvedRegistry],
     ) -> Result<ResolvedRegistry, Vec<ValidationError>> {
         let mut errors = Vec::new();
+        // (error path, owning metric, alias) for every well-formed alias.
+        let mut alias_sites: Vec<(String, String, String)> = Vec::new();
         let mut out = ResolvedRegistry {
             namespace: doc.name.clone(),
             version: doc.version.clone(),
@@ -529,6 +544,8 @@ impl Registry {
                                 &apath,
                                 format!("metric `{name}` lists alias `{alias}` twice"),
                             ));
+                        } else {
+                            alias_sites.push((apath, name.clone(), alias.clone()));
                         }
                     }
                     for entity in &group.entity_associations {
@@ -579,6 +596,25 @@ impl Registry {
                         }
                     }
                 }
+            }
+        }
+
+        // Alias index; an alias may not shadow a metric name or another alias.
+        for (apath, owner, alias) in alias_sites {
+            if out.metrics.contains_key(&alias) {
+                errors.push(err(
+                    &apath,
+                    format!(
+                        "metric `{owner}` lists alias `{alias}`, which is another metric's name"
+                    ),
+                ));
+            } else if let Some(other) = out.metric_aliases.get(&alias) {
+                errors.push(err(
+                    &apath,
+                    format!("alias `{alias}` is already an alias of metric `{other}`"),
+                ));
+            } else {
+                out.metric_aliases.insert(alias, owner);
             }
         }
 
