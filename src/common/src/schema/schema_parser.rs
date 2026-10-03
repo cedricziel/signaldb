@@ -41,7 +41,7 @@ fn default_profile_version() -> String {
 }
 
 fn default_logical_schema_version() -> String {
-    "otel-2026-09".to_string()
+    "otel-2026-10".to_string()
 }
 
 #[derive(Debug, Deserialize, Clone)]

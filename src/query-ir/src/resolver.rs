@@ -96,6 +96,10 @@ pub enum Resolved {
     /// The whole span-events list, read from an events JSON-array column and
     /// normalized to `[{name, timestamp_unix_nano, attributes}]` (String).
     SpanEvents { events_column: String },
+    /// The whole span-links list, read from a links JSON-array column and
+    /// normalized to `[{trace_id, span_id, attributes}]` (String), NULL when
+    /// the span has no links.
+    SpanLinks { links_column: String },
     /// An element field of a span's `events`/`links` JSON-array column.
     /// Filter-only, with existential semantics: a leaf holds when any list
     /// element satisfies it.
@@ -158,7 +162,9 @@ impl Resolved {
             Resolved::Column { value_type, .. } => value_type,
             Resolved::JsonPath { value_type, .. } => value_type,
             Resolved::EventAttribute { value_type, .. } => value_type,
-            Resolved::SpanEvents { .. } | Resolved::SpanList(_) => &ValueType::String,
+            Resolved::SpanEvents { .. } | Resolved::SpanLinks { .. } | Resolved::SpanList(_) => {
+                &ValueType::String
+            }
             Resolved::PromotedColumn { value_type, .. } => value_type,
             Resolved::AttributeBag { .. } => &ValueType::String,
             Resolved::TypedAttribute { value_type, .. } => value_type,

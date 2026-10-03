@@ -717,6 +717,55 @@
   gap: 6px;
 }
 
+.span-links {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.span-link {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font-size: 11px;
+}
+
+.span-link-open {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+  font-family: var(--mono);
+}
+
+.span-link-open:hover .span-link-trace {
+  text-decoration: underline;
+}
+
+.span-link-trace {
+  font-weight: 650;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.span-link-span {
+  margin-left: auto;
+  color: var(--dim);
+}
+
+.span-link-mark {
+  flex: 0 0 auto;
+  color: var(--dim);
+  font-size: 10px;
+}
+
 .span-event {
   border: 1px solid var(--border);
   border-radius: 6px;

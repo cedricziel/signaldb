@@ -7,7 +7,7 @@ current_trace_version = "physical-v5"
 current_log_version = "physical-v4"
 current_metric_version = "physical-v4"
 current_profile_version = "physical-v3"
-logical_schema_version = "otel-2026-09"
+logical_schema_version = "otel-2026-10"
 
 # ==============================================================================
 # TRACES TABLE SCHEMAS

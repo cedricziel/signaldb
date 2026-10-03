@@ -54,6 +54,7 @@ fn alias_table(source: &str) -> &'static [(&'static str, &'static str)] {
             // "events" }`) rather than the generic alias table. Recorded here
             // as the logical name it actually realizes.
             ("events", "span_events"),
+            ("links", "span_links"),
         ],
         "metrics" => &[
             ("service_name", "service.name"),
@@ -149,9 +150,6 @@ fn is_attribute_container_column(source: &str, physical: &str) -> bool {
 /// to fix by either declaring the logical field or marking the column
 /// `physical_only`, not something this test should silently accept forever.
 ///
-/// - `traces.links`: the span's links list. No logical field exists for it
-///   (only `span_events` was modeled, #1280); `get_trace` reads it directly
-///   by physical name, bypassing the logical schema entirely.
 /// - `metrics` columns the one metric model does not expose yet:
 ///   `start_timestamp`, `metric_description`, `metric_unit`, `series_id`,
 ///   `flags`, the resource/scope metadata, and the exponential histogram's
@@ -160,7 +158,7 @@ fn is_attribute_container_column(source: &str, physical: &str) -> bool {
 ///   would misstate that they're computed/partition artifacts.
 fn known_gap(source: &str, physical: &str) -> bool {
     let names: &[&str] = match source {
-        "traces" => &["links"],
+        "traces" => &[],
         // Profile scalars beyond `timestamp`/`resource.identity` aren't
         // modeled in the logical schema yet -- see the comment on
         // `alias_table`'s "profiles" arm.

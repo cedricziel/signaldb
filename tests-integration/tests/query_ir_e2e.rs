@@ -3444,6 +3444,60 @@ async fn match_on_span_events_and_links() {
     );
 }
 
+/// A consumer span that links back to its producer (#1802): `span_links` and
+/// `span_kind` both read back through the IR, and a span without links has
+/// no `span_links`.
+#[tokio::test]
+async fn span_links_and_kind_read_back() {
+    use opentelemetry_proto::tonic::trace::v1::span::SpanKind;
+
+    let services = setup().await;
+    let ctx = test_tenant_context();
+    let producer_trace = [0xab_u8; 16];
+    let consumer = Span {
+        kind: SpanKind::Consumer as i32,
+        ..span_with_events_and_links("river.work/notify", 1, 1, None, &[], &[producer_trace])
+    };
+    let plain = span_with_events_and_links("op", 2, 1, None, &[], &[]);
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(&ctx, traces_request("worker", vec![consumer, plain]))
+        .await
+        .expect("ingest linked spans");
+
+    let app = build_router(&services).await;
+    let (status, body) = post_ir_until_rows(
+        &app,
+        serde_json::json!({
+            "irVersion": 1, "from": "traces", "range": range(), "result": "rows",
+            "fields": ["span.name", "span_kind", "span_links"],
+            "pipeline": [ { "order": [{ "of": "span.name", "dir": "desc" }] } ]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "span links query: {body}");
+    let rows = body["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 2, "{body}");
+
+    assert_eq!(rows[0][0], "river.work/notify");
+    assert_eq!(rows[0][1], "Consumer");
+    let links: serde_json::Value = match &rows[0][2] {
+        serde_json::Value::String(s) => serde_json::from_str(s).expect("links JSON"),
+        other => other.clone(),
+    };
+    assert_eq!(
+        links,
+        serde_json::json!([{
+            "trace_id": hex::encode(producer_trace),
+            "span_id": hex::encode([7_u8; 8]),
+            "attributes": {}
+        }]),
+        "{body}"
+    );
+    assert_eq!(rows[1][0], "op");
+    assert!(rows[1][2].is_null(), "a span without links: {body}");
+}
+
 /// `match` is traces-only: on logs it is a 400 at validation.
 #[tokio::test]
 async fn match_on_logs_is_rejected() {

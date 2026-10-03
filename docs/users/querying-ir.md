@@ -179,8 +179,8 @@ Operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `between`, `contains`,
 
 Some logical fields are **retrieval-only**: they can appear in `fields`
 projections but are rejected in predicates, `aggregate.by`, `topk.of`,
-`bottomk.of`, and `order` keys. The trace `span_events` is retrieval-only
-today. A retrieval-only field used in a predicate raises an
+`bottomk.of`, and `order` keys. The trace `span_events` and `span_links` are
+retrieval-only today. A retrieval-only field used in a predicate raises an
 `UnfilterableField` error.
 
 The log `body` is filterable for string operators (`contains`, `regex`, `eq`,
@@ -204,6 +204,16 @@ observed it yet) resolves as a string.
 `[{"name", "timestamp_unix_nano", "attributes": {...}}, ...]`, `null` for a
 span that recorded none. To filter on an exception, use the `exception.*`
 fields below instead of the list.
+
+`span_links` on `traces` is the span's links list as a JSON string:
+`[{"trace_id", "span_id", "attributes": {...}}, ...]`, `null` for a span with
+no links. A consumer span that links back to the producer span which enqueued
+it carries that producer's trace and span id here. To find the spans that link
+to a trace, filter on `links.trace_id` instead of the list:
+
+```jsonc
+{ "field": "links.trace_id", "op": "eq", "value": "4c20…859e" }
+```
 
 ### Addressing an attribute scope
 
