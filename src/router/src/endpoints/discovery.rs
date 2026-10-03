@@ -293,9 +293,22 @@ async fn fields(
         window.end_ns,
     );
     if cost.partial {
-        // A distinct count over part of the window can only undercount it.
-        for estimate in fields.iter_mut().filter_map(|f| f.cardinality.as_mut()) {
-            estimate.at_least = true;
+        // A distinct count over rows that all fall inside the window can only
+        // undercount it; one over rows outside the window bounds nothing.
+        let within: std::collections::HashSet<&str> = stats
+            .iter()
+            .filter(|record| {
+                record
+                    .analyzed_span
+                    .is_some_and(|span| span.within(window.start_ns, window.end_ns))
+            })
+            .map(|record| record.attr_key.as_str())
+            .collect();
+        for field in &mut fields {
+            let at_least = within.contains(field.name.as_str());
+            if let Some(estimate) = field.cardinality.as_mut() {
+                estimate.at_least = at_least;
+            }
         }
     }
     Ok(MetadataResult {
@@ -1111,6 +1124,33 @@ mod tests {
             .unwrap_or_else(|| panic!("http.route not listed: {body}"));
         assert_eq!(route["cardinality"]["estimate"], 1);
         assert_eq!(route["cardinality"]["at_least"], true);
+    }
+
+    #[tokio::test]
+    async fn statistics_from_outside_the_window_bound_nothing() {
+        // The sketch covers [0, 1h); the window starts half-way through it
+        // and runs past it, so the count may include values from before it.
+        let app = app_with(catalog_with_sketch(0, HOUR_NS).await, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            describe_between(
+                HOUR_NS / 2,
+                2 * HOUR_NS,
+                serde_json::json!({"target": "fields"}),
+            ),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        assert_eq!(body["metadata"]["cost"]["partial"], true);
+        let route = body["metadata"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == "http.route")
+            .unwrap_or_else(|| panic!("http.route not listed: {body}"));
+        assert_eq!(route["cardinality"]["at_least"], false);
     }
 
     #[tokio::test]
