@@ -477,6 +477,13 @@ impl Registry {
                         ));
                         continue;
                     }
+                    if let Some(other) = deps.iter().find_map(|d| d.metric_aliases.get(&name)) {
+                        errors.push(err(
+                            &format!("{gpath}.metric_name"),
+                            format!("metric name `{name}` is already an alias of metric `{other}`"),
+                        ));
+                        continue;
+                    }
                     let mut attributes = Vec::new();
                     // Inherited attributes via `extends` (attribute_group).
                     if let Some(parent_id) = &group.extends {
