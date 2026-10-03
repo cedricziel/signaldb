@@ -525,8 +525,16 @@ pub fn session_context_with_limits(limits: &QuerierConfig) -> SessionContext {
         CacheManagerConfig::default()
             .with_metadata_cache_limit((limits.parquet_metadata_cache_mb as usize) * 1024 * 1024),
     );
-    match limits.memory_limit_mb {
-        Some(mb) if mb > 0 => {
+    let memory_limit_mb = limits
+        .effective_memory_limit_mb(common::self_monitoring::metrics::total_system_memory_bytes());
+    match memory_limit_mb {
+        0 => {
+            tracing::warn!(
+                "Querier memory is UNBOUNDED ([querier].memory_limit_mb = 0); \
+                 a single heavy query can exhaust process memory"
+            );
+        }
+        mb => {
             builder = builder.with_memory_pool(common::datafusion_runtime::bounded_memory_pool(
                 (mb as usize) * 1024 * 1024,
                 limits.memory_pool_fraction,
@@ -535,14 +543,6 @@ pub fn session_context_with_limits(limits: &QuerierConfig) -> SessionContext {
                 signaldb.querier.memory_limit_mb = mb as i64,
                 signaldb.querier.memory_pool_fraction = limits.memory_pool_fraction,
                 "Querier memory pool configured"
-            );
-        }
-        // `Some(0)` is an explicit unbounded opt-out, same as `None` — see
-        // the `memory_limit_mb` doc comment for the three cases.
-        Some(_) | None => {
-            tracing::warn!(
-                "Querier memory is UNBOUNDED ([querier].memory_limit_mb is unset or 0); \
-                 a single heavy query can exhaust process memory"
             );
         }
     }
@@ -850,15 +850,16 @@ impl QuerierFlightService {
 
     /// Reserve a concurrent-query slot for `tenant`, or reject with
     /// RESOURCE_EXHAUSTED when the tenant is already at its cap. Returns
-    /// `None` (no permit needed) when no cap is configured.
+    /// `None` (no permit needed) when the cap is `0` (unlimited).
     #[allow(clippy::result_large_err)]
     fn try_acquire_query_permit(
         &self,
         tenant: &str,
     ) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, Status> {
-        let Some(cap) = self.limits.max_concurrent_queries_per_tenant else {
+        let cap = self.limits.max_concurrent_queries_per_tenant;
+        if cap == 0 {
             return Ok(None);
-        };
+        }
         let semaphore = self
             .query_permits
             .entry(tenant.to_string())
@@ -2995,7 +2996,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_query_cap_is_enforced_per_tenant() {
         let service = make_service_with_limits(QuerierConfig {
-            max_concurrent_queries_per_tenant: Some(1),
+            max_concurrent_queries_per_tenant: 1,
             ..QuerierConfig::default()
         })
         .await;
@@ -3021,8 +3022,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_cap_means_no_permits_needed() {
+    async fn default_config_caps_concurrent_queries_per_tenant() {
         let service = make_service_with_limits(QuerierConfig::default()).await;
+        let cap = QuerierConfig::default().max_concurrent_queries_per_tenant;
+        assert!(cap > 0, "the default must bound per-tenant concurrency");
+        let _held: Vec<_> = (0..cap)
+            .map(|_| service.try_acquire_query_permit("acme").unwrap())
+            .collect();
+        let status = service
+            .try_acquire_query_permit("acme")
+            .expect_err("a query past the default cap must be rejected");
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+    }
+
+    #[tokio::test]
+    async fn zero_cap_means_no_permits_needed() {
+        let service = make_service_with_limits(QuerierConfig {
+            max_concurrent_queries_per_tenant: 0,
+            ..QuerierConfig::default()
+        })
+        .await;
         for _ in 0..100 {
             assert!(service.try_acquire_query_permit("acme").unwrap().is_none());
         }
@@ -3123,12 +3142,16 @@ mod tests {
             "allocations beyond the configured limit must be refused"
         );
 
-        // Without a configured limit the pool is unbounded (legacy behavior).
+        // Without a configured limit the pool is still bounded (#941): the
+        // default caps at 4096 MiB, so a larger reservation is refused.
         let ctx = session_context_with_limits(&QuerierConfig::default());
         let reservation = MemoryConsumer::new("test").register(&ctx.runtime_env().memory_pool);
-        assert!(reservation.try_grow(10 * 1024 * 1024).is_ok());
+        assert!(
+            reservation.try_grow(5 * 1024 * 1024 * 1024).is_err(),
+            "an unset memory_limit_mb must resolve to a bounded pool"
+        );
 
-        // `Some(0)` is an explicit unbounded opt-out, same as `None`.
+        // `Some(0)` is the explicit unbounded opt-out.
         let ctx = session_context_with_limits(&QuerierConfig {
             memory_limit_mb: Some(0),
             memory_pool_fraction: 1.0,
