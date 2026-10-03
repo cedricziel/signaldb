@@ -79,11 +79,11 @@ A label name may contain dots (`{k8s.pod.name="checkout-7c9f"}`,
 its real OTel key. Apart from the well-known aliases in the table above
 (`service.name` reaches the `service_name` column), a dotted key resolves
 directly against the attribute maps by exact key — no materialization
-needed. The underscore spelling of
-the same attribute (`k8s_pod_name`) only resolves to that data once the
-label has been **materialized** (see below): both spellings sanitize to
-the identical `label_<key>` column, so either works once the column
-exists, but only the dotted form is guaranteed to match beforehand.
+needed. The underscore spelling (`k8s_pod_name`) names a different
+attribute key: it reads the materialized `label_k8s_pod_name` column (see
+below) only when that column was configured for `k8s_pod_name` itself, or is
+a legacy column with no recorded origin key. A column materialized for
+`k8s.pod.name` serves only the dotted spelling, so use the real OTel key.
 
 ### Materialized labels
 
