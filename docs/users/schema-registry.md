@@ -314,6 +314,7 @@ metrics:
     stability: development
     brief: End-to-end checkout latency per order.
     entity_associations: [acme.order]
+    aliases: [acme.checkout.duration]
 ```
 
 SignalDB converts a `definition/2` upload to `groups` when it stores it, and
@@ -352,7 +353,7 @@ resolves in your document or a dependency; known attribute types
 entity attribute roles `identifying`/`descriptive`; metrics carry
 `metric_name`, `instrument`, `unit`; every `entity_associations` target is a
 known entity; each metric's `aliases` are non-empty, distinct, differ from
-the metric's own name and never equal another metric's name or alias; and an entity that `extends` another may add descriptive
+the metric's own name and never equal another metric's name or alias, in your document or a dependency (nor may a metric name equal a dependency's alias); and an entity that `extends` another may add descriptive
 attributes but never new identifying ones. Errors name the offending path
 (`groups[2].attributes[0].ref: unresolved ref …`). Replace is all-or-nothing —
 an invalid document leaves the previous one served.

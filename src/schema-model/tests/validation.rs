@@ -484,3 +484,38 @@ fn alias_equal_to_another_metrics_alias_is_rejected() {
         vec!["groups[1].aliases[0]: alias `legacy.mem` is already an alias of metric `acme.mem`"]
     );
 }
+
+#[test]
+fn alias_equal_to_a_dependency_metric_name_is_rejected() {
+    let errs = errors_of(&ALIASED_METRIC.replace("legacy.mem]", "system.memory.usage]"));
+    assert_eq!(
+        errs,
+        vec![
+            "groups[0].aliases[1]: metric `acme.mem` lists alias `system.memory.usage`, which is another metric's name"
+        ]
+    );
+}
+
+#[test]
+fn metric_name_equal_to_a_dependency_alias_is_rejected() {
+    let dep = RegistryDocument::from_yaml(ALIASED_METRIC).expect("yaml parses");
+    let otel = otel_resolved();
+    let dep = Registry::resolve(&dep, &[&otel]).expect("resolves");
+    let doc = RegistryDocument::from_yaml(
+        &ALIASED_METRIC
+            .replace("name: acme\n", "name: other\n")
+            .replace("metric_name: acme.mem", "metric_name: legacy.mem")
+            .replace("    aliases: [acme.mem.total, legacy.mem]\n", ""),
+    )
+    .expect("yaml parses");
+    let errs: Vec<String> = match Registry::resolve(&doc, &[&dep]) {
+        Ok(_) => Vec::new(),
+        Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
+    };
+    assert_eq!(
+        errs,
+        vec![
+            "groups[0].metric_name: metric name `legacy.mem` is already an alias of metric `acme.mem`"
+        ]
+    );
+}
