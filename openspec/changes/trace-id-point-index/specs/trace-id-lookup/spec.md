@@ -24,6 +24,19 @@ directly for those hours rather than returning fewer spans.
 - **THEN** a lookup returns every span once the data commit lands, and before
   that it returns what `traces` holds, never an error
 
+#### Scenario: Index turned on for a dataset that already holds traces
+
+- **WHEN** the index is activated at 14:40 on a dataset with spans committed
+  at 14:10, and the trace is looked up by id after 14:00 has left the hot
+  window
+- **THEN** the 14:10 spans are returned
+
+#### Scenario: Index turned off and on again
+
+- **WHEN** the index is deactivated, spans are written, and the index is
+  reactivated
+- **THEN** a lookup returns the spans written while it was off
+
 #### Scenario: Dataset without an index table
 
 - **WHEN** a dataset has a `traces` table but no `trace_index` table

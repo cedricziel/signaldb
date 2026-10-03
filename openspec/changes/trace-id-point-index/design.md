@@ -101,9 +101,8 @@ which would silently drop spans.
 
 If step 2 fails, the cycle fails before any data is committed and WAL replay
 retries it, the same as any other commit failure. An index outage therefore
-stalls trace ingest instead of degrading it. `[trace_index].enabled = false`
-is the escape hatch, and turning it off also stops lookups from trusting the
-index (D5).
+stalls trace ingest instead of degrading it. Deactivating the index (D6) is
+the escape hatch, and it also stops lookups from trusting the index (D5).
 
 ### D3: Bounding the write cost
 
@@ -161,7 +160,7 @@ traces scan   = trace_id = ?
 - **Unindexed range.** For hours older than `complete_from` (data written
   before the index existed and not yet backfilled), the lookup falls back to
   today's bloom scan.
-- **Fallback.** A missing table, a disabled index, or any error reading the
+- **Fallback.** A missing table, an inactive or unseeded index (D6), or any error reading the
   index makes the querier drop the index branch and run today's unbounded
   scan. It logs at `warn` with the tenant/dataset and increments a counter.
   This never surfaces as a user error.
@@ -172,18 +171,45 @@ traces scan   = trace_id = ?
 Explicit `start`/`end` hints keep today's path (spec: lookups with a time
 range are unchanged).
 
-### D6: Coverage watermark and backfill
+### D6: Activation, coverage watermark and backfill
 
-`signaldb.trace_index.complete_from` is a table property set to the creation
-hour when the reconciler creates `trace_index`. Every span committed after
-that point went through D2, so the index is complete from that hour on.
+Whether a dataset's index is live is a property of the `trace_index` table,
+not of each process's config. A per-process flag would let writers disagree
+during a rolling restart or after an off/on toggle, and a span committed by a
+writer that skipped D2 would sit in an hour the querier trusts.
 
-Backfill is a compactor job. It walks closed `traces` hour partitions older
-than `complete_from`, newest first. For each partition it appends the
-partition's distinct `(trace_id, hour)` pairs, then lowers `complete_from` to
-that hour in the same `trace_index` commit, using the property update and the
-append as one Iceberg transaction on one table. A crash between hours leaves
-the watermark at the last fully indexed hour.
+- **Activation.** `signaldb.trace_index.active_since = T` is written in one
+  commit when the index is turned on, by the reconciler for new datasets
+  when `[trace_index].enabled` is set, or by an admin call. Writers re-read
+  the table's metadata at least every `R`
+  (`[trace_index].refresh_interval`, default 1m), and they run D2 whenever
+  the table is active. After `T + R`, every span commit goes through D2.
+- **Watermark.** `signaldb.trace_index.complete_from` starts at
+  `ceil_hour(T + R)`. It is the first whole hour that starts after every
+  writer is guaranteed to be indexing. A creation-hour watermark would be
+  wrong: spans committed between the top of that hour and `T` were never
+  indexed, but the querier would trust the hour.
+- **Seed.** Spans committed before `T + R` can still carry an event hour at
+  or after `complete_from` because of clock skew or future-dated
+  timestamps. The compactor's first backfill step therefore indexes every
+  `traces` data file added before `T + R` whose `timestamp` upper bound
+  (from file statistics) reaches `complete_from`. It then sets
+  `signaldb.trace_index.seeded = true`. The querier uses the index only once
+  `seeded` is true (D5 falls back otherwise).
+- **Deactivation and reactivation.** Deactivating clears `active_since`.
+  The querier stops trusting the index at once, and writers stop D2 within
+  `R`. Reactivating is a fresh activation: it sets a new `T`, resets
+  `complete_from` to `ceil_hour(T + R)` and resets `seeded` to false. Hours
+  written while the index was off are below the new watermark, so they fall
+  back to the direct scan until backfill reaches them. Old rows stay as
+  harmless supersets and are deduplicated at compaction.
+
+**Backfill** is a compactor job. It walks closed `traces` hour partitions
+older than `complete_from`, newest first. For each partition it appends the
+partition's distinct `(trace_id, hour)` pairs, then lowers `complete_from`
+to that hour in the same `trace_index` commit, using the property update and
+the append as one Iceberg transaction on one table. A crash between hours
+leaves the watermark at the last fully indexed hour.
 
 Backfill stops at the retention cutoff. It is opt-in per run (`compact_run`
 style trigger) in the first release, and becomes automatic once the write
@@ -199,13 +225,13 @@ posting list grows.
   reconciler, and no change to `traces`, the WAL or the Flight schemas.
   Existing data is served by the unindexed-range fallback until backfilled.
 - **Rollback**: older binaries ignore `trace_index`. To stop paying the
-  write cost, set `[trace_index].enabled = false`. To reclaim space, drop the
-  table. Nothing else references it.
+  write cost, deactivate the index (D6). To reclaim space, drop the table.
+  Nothing else references it.
 
 ## Risks / Trade-offs
 
 - **Ingest stalls on an index outage** (D2). This is accepted in exchange for
-  never having a false negative. The kill switch turns it off.
+  never having a false negative. Deactivation (D6) turns it off.
 - **Write amplification** (D3). This has to be measured before the index is
   enabled by default, and the default stays `false` until then.
 - **Hot-window misconfiguration.** A hot window shorter than the compactor's

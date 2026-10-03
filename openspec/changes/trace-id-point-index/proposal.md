@@ -41,17 +41,25 @@ files, cold cache included, and stays complete for traces spread across days.
   trace retention.
 - **A coverage watermark** (`signaldb.trace_index.complete_from`, an index
   table property) marks the earliest hour the index is known complete for.
-  It is set when the table is created. A compactor backfill job indexes older
-  hours from existing data and lowers the watermark.
+  On activation it is set to the first whole hour after every writer is
+  known to be indexing. A seed step covers spans committed earlier that
+  still fall in later hours, and a compactor backfill job indexes older hours
+  from existing data and lowers the watermark. Activation is a table
+  property, so all writers agree on it and an off/on toggle cannot leave an
+  unindexed hour that lookups trust.
 - **The querier's bare-id lookup consults the index.** For hours the index
   covers, it scans only the hours the index lists for that id. For the recent
   hot window, and for any hours older than the watermark, it scans `traces`
   directly as it does today. A missing index table, or an index read error,
   falls back to today's scan. Lookups that already carry a time range are
   unchanged.
-- **Config**: a `[trace_index]` section with `enabled`, which defaults to
-  `false` until the write-cost bench in design.md D3 passes, and `hot_window`,
-  which defaults to `2h`.
+- **Config**: a `[trace_index]` section.
+  - `enabled` decides whether the reconciler activates the index for
+    datasets. It defaults to `false` until the write-cost bench in design.md
+    D3 passes.
+  - `hot_window` defaults to `2h`.
+  - `refresh_interval` is how often writers re-read the activation state. It
+    defaults to `1m`.
 - **Table lifecycle**: the writer's signal-table reconciler provisions
   `trace_index` together with `traces`, and tenant/dataset deletion removes it.
 

@@ -19,9 +19,9 @@
       `trace_index` schema is `trace_id string`, `hour timestamp_ns`,
       partitioned `truncate(1, trace_id)`, sorted `(trace_id, hour)`, with a
       bloom filter on `trace_id`. Then add it to `schemas.toml`.
-- [ ] 2.2 Failing test: `[trace_index]` parses `enabled` (default `false`)
-      and `hot_window` (humantime, default `2h`), with `SIGNALDB_TRACE_INDEX_*`
-      overrides. Then implement it, and document it in `signaldb.dist.toml`.
+- [ ] 2.2 Failing test: `[trace_index]` parses `enabled` (default `false`),
+      `hot_window` (humantime, default `2h`) and `refresh_interval` (default
+      `1m`), with `SIGNALDB_TRACE_INDEX_*` overrides. Then implement it, and document it in `signaldb.dist.toml`.
 
 ## 3. Writer (writer)
 
@@ -33,10 +33,14 @@
       the data, and the index has duplicate rows, not missing ones.
 - [ ] 3.3 Failing test: an injected index commit failure fails the cycle
       before any `traces` commit, and replay recovers.
-- [ ] 3.4 Failing test (`cargo test -p writer reconcile`): the reconciler
-      creates `trace_index` with `complete_from` set to the creation hour
-      wherever it creates or ensures `traces`, but only when the index is
-      enabled.
+- [ ] 3.4 Failing test (`cargo test -p writer reconcile`): when the index
+      is enabled, the reconciler creates and activates `trace_index` wherever
+      it ensures `traces`, and sets `active_since = T` and
+      `complete_from = ceil_hour(T + refresh_interval)`. An activation at
+      14:40 with `R = 1m` gives a watermark of 15:00, not 14:00.
+- [ ] 3.5 Failing test: a writer runs D2 only while the table is active. It
+      sees activation and deactivation within `refresh_interval`.
+      Reactivation resets `complete_from` and `seeded`.
 
 ## 4. Compactor (compactor)
 
@@ -48,7 +52,11 @@
       than `complete_from`, newest first. It lowers the watermark in the same
       commit as each hour's rows, and stops at the retention cutoff. A crash
       mid-run leaves the watermark at the last complete hour.
-- [ ] 4.3 Tenant and dataset deletion drop `trace_index` (extend the
+- [ ] 4.3 Failing test: the seed step indexes data files added before
+      `T + R` whose `timestamp` upper bound reaches `complete_from`, including
+      a future-dated span, then sets `seeded`. The querier ignores the index
+      until `seeded` is set.
+- [ ] 4.4 Tenant and dataset deletion drop `trace_index` (extend the
       existing deletion test).
 
 ## 5. Querier (querier)
