@@ -36,7 +36,7 @@ use arrow_flight::Ticket;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_server::FlightService;
-use common::catalog_manager::CatalogManager;
+use common::catalog::Catalog;
 use common::config::QuerierConfig;
 use common::flight::transport::InMemoryFlightTransport;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
@@ -46,9 +46,9 @@ use querier::flight::QuerierFlightService;
 use tempfile::TempDir;
 use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity};
 use tests_integration::generators::{self, BLOOM_TARGET_TRACE_ID};
+use tests_integration::test_support;
 use tokio::runtime::Runtime;
 use tonic::Request;
-use writer::IcebergTableWriter;
 
 const TENANT: &str = "bench-tenant";
 const DATASET: &str = "bench-dataset";
@@ -82,11 +82,15 @@ async fn seed() -> Env {
         .with_storage_dsn(&storage_dsn)
         .with_tenant(TENANT, DATASET)
         .build();
-    let catalog_manager = Arc::new(
-        CatalogManager::new(config.clone())
-            .await
-            .expect("catalog manager"),
-    );
+    // One SQL catalog behind the writers' type authority and the catalog
+    // manager's tenant source, so the querier's IR path resolves the
+    // canonical attribute types the writers commit.
+    let (catalog_manager, type_catalog) = test_support::catalog_manager_with_tenant_source(
+        config.clone(),
+        Catalog::new_in_memory().await.expect("type catalog"),
+    )
+    .await
+    .expect("catalog manager");
 
     let base_ts_ms = chrono::Utc::now().timestamp_millis() - PARTITION_COUNT as i64 * DAY_MS;
     let gen_config = DataGeneratorConfig {
@@ -98,11 +102,12 @@ async fn seed() -> Env {
     };
 
     // Traces: bulk volume + bloom-only-prunable files holding the target.
-    let mut traces = IcebergTableWriter::new(
+    let mut traces = test_support::writer_with_type_authority_and_catalog(
         &catalog_manager,
         TENANT.to_string(),
         DATASET.to_string(),
         "traces".to_string(),
+        type_catalog.clone(),
     )
     .await
     .expect("traces writer");
@@ -118,11 +123,12 @@ async fn seed() -> Env {
     .await
     .expect("seed bloom-prunable traces");
 
-    let mut logs = IcebergTableWriter::new(
+    let mut logs = test_support::writer_with_type_authority_and_catalog(
         &catalog_manager,
         TENANT.to_string(),
         DATASET.to_string(),
         "logs".to_string(),
+        type_catalog.clone(),
     )
     .await
     .expect("logs writer");
@@ -130,11 +136,12 @@ async fn seed() -> Env {
         .await
         .expect("seed logs");
 
-    let mut metrics = IcebergTableWriter::new(
+    let mut metrics = test_support::writer_with_type_authority_and_catalog(
         &catalog_manager,
         TENANT.to_string(),
         DATASET.to_string(),
         "metrics".to_string(),
+        type_catalog.clone(),
     )
     .await
     .expect("metrics writer");
