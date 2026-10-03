@@ -3316,6 +3316,12 @@ impl AnalyzedSpan {
     pub fn covers(&self, start_ns: i64, end_ns: i64) -> bool {
         self.start_ns <= start_ns && end_ns <= self.end_ns
     }
+
+    /// True when this span lies inside `[start_ns, end_ns)`, so whatever was
+    /// counted over it is a lower bound for the window.
+    pub fn within(&self, start_ns: i64, end_ns: i64) -> bool {
+        start_ns <= self.start_ns && self.end_ns <= end_ns
+    }
 }
 
 /// One value of an attribute key, with how often the analyzer saw it.
@@ -3609,6 +3615,28 @@ impl Catalog {
         attr_key: &str,
         values: &[(String, i64)],
     ) -> Result<(), sqlx::Error> {
+        self.replace_attribute_value_sketch(tenant_id, dataset_id, signal, attr_key, values, None)
+            .await
+    }
+
+    /// [`Self::replace_attribute_value_stats`], also recording on the key's
+    /// `attribute_stats` row the span the new sketch was built from, in the
+    /// same transaction: a reader never pairs a sketch with another pass's
+    /// span, and a failed replacement leaves the previous span with the
+    /// previous sketch.
+    pub async fn replace_attribute_value_sketch(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+        attr_key: &str,
+        values: &[(String, i64)],
+        analyzed_span: Option<AnalyzedSpan>,
+    ) -> Result<(), sqlx::Error> {
+        let span_sqlite = "UPDATE attribute_stats SET analyzed_start_ns = ?, analyzed_end_ns = ? \
+             WHERE tenant_id = ? AND dataset_id = ? AND signal = ? AND attr_key = ?";
+        let span_pg = "UPDATE attribute_stats SET analyzed_start_ns = $1, analyzed_end_ns = $2 \
+             WHERE tenant_id = $3 AND dataset_id = $4 AND signal = $5 AND attr_key = $6";
         let delete_sqlite = "DELETE FROM attribute_value_stats \
              WHERE tenant_id = ? AND dataset_id = ? AND signal = ? AND attr_key = ?";
         let delete_pg = "DELETE FROM attribute_value_stats \
@@ -3644,6 +3672,17 @@ impl Catalog {
                         .execute(&mut *tx)
                         .await?;
                 }
+                if let Some(span) = analyzed_span {
+                    query(span_sqlite)
+                        .bind(span.start_ns)
+                        .bind(span.end_ns)
+                        .bind(tenant_id)
+                        .bind(dataset_id)
+                        .bind(signal)
+                        .bind(attr_key)
+                        .execute(&mut *tx)
+                        .await?;
+                }
                 tx.commit().await?;
             }
             Catalog::Postgres(pool) => {
@@ -3663,6 +3702,17 @@ impl Catalog {
                         .bind(attr_key)
                         .bind(value)
                         .bind(count)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                if let Some(span) = analyzed_span {
+                    query(span_pg)
+                        .bind(span.start_ns)
+                        .bind(span.end_ns)
+                        .bind(tenant_id)
+                        .bind(dataset_id)
+                        .bind(signal)
+                        .bind(attr_key)
                         .execute(&mut *tx)
                         .await?;
                 }
@@ -8887,6 +8937,36 @@ mod multi_tenancy_tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn a_replaced_sketch_carries_its_span_onto_the_key_stats() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_attribute_scan_stats("t", "d", "logs", "http.route", 10, 10, 1, false, None)
+            .await
+            .unwrap();
+        let span = AnalyzedSpan {
+            start_ns: 100,
+            end_ns: 200,
+        };
+        catalog
+            .replace_attribute_value_sketch(
+                "t",
+                "d",
+                "logs",
+                "http.route",
+                &[("/a".to_string(), 10)],
+                Some(span),
+            )
+            .await
+            .unwrap();
+        let stats = catalog.get_attribute_stats("t", "d", "logs").await.unwrap();
+        let route = stats
+            .iter()
+            .find(|record| record.attr_key == "http.route")
+            .expect("the key's stats row exists");
+        assert_eq!(route.analyzed_span, Some(span));
     }
 
     #[tokio::test]

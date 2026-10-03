@@ -2254,7 +2254,9 @@ stage answers that, and it is deliberately cheap: the answer comes from the
 canonical field catalog, your tenant's schema registries, and the statistics
 the compactor maintains — **not** from reading your signal data. A `describe`
 document never reaches a querier, so a field picker keeps working while query
-execution is busy.
+execution is busy. The one exception is `sample: true` on a `values` target
+that no declared value set covers: that reads the requested range through the
+querier (see the sampled tier below).
 
 `describe` is terminal, pairs with the `metadata` result envelope, and requires
 `irVersion` 4.

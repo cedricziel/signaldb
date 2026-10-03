@@ -282,7 +282,9 @@ pub async fn persist_stats(
                 total_rows as i64,
                 s.distinct as i64,
                 s.capped,
-                Some(analyzed_span),
+                // The span lands with the sketch below, in one transaction;
+                // until then the key reads as not covering any window.
+                None,
             )
             .await
         {
@@ -297,7 +299,14 @@ pub async fn persist_stats(
             .map(|(value, count)| (value.clone(), *count as i64))
             .collect();
         if let Err(e) = catalog
-            .replace_attribute_value_stats(tenant_id, dataset_id, signal, key, &values)
+            .replace_attribute_value_sketch(
+                tenant_id,
+                dataset_id,
+                signal,
+                key,
+                &values,
+                Some(analyzed_span),
+            )
             .await
         {
             tracing::warn!(error = %e, attr_key = %key, "Failed to persist attribute value sketch");
