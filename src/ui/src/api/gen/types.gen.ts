@@ -8084,7 +8084,7 @@ export type SearchErrors = {
     /**
      * Invalid query
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
@@ -8112,6 +8112,22 @@ export type SearchErrors = {
          */
         status: string;
     };
+    /**
+     * The search failed
+     */
+    500: ApiErrorBody;
+    /**
+     * The query uses TraceQL the querier does not implement; the error names the construct
+     */
+    501: ApiErrorBody;
+    /**
+     * No querier service available
+     */
+    503: ApiErrorBody;
+    /**
+     * The search timed out
+     */
+    504: ApiErrorBody;
 };
 
 export type SearchError = SearchErrors[keyof SearchErrors];

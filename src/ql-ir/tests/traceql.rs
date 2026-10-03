@@ -1,7 +1,7 @@
 //! TraceQL lowered onto the query IR.
 //!
 //! Written before the lowering exists. What these assert is the *contract*:
-//! a TraceQL spanset becomes a `where` stage of conjoined equality leaves over
+//! a TraceQL spanset becomes a `where` stage of conjoined comparison leaves over
 //! logical field names, with TraceQL's scoping carried by the IR's container
 //! qualifiers rather than flattened away.
 
@@ -134,7 +134,7 @@ fn parse_errors_propagate_with_their_class() {
         "got {err:?}"
     );
 
-    let err = ql_ir::traceql_to_ir(r#"{ span.x != "y" }"#, "now-1h", "now")
+    let err = ql_ir::traceql_to_ir(r#"{ span.x > 1 }"#, "now-1h", "now")
         .expect_err("unimplemented operator");
     assert!(
         matches!(
@@ -155,4 +155,62 @@ fn lowered_documents_are_valid_ir() {
     assert_eq!(json["irVersion"], 1);
     assert_eq!(json["from"], "traces");
     assert_eq!(json["result"], "rows");
+}
+
+fn leaf(field: &str, op: ComparisonOp, value: serde_json::Value) -> Predicate {
+    Predicate::Leaf(query_ir::Leaf {
+        field: field.to_string(),
+        op,
+        value: Some(value),
+    })
+}
+
+/// `!=` is an IR `ne`; the IR's three-valued logic keeps a span without the
+/// attribute out, as Tempo does.
+#[test]
+fn not_equal_lowers_to_ne() {
+    assert_eq!(
+        where_of(r#"{ resource.service.name != "robot-notes-server" }"#),
+        leaf(
+            "service.name",
+            ComparisonOp::Ne,
+            json!("robot-notes-server")
+        )
+    );
+    assert_eq!(
+        where_of(r#"{ status != error }"#),
+        leaf("status.code", ComparisonOp::Ne, json!("Error"))
+    );
+}
+
+/// TraceQL regexes match the whole value and the IR's `regex` matches
+/// anywhere, so the lowering anchors the pattern; `!~` is its negation.
+#[test]
+fn regex_operators_lower_to_an_anchored_regex() {
+    assert_eq!(
+        where_of(r#"{ resource.device.model.identifier =~ "iPhone.*" }"#),
+        leaf(
+            "resource.device.model.identifier",
+            ComparisonOp::Regex,
+            json!("^(?:iPhone.*)$")
+        )
+    );
+    assert_eq!(
+        where_of(r#"{ span.http.route !~ "/health" }"#),
+        Predicate::Not(Box::new(leaf(
+            "span.http.route",
+            ComparisonOp::Regex,
+            json!("^(?:/health)$")
+        )))
+    );
+}
+
+#[test]
+fn a_regex_on_status_or_kind_is_inexpressible() {
+    let err = ql_ir::traceql_to_ir(r#"{ status =~ "err.*" }"#, "now-1h", "now")
+        .expect_err("regex over a normalized enum");
+    assert!(
+        matches!(err, ql_ir::LowerError::Inexpressible(_)),
+        "got {err:?}"
+    );
 }

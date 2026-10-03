@@ -2601,7 +2601,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Search traces with TraceQL. Provide `query` as a TraceQL expression (e.g. `{ .service.name = \"api\" && status = error }`) and optionally `start`/`end` (unix seconds) and `limit`. Returns matching traces scoped to your tenant."
+        description = "Search traces with TraceQL. Provide `query` as a TraceQL expression (e.g. `{ .service.name = \"api\" && status = error }`) and optionally `start`/`end` (unix seconds) and `limit`. Supported: one `{ ... }` spanset of `&&`-joined matchers using `=`, `!=`, `=~` or `!~` (regexes match the whole value) on `name`, `status`, `kind`, `span.<key>`, `resource.<key>` or `.<key>`. Not supported yet: `||`, `>`/`<`/`>=`/`<=`, `duration`, pipelines and aggregates; an unsupported query fails with an error naming the construct. Returns matching traces scoped to your tenant."
     )]
     async fn search_traces(
         &self,
@@ -2646,7 +2646,7 @@ impl McpServer {
         let resp = req
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "search_traces"))?;
+            .map_err(|e| map_api_error_body(e, "search_traces"))?;
         json_result_ext(&resp.into_inner(), false, links)
     }
 
@@ -6124,7 +6124,7 @@ fn status_to_error(
     retry_after: Option<std::time::Duration>,
 ) -> ErrorData {
     let mapped = match status {
-        400 | 413 | 422 => ErrorData::invalid_params(message, None),
+        400 | 413 | 422 | 501 => ErrorData::invalid_params(message, None),
         401 => ErrorData::invalid_request(
             format!("{what}: credential expired or was revoked; re-authenticate the session"),
             None,
