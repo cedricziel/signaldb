@@ -556,12 +556,23 @@ impl CompactionExecutor {
 
         let input_size: u64 = input_files.iter().map(|f| f.file_size_bytes).sum();
         let input_rows: u64 = input_files.iter().map(|f| f.record_count).sum();
+        let widest_row_bytes = input_files
+            .iter()
+            .filter(|f| f.record_count > 0)
+            .map(|f| f.file_size_bytes.div_ceil(f.record_count))
+            .max()
+            .unwrap_or(0);
 
         // Step 3: Read, merge, sort, and write new compacted files for this
         // partition only.
         let outcome = match self
             .rewriter
-            .rewrite_partition(&table, partition_hours, job.target_file_size_bytes)
+            .rewrite_partition(
+                &table,
+                partition_hours,
+                job.target_file_size_bytes,
+                widest_row_bytes,
+            )
             .await
             .context("Failed to rewrite partition data")?
         {

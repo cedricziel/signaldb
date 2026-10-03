@@ -455,7 +455,7 @@ async fn schema_evolution_does_not_sweep_in_a_late_write() -> Result<()> {
     rewriter.set_service_catalog(service_catalog);
 
     let outcome = rewriter
-        .rewrite_partition(&pinned, partition, 128 * 1024 * 1024)
+        .rewrite_partition(&pinned, partition, 128 * 1024 * 1024, 0)
         .await?
         .expect("partition has data to rewrite");
 

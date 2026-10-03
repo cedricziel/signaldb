@@ -558,7 +558,11 @@ pub struct CompactorConfig {
     #[serde(default = "default_compactor_target_partitions")]
     pub target_partitions: usize,
 
-    /// Row count of the batches the compaction scan feeds to the sort.
+    /// Ceiling on the row count of the batches the compaction scan feeds
+    /// to the sort. Each job derives a smaller count from its widest input
+    /// file's compressed bytes per row when the rows are wide, so a profiles
+    /// partition of ~120 rows at ~2 MB each gets a batch that fits the
+    /// pool without this being tuned (#1358).
     ///
     /// `ExternalSorter` reserves roughly twice a batch's bytes the moment
     /// the batch arrives, and that reservation cannot spill: with nothing
@@ -574,7 +578,7 @@ pub struct CompactorConfig {
     /// can afford, for a per-batch reservation that fits the pool with
     /// room to accumulate and spill.
     ///
-    /// `0` restores DataFusion's default (8192 rows).
+    /// `0` makes DataFusion's default (8192 rows) the ceiling.
     ///
     /// Default: 1024.
     /// Env: SIGNALDB__COMPACTOR__SCAN_BATCH_SIZE
