@@ -1443,6 +1443,35 @@ mod tests {
         assert_eq!(ids, vec!["t-get"]);
     }
 
+    /// `!=`, `=~` and `!~` filter end to end (#2171); a regex matches the
+    /// whole value, so `"GE"` alone matches nothing.
+    #[tokio::test]
+    async fn search_filters_with_negation_and_regex_operators() {
+        let service = TraceService::new(
+            search_session_with_promoted_attribute(),
+            "traces".to_string(),
+        );
+        for (q, expected) in [
+            (r#"{ span.http.method != "GET" }"#, vec!["t-post"]),
+            (r#"{ span.http.method =~ "G.*" }"#, vec!["t-get"]),
+            (r#"{ span.http.method =~ "GE" }"#, vec![]),
+            (r#"{ span.http.method !~ "G.*" }"#, vec!["t-post"]),
+        ] {
+            let query = SearchQueryParams {
+                q: Some(q.to_string()),
+                ..search_params()
+            };
+            let ids: Vec<String> = service
+                .find_traces_with_tenant(query, "t", "d")
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|t| t.trace_id)
+                .collect();
+            assert_eq!(ids, expected, "{q}");
+        }
+    }
+
     /// `tags` alone: the same bare (unscoped) attribute key resolves to the
     /// promoted column through the [`super::tags_to_ir`] shim (task 3.2).
     #[tokio::test]

@@ -1,8 +1,9 @@
 //! TraceQL → IR.
 //!
-//! The supported subset is a single spanset of `&&`-conjoined equality
-//! matchers, which is exactly a `where` stage of conjoined equality leaves —
-//! so this lowering is a rename of vocabulary, not a translation of structure.
+//! The supported subset is a single spanset of `&&`-conjoined matchers
+//! (`=`, `!=`, `=~`, `!~`), which is exactly a `where` stage of conjoined
+//! comparison leaves — so this lowering is a rename of vocabulary, not a
+//! translation of structure.
 //!
 //! The one judgement it makes is **field naming**: TraceQL's spelling
 //! (`name`, `status`, `span.<k>`) becomes the logical names the IR declares
@@ -83,20 +84,62 @@ pub fn traceql_to_ir(query: &str, from: &str, to: &str) -> Result<Document, Lowe
 pub fn traceql_condition_to_predicate(
     condition: &traceql::Condition,
 ) -> Result<Predicate, LowerError> {
-    let value = match condition.selector {
-        traceql::Selector::Status => {
+    use traceql::MatchOp;
+
+    let field = field_name(&condition.selector)?;
+    // `!~` is a negated `=~`. A span without the attribute matches neither,
+    // as with `!=`: the IR's three-valued `not` keeps a missing value unknown.
+    let (op, negate) = match condition.op {
+        MatchOp::Eq => (ComparisonOp::Eq, false),
+        MatchOp::Ne => (ComparisonOp::Ne, false),
+        MatchOp::Regex => (ComparisonOp::Regex, false),
+        MatchOp::NotRegex => (ComparisonOp::Regex, true),
+        other => {
+            return Err(LowerError::Inexpressible(format!(
+                "TraceQL operator '{}'",
+                other.as_str()
+            )));
+        }
+    };
+    let value = match (&condition.selector, op) {
+        // A regex over the stored spelling would have to know it ("Error",
+        // not "error"); an equality does not, because it is normalized.
+        (traceql::Selector::Status | traceql::Selector::Kind, ComparisonOp::Regex) => {
+            return Err(LowerError::Inexpressible(format!(
+                "TraceQL operator '{}' on '{field}'; use '=' or '!='",
+                condition.op.as_str()
+            )));
+        }
+        (traceql::Selector::Status, _) => {
             serde_json::Value::String(normalize_status(&condition.value)?.to_string())
         }
-        traceql::Selector::Kind => {
+        (traceql::Selector::Kind, _) => {
             serde_json::Value::String(normalize_kind(&condition.value)?.to_string())
         }
+        (_, ComparisonOp::Regex) => serde_json::Value::String(anchored(&condition.value)?),
         _ => literal(&condition.value)?,
     };
-    Ok(Predicate::Leaf(Leaf {
-        field: field_name(&condition.selector)?,
-        op: ComparisonOp::Eq,
+    let leaf = Predicate::Leaf(Leaf {
+        field,
+        op,
         value: Some(value),
-    }))
+    });
+    Ok(if negate {
+        Predicate::Not(Box::new(leaf))
+    } else {
+        leaf
+    })
+}
+
+/// A TraceQL regex as an IR `regex` operand. TraceQL regexes match the whole
+/// value; the IR's match anywhere in it, so the pattern is anchored here.
+fn anchored(value: &traceql::FilterValue) -> Result<String, LowerError> {
+    match value {
+        traceql::FilterValue::String(pattern) => Ok(format!("^(?:{pattern})$")),
+        other => Err(LowerError::Inexpressible(format!(
+            "TraceQL regex operand {other:?}"
+        ))),
+    }
 }
 
 /// Canonicalize a `status` matcher's value to the form span status is

@@ -54,7 +54,7 @@ pub(crate) fn conditions_to_predicate(conditions: &[Condition]) -> Result<Predic
 mod tests {
     use super::*;
     use common::query_ir::{ComparisonOp, Leaf};
-    use traceql::{FilterValue, Selector};
+    use traceql::{FilterValue, MatchOp, Selector};
 
     /// Extract the single `Predicate` a one-condition TraceQL query lowers
     /// to, for comparison against the shim's output.
@@ -77,6 +77,7 @@ mod tests {
             (
                 Condition {
                     selector: Selector::ServiceName,
+                    op: MatchOp::Eq,
                     value: FilterValue::String("api".to_string()),
                 },
                 r#"{ resource.service.name = "api" }"#,
@@ -84,6 +85,7 @@ mod tests {
             (
                 Condition {
                     selector: Selector::SpanName,
+                    op: MatchOp::Eq,
                     value: FilterValue::String("GET /x".to_string()),
                 },
                 r#"{ name = "GET /x" }"#,
@@ -91,6 +93,7 @@ mod tests {
             (
                 Condition {
                     selector: Selector::Status,
+                    op: MatchOp::Eq,
                     value: FilterValue::String("error".to_string()),
                 },
                 r#"{ status = "error" }"#,
@@ -98,6 +101,7 @@ mod tests {
             (
                 Condition {
                     selector: Selector::Kind,
+                    op: MatchOp::Eq,
                     value: FilterValue::String("server".to_string()),
                 },
                 r#"{ kind = "server" }"#,
@@ -105,6 +109,7 @@ mod tests {
             (
                 Condition {
                     selector: Selector::AnyAttribute("http.method".to_string()),
+                    op: MatchOp::Eq,
                     value: FilterValue::String("GET".to_string()),
                 },
                 r#"{ .http.method = "GET" }"#,
@@ -125,10 +130,12 @@ mod tests {
         let conditions = vec![
             Condition {
                 selector: Selector::ServiceName,
+                op: MatchOp::Eq,
                 value: FilterValue::String("api".to_string()),
             },
             Condition {
                 selector: Selector::AnyAttribute("http.method".to_string()),
+                op: MatchOp::Eq,
                 value: FilterValue::String("GET".to_string()),
             },
         ];
@@ -144,6 +151,7 @@ mod tests {
     fn a_single_condition_is_not_wrapped_in_and() {
         let conditions = vec![Condition {
             selector: Selector::ServiceName,
+            op: MatchOp::Eq,
             value: FilterValue::String("api".to_string()),
         }];
         let predicate = conditions_to_predicate(&conditions).unwrap();
@@ -178,6 +186,7 @@ mod tests {
     fn a_backslash_in_the_value_is_preserved_exactly() {
         let condition = Condition {
             selector: Selector::AnyAttribute("file.path".to_string()),
+            op: MatchOp::Eq,
             value: FilterValue::String(r"C:\Users\foo".to_string()),
         };
         let predicate = conditions_to_predicate(std::slice::from_ref(&condition)).unwrap();
@@ -201,6 +210,7 @@ mod tests {
     fn a_value_with_an_embedded_quote_is_accepted() {
         let condition = Condition {
             selector: Selector::AnyAttribute("weird.key".to_string()),
+            op: MatchOp::Eq,
             value: FilterValue::String(r#"va"lue"#.to_string()),
         };
         let predicate = conditions_to_predicate(std::slice::from_ref(&condition))
@@ -223,6 +233,7 @@ mod tests {
     fn a_key_containing_ampersand_ampersand_stays_one_leaf() {
         let condition = Condition {
             selector: Selector::AnyAttribute("weird&&key".to_string()),
+            op: MatchOp::Eq,
             value: FilterValue::String("value".to_string()),
         };
         let predicate = conditions_to_predicate(std::slice::from_ref(&condition))

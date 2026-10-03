@@ -32,11 +32,16 @@ authentication headers described in [Authentication](authentication.md)
 ## TraceQL: the supported subset
 
 `GET /api/search`'s `q` parameter accepts a single spanset of `&&`-conjoined
-equality matchers. `{}` is valid and selects everything.
+matchers. `{}` is valid and selects everything.
 
 ```
-{ resource.service.name = "api" && span.http.method = "GET" }
+{ resource.service.name != "api" && span.http.route =~ "/api/.*" }
 ```
+
+- **Operators**: `=`, `!=`, `=~` and `!~`. A regex is a quoted string and, as
+  in Tempo, matches the whole value (`=~ "GE"` does not match `GET`). A span
+  without the attribute matches none of them, `!=` and `!~` included. `status`
+  and `kind` take `=` and `!=` only.
 
 - **Intrinsics**: `name`, `status`, `kind`, and service name spelled either
   `resource.service.name` or `.service.name`.
@@ -56,12 +61,13 @@ whose problem it is:
 
 | Your `q`                                                | Status  | Meaning                                         |
 | ------------------------------------------------------- | ------- | ----------------------------------------------- |
-| `{ .a != "b" }`, `=~`, `>=`, `\|\|`, `duration > 100ms` | **501** | Valid TraceQL. SignalDB does not execute it yet |
+| `{ .a > 1 }`, `>=`, `\|\|`, `duration > 100ms`          | **501** | Valid TraceQL. SignalDB does not execute it yet |
 | `notbraces`, `{ foo }`, `{ zzz = 1 }`                   | **400** | Not TraceQL. Fix the query                      |
 
 > **Changed:** unparseable `q` values previously returned 501. They are now
 > 400, so a client can tell a malformed query from an unimplemented one.
-> Valid-but-unimplemented constructs still return 501, unchanged.
+> Valid-but-unimplemented constructs still return 501, unchanged. The error
+> body names the construct, and the MCP `search_traces` tool passes it on.
 
 ## Tag discovery time window
 
