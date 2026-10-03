@@ -111,8 +111,11 @@ impl CatalogManager {
     /// With a tenant source attached, the registry (`list_active_tenants` /
     /// `resolve_tenant_by_slug`) returns the union of config-defined and
     /// database-created tenants, so admin-API tenants are queryable and
-    /// lifecycle-managed without a `[[auth.tenants]]` config block.
+    /// lifecycle-managed without a `[[auth.tenants]]` config block. A table
+    /// recreated in the typed layout also has its attribute statistics in
+    /// this catalog cleared.
     pub fn with_tenant_source(mut self, tenant_source: Arc<Catalog>) -> Self {
+        self.table_manager = self.table_manager.with_stats_catalog(tenant_source.clone());
         self.tenant_source = Some(tenant_source);
         self
     }

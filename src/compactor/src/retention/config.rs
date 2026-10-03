@@ -387,18 +387,14 @@ impl SignalType {
     /// orphan cleanup all classify through it, so a table it rejects gets no
     /// lifecycle management at all (#1014).
     ///
-    /// Supports both exact matches ("traces", "logs", "metrics", "profiles")
-    /// and metric subtypes ("metrics_gauge", "metrics_sum", "metrics_histogram").
+    /// Classifies through [`common::catalog::attribute_stats_signal`], which
+    /// the attribute statistics are keyed by, so the two never drift.
     pub fn from_table_name(table_name: &str) -> Result<Self, RetentionConfigError> {
-        let lower = table_name.to_lowercase();
-        match lower.as_str() {
+        match common::catalog::attribute_stats_signal(table_name) {
             "traces" => Ok(SignalType::Traces),
             "logs" => Ok(SignalType::Logs),
             "metrics" => Ok(SignalType::Metrics),
-            "metric_exemplars" => Ok(SignalType::Metrics),
             "profiles" => Ok(SignalType::Profiles),
-            // Handle metric subtypes (metrics_gauge, metrics_sum, metrics_histogram)
-            s if s.starts_with("metrics_") => Ok(SignalType::Metrics),
             _ => Err(RetentionConfigError::UnknownSignalType(
                 table_name.to_string(),
             )),

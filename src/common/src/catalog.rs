@@ -3234,6 +3234,21 @@ fn session_from_pg_row(r: &sqlx::postgres::PgRow) -> UserSessionRecord {
     }
 }
 
+/// The signal an Iceberg table belongs to: every metric table shares
+/// `metrics`, other signal tables use their own name, and anything else is
+/// `unknown`. The single table->signal predicate: attribute statistics are
+/// keyed by it and the compactor's lifecycle classifies tables through it.
+pub fn attribute_stats_signal(table_name: &str) -> &'static str {
+    match table_name.to_lowercase().as_str() {
+        "traces" => "traces",
+        "logs" => "logs",
+        "profiles" => "profiles",
+        "metrics" | "metric_exemplars" => "metrics",
+        s if s.starts_with("metrics_") => "metrics",
+        _ => "unknown",
+    }
+}
+
 /// A per-attribute-key statistics row (epic #737, #733): scan-side
 /// presence/cardinality from the compactor's analyzer plus query-demand
 /// hit counters from the querier.
@@ -3579,6 +3594,56 @@ impl Catalog {
                         .bind(count)
                         .execute(&mut *tx)
                         .await?;
+                }
+                tx.commit().await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Forget every advisory statistic for one (tenant, dataset, signal):
+    /// per-key stats, per-level stats and value sketches. Called when the
+    /// signal's table is dropped and recreated, so discovery and promotion
+    /// stop describing data that is no longer queryable. The canonical
+    /// `attribute_types` are kept on purpose: they are monotonic by design,
+    /// and new data for a key must keep the type it was committed with.
+    pub async fn clear_attribute_stats(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+    ) -> Result<(), sqlx::Error> {
+        const TABLES: [&str; 3] = [
+            "attribute_stats",
+            "attribute_level_stats",
+            "attribute_value_stats",
+        ];
+        match self {
+            Catalog::Sqlite(pool) => {
+                let mut tx = pool.begin().await?;
+                for table in TABLES {
+                    query(&format!(
+                        "DELETE FROM {table} WHERE tenant_id = ? AND dataset_id = ? AND signal = ?"
+                    ))
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(signal)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                tx.commit().await?;
+            }
+            Catalog::Postgres(pool) => {
+                let mut tx = pool.begin().await?;
+                for table in TABLES {
+                    query(&format!(
+                        "DELETE FROM {table} WHERE tenant_id = $1 AND dataset_id = $2 AND signal = $3"
+                    ))
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(signal)
+                    .execute(&mut *tx)
+                    .await?;
                 }
                 tx.commit().await?;
             }

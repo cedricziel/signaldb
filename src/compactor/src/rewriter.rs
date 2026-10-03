@@ -549,7 +549,7 @@ impl ParquetRewriter {
         if !promotion.enabled {
             return outcome;
         }
-        let signal = crate::attr_stats::signal_of_table(table_name);
+        let signal = common::catalog::attribute_stats_signal(table_name);
         let stats = match catalog.get_attribute_stats(tenant, dataset, signal).await {
             Ok(stats) => stats,
             Err(e) => {
