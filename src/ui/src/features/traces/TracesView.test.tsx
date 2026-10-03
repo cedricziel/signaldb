@@ -2557,6 +2557,33 @@ describe("TracesView span links", () => {
     expect(update).toHaveBeenCalledWith({ trace: "job1" }, { push: true });
   });
 
+  it("skips the linked-from lookup for a trace with no start time", async () => {
+    const noStart = spanRow(
+      "web1",
+      "enqueue",
+      "enqueue EmailJob",
+      "web",
+      "PRODUCER",
+      null,
+    );
+    noStart[7] = null;
+    stubFetchRoutes([
+      {
+        match: "/api/v1/query",
+        bodyMatch: isTrace("web1"),
+        body: rowsBody([noStart]),
+      },
+      webLinkedFromRoute,
+      profilesRoute,
+    ]);
+    renderView({ trace: "web1" });
+    await screen.findByRole("button", { name: "Logs for this trace →" });
+    // The stubbed lookup would answer from any window, so a list here means
+    // the query ran from the epoch.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByRole("list", { name: "Linked from" })).toBeNull();
+  });
+
   it("shows no link sections for a span without links", async () => {
     // The linked-from query 404s (no stub): the trace still renders.
     stubFetchRoutes([webRoute, profilesRoute]);

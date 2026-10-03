@@ -984,10 +984,16 @@ function TraceDetail({ state, update }: Props) {
   // Spans of other traces that link into this one (a job's consumer span
   // pointing back at the request that enqueued it). Best effort: a failure
   // only drops the "Linked from" markers, never the trace itself.
+  // "0" is the decoder's sentinel for a trace with no usable start time;
+  // a lookup from the epoch would only miss the links.
+  const linkedFromStart =
+    trace.data?.startNs && trace.data.startNs !== "0"
+      ? trace.data.startNs
+      : undefined;
   const linkedFromQuery = useQuery({
-    queryKey: ["trace-linked-from", state.trace, trace.data?.startNs],
-    queryFn: () => fetchLinkedFrom(state.trace, trace.data!.startNs),
-    enabled: trace.data != null,
+    queryKey: ["trace-linked-from", state.trace, linkedFromStart],
+    queryFn: () => fetchLinkedFrom(state.trace, linkedFromStart!),
+    enabled: linkedFromStart != null,
   });
   const linkedFrom = useMemo(() => {
     const bySpan = new Map<string, LinkedFromView[]>();
