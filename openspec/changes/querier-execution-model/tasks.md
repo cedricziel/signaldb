@@ -29,7 +29,11 @@ Sequenced per design D6: deadline + resource envelope first (small, ship immedia
 ## 4. Streaming: querier do_get (D1, #938)
 
 - [ ] 4.1 Tests: first batch arrives before execution completes (time-to-first-byte); peak querier memory bounded under a near-row-cap result; mid-stream failure terminates the Flight stream with an attributable error
-- [ ] 4.2 Replace `collect()` + `batches_to_flight_data` with `execute_stream()` + `FlightDataEncoderBuilder` in `do_get`, behind `querier.streaming` (default on); raw-SQL/query-IR tickets first
+- [x] 4.2 Replace `collect()` + `batches_to_flight_data` with `execute_stream()` + `FlightDataEncoderBuilder` in `do_get`, behind `querier.streaming` (default on); raw-SQL/query-IR tickets first
+  - Landed for raw SQL (`SqlQuery`, `SqlProfiles`) without a flag: every
+    ticket now encodes batch by batch, and the deadline and permit cover
+    the stream. Query IR still materializes (pagination and the correlate
+    report need the whole result), so it moves with 4.3.
 - [ ] 4.3 Roll out to remaining ticket types (trace, logs, metrics, profiles)
 
 ## 5. Streaming: router consumption + error mapping (D1, D2)
