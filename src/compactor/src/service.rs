@@ -42,8 +42,8 @@ use crate::lifecycle::{
 use crate::metrics::{CompactionMetrics, Cycle, CycleHealth};
 use crate::orphan::{OrphanCleaner, OrphanCleanupConfig, OrphanDetector};
 use crate::planner::{CompactionPlanner, PlannerConfig};
+use crate::retention::RetentionEnforcer;
 use crate::retention::metrics::RetentionMetrics;
-use crate::retention::{RetentionConfig, RetentionEnforcer};
 use crate::scheduler::RoundRobinScheduler;
 
 /// Smallest cadence a lifecycle cycle may tick at.
@@ -235,7 +235,7 @@ impl CompactorService {
             config.compactor.max_per_tenant
         );
 
-        let retention_config = RetentionConfig::from(config.compactor.retention.clone());
+        let retention_config = config.compactor.retention.clone();
         let retention_metrics = RetentionMetrics::new();
         let retention_enforcer = Arc::new(
             RetentionEnforcer::new(
