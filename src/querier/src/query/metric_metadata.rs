@@ -21,7 +21,6 @@ use super::table_lookup::{
     LABEL_SCAN_LIMIT, distinct_non_empty, metric_type_filter, optional_table, string_column,
     time_window,
 };
-use common::schema::materialized_column_name;
 
 const GAUGE_SUM_TYPES: &[&str] = &["gauge", "sum"];
 
@@ -361,13 +360,7 @@ fn apply_filters(
     // Materialized `label_<key>` columns present in this metrics table, so
     // label matchers on them are exact instead of JSON substring.
     let attr_ctx = super::logql::AttrContext {
-        materialized: df
-            .schema()
-            .fields()
-            .iter()
-            .map(|f| f.name().to_string())
-            .filter(|n| n.starts_with("label_"))
-            .collect(),
+        materialized: super::logs::materialized_columns_of(&df),
         map_attrs: common::attrs::expr::is_typed_layout(df.schema().as_arrow(), LOG_ATTRIBUTES),
         schema: Some(df.schema().inner().clone()),
     };
@@ -445,12 +438,8 @@ fn matcher_expr(m: &LabelMatch, ctx: &super::logql::AttrContext) -> Result<Expr,
     };
     match column_for_label(&m.name) {
         Some(column) => Ok(column_op_expr(col(column), m.op, &m.value, false)),
-        None if common::schema::is_materialized_and_unambiguous(
-            &materialized_column_name(&m.name),
-            materialized,
-        ) =>
-        {
-            Ok(column_match(materialized_column_name(&m.name)))
+        None if let Some(column) = materialized.column_for(&m.name) => {
+            Ok(column_match(column.to_string()))
         }
         // Map-typed attribute tables: per-key extraction, all four
         // operators, on both attribute columns.
@@ -573,7 +562,7 @@ mod tests {
         assert!(json.contains(r#""namespace":"prod""#), "{json}");
         // With the column → exact equality on `label_namespace`.
         let ctx = super::super::logql::AttrContext {
-            materialized: ["label_namespace".to_string()].into_iter().collect(),
+            materialized: common::schema::MaterializedLabels::from_names(["label_namespace"]),
             ..Default::default()
         };
         let rendered = format!("{:?}", matcher_expr(&m, &ctx).unwrap());

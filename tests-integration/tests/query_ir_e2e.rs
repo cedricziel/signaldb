@@ -631,6 +631,77 @@ async fn logs_ir_query_end_to_end() {
     );
 }
 
+// Issue #1533 — `http.method` and `http_method` sanitize to the same label
+// column name, so the writer gives the second a suffixed column. Each key
+// must still read its own column, not the other's.
+#[tokio::test]
+async fn logs_ir_query_resolves_colliding_materialized_labels_by_origin_key() {
+    let services = setup_with(|c| {
+        c.schema.materialized_labels.logs = vec!["http.method".into(), "http_method".into()];
+    })
+    .await;
+    let ctx = test_tenant_context();
+
+    let with_attrs = |offset_ns: i64, body: &str, dotted: &str, underscored: &str| {
+        let mut record = log_record(offset_ns, "INFO", body);
+        record.attributes = vec![
+            KeyValue {
+                key: "http.method".to_string(),
+                value: Some(string_value(dotted)),
+                ..Default::default()
+            },
+            KeyValue {
+                key: "http_method".to_string(),
+                value: Some(string_value(underscored)),
+                ..Default::default()
+            },
+        ];
+        record
+    };
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "api",
+                vec![
+                    with_attrs(0, "row-a", "GET", "alpha"),
+                    with_attrs(1_000_000, "row-b", "POST", "beta"),
+                ],
+            ),
+        )
+        .await
+        .expect("ingest logs with colliding attribute keys");
+
+    let app = build_router(&services).await;
+
+    for (field, value, expected_body) in [
+        ("http_method", "alpha", "row-a"),
+        ("http.method", "POST", "row-b"),
+        ("http_method", "beta", "row-b"),
+        ("http.method", "GET", "row-a"),
+    ] {
+        let (status, body) = post_ir_until_rows(
+            &app,
+            serde_json::json!({
+                "irVersion": 1,
+                "from": "logs",
+                "range": range(),
+                "result": "rows",
+                "fields": ["body"],
+                "pipeline": [
+                    { "where": { "field": field, "op": "eq", "value": value } }
+                ]
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{field}={value}: {body}");
+        let rows = body["rows"].as_array().expect("rows array");
+        assert_eq!(rows.len(), 1, "{field}={value} must match one row: {body}");
+        assert_eq!(rows[0][0], expected_body, "{field}={value}: {body}");
+    }
+}
+
 // Issue #1410 — ingest JSON-encodes the `body` value so non-string bodies
 // (kvlist/array/bytes) survive the Utf8 column; a plain string body must come
 // back decoded (no surrounding quotes) while a structured body must still

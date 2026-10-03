@@ -103,10 +103,11 @@ is also kept in the attribute JSON, label discovery (`/labels`,
 
 Two distinct label keys can sanitize to the same `label_<key>` column name
 (see the dotted-vs-underscore example above); the writer resolves that by
-suffixing the later key's column (`label_<key>_2`). As an interim guard
-(#1533), a query against either colliding key currently falls back to the
-attribute-map extraction path rather than risk reading the wrong key's
-column; full per-key resolution of the collision is still open.
+suffixing the later key's column (`label_<key>_2`). Queries resolve each key
+to its own column through the origin key recorded on the column (#1533). A
+column written before origin keys were recorded has none; if such a column
+has a suffixed sibling, a query against it falls back to the attribute-map
+extraction path rather than risk reading the wrong key's column.
 
 Series identity (in `/series` results and bare range aggregations such as
 `count_over_time(...)` with no vector wrapper) is the `service_name` and
