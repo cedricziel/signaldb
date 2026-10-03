@@ -151,6 +151,7 @@ use crate::audit::{
 use crate::docs;
 use crate::prompts;
 use crate::sdk_client_for;
+use crate::services;
 use crate::trace_view;
 use crate::ui_links;
 
@@ -293,6 +294,23 @@ impl GroupGrain {
     fn is_traces(self) -> bool {
         matches!(self, GroupGrain::Traces)
     }
+}
+
+/// Parameters for `list_services`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ListServicesParams {
+    /// Start of the window, unix seconds. Defaults to 24 hours before now.
+    #[serde(default)]
+    start: Option<i64>,
+    /// End of the window, unix seconds. Defaults to now.
+    #[serde(default)]
+    end: Option<i64>,
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`).
+    tenant: String,
+    /// Dataset to list the services of (see `discover_datasets`).
+    dataset: String,
 }
 
 /// Parameters for `search_trace_groups`.
@@ -2738,6 +2756,44 @@ impl McpServer {
         let summary = service_map_summary(&graph);
         let payload = serde_json::json!({ "graph": graph, "summary": summary });
         json_result_ext(&payload, client_supports_ui(&context), links)
+    }
+
+    #[tool(
+        description = "List what is sending data into a dataset: one entry per `service.name` with its namespaces, versions, row count and first/last seen (unix nanoseconds), overall and per signal (traces, logs, metrics, profiles). `start`/`end` (unix seconds) default to the last 24 hours. Counts and times are exact for the returned `window` when `exact` is true; a signal that could not be read is listed under `errors` and makes `exact` false. Reads the data itself (one aggregate per signal), not statistics.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_services(
+        &self,
+        Parameters(p): Parameters<ListServicesParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let (from, to) = range_bounds_ns(p.start, p.end, "now-24h");
+        let mut answers =
+            futures::future::join_all(services::SIGNALS.iter().map(|&(signal, time_field)| {
+                let document = services::document(signal, time_field, &from, &to);
+                let parts = &parts;
+                let (tenant, dataset) = (&p.tenant, &p.dataset);
+                async move {
+                    let answer = self
+                        .run_ir_document(parts, tenant, dataset, document, signal)
+                        .await;
+                    (signal, answer)
+                }
+            }))
+            .await;
+        // Nothing readable at all: one signal's error says why (usually
+        // access), with its own classification.
+        if answers.iter().all(|(_, answer)| answer.is_err())
+            && let Some((_, Err(err))) = answers.pop()
+        {
+            return Err(err);
+        }
+        let answers = answers
+            .into_iter()
+            .map(|(signal, answer)| (signal, answer.map_err(|e| e.message.into_owned())))
+            .collect();
+        json_result(&services::merge(answers))
     }
 
     #[tool(
@@ -8748,6 +8804,7 @@ mod tests {
             "get_trace",
             "get_source_context",
             "search_trace_groups",
+            "list_services",
             "get_service_map",
             "discover_attributes",
             "discover_metrics",

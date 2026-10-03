@@ -24,6 +24,7 @@ pub mod cli;
 pub mod docs;
 pub mod prompts;
 pub mod server;
+mod services;
 mod trace_view;
 pub mod ui_links;
 
