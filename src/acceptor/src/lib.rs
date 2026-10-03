@@ -71,7 +71,7 @@ pub struct AcceptorResources {
     /// Resend-dedup cache shared by every ingest handler on both servers
     pub retry_dedup: Arc<handler::RetryDedup>,
     /// Per-record attribute guardrails from `[acceptor.attribute_limits]`
-    pub attribute_limits: Arc<common::config::AttributeLimits>,
+    pub attribute_limits: Arc<attribute_limits::TenantAttributeLimits>,
     /// Read-only cache of each (tenant, dataset, signal)'s canonical
     /// attribute types, established by the writer. Used only to warn
     /// senders of off-type values via `partial_success`; the acceptor
@@ -89,7 +89,10 @@ pub async fn init_acceptor_resources(
     // configuration to open the Iceberg catalog.
     let full_config = config.clone();
     let processors_config = full_config.processors.clone();
-    let attribute_limits = Arc::new(full_config.acceptor.attribute_limits.clone());
+    let attribute_limits = Arc::new(attribute_limits::TenantAttributeLimits::new(
+        &full_config.acceptor,
+        &full_config.auth,
+    ));
     let retry_dedup = Arc::new(handler::RetryDedup::new(
         full_config.acceptor.retry_dedup_window,
     ));
@@ -989,7 +992,7 @@ pub struct HttpAcceptorConfig {
     /// Resend-dedup cache, shared with the gRPC server's handlers
     pub retry_dedup: Arc<handler::RetryDedup>,
     /// Per-record attribute guardrails, shared with the gRPC server's handlers
-    pub attribute_limits: Arc<common::config::AttributeLimits>,
+    pub attribute_limits: Arc<attribute_limits::TenantAttributeLimits>,
     /// Maximum decoded request body size, in bytes, for every OTLP/HTTP and
     /// Prometheus remote_write route. From `[acceptor].max_request_body_bytes`,
     /// shared with the gRPC side's `max_decoding_message_size`.

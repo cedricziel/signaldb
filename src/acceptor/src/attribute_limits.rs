@@ -8,7 +8,9 @@
 //! the proto has one, and is always counted in
 //! `signaldb.ingest.attributes_dropped`.
 
-use common::config::AttributeLimits;
+use std::collections::HashMap;
+
+use common::config::{AcceptorConfig, AttributeLimits, AuthConfig};
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::collector::profiles::v1development::ExportProfilesServiceRequest;
@@ -17,6 +19,52 @@ use opentelemetry_proto::tonic::common::v1::{InstrumentationScope, KeyValue, any
 use opentelemetry_proto::tonic::metrics::v1::metric::Data as MetricData;
 use opentelemetry_proto::tonic::resource::v1::Resource;
 use prost::Message;
+
+/// Attribute limits resolved per tenant: the tenant's own
+/// `limits.attribute_limits`, else `[auth].default_limits.attribute_limits`,
+/// else `[acceptor.attribute_limits]`. An override table replaces the
+/// fallback wholesale; fields it omits take the [`AttributeLimits`]
+/// defaults. Tenants provisioned at runtime have no config entry and get
+/// the fallback.
+#[derive(Debug, Default)]
+pub struct TenantAttributeLimits {
+    fallback: AttributeLimits,
+    overrides: HashMap<String, AttributeLimits>,
+}
+
+impl TenantAttributeLimits {
+    pub fn new(acceptor: &AcceptorConfig, auth: &AuthConfig) -> Self {
+        let fallback = auth
+            .default_limits
+            .attribute_limits
+            .clone()
+            .unwrap_or_else(|| acceptor.attribute_limits.clone());
+        let overrides = auth
+            .tenants
+            .iter()
+            .filter_map(|t| {
+                let limits = t.limits.as_ref()?.attribute_limits.clone()?;
+                Some((t.id.clone(), limits))
+            })
+            .collect();
+        Self {
+            fallback,
+            overrides,
+        }
+    }
+
+    /// The same limits for every tenant.
+    pub fn uniform(limits: AttributeLimits) -> Self {
+        Self {
+            fallback: limits,
+            overrides: HashMap::new(),
+        }
+    }
+
+    pub fn for_tenant(&self, tenant_id: &str) -> &AttributeLimits {
+        self.overrides.get(tenant_id).unwrap_or(&self.fallback)
+    }
+}
 
 /// Attributes dropped from one export request, by the level of the list
 /// they were dropped from.
@@ -527,5 +575,83 @@ mod tests {
         let original = request.clone();
         assert_eq!(cap_profiles(&mut request, &limits(2)), Dropped::default());
         assert_eq!(request, original);
+    }
+}
+
+#[cfg(test)]
+mod tenant_limits_tests {
+    use common::config::{TenantConfig, TenantLimits};
+
+    use super::*;
+
+    fn limits(max_attributes: usize) -> AttributeLimits {
+        AttributeLimits {
+            max_attributes,
+            ..AttributeLimits::default()
+        }
+    }
+
+    fn tenant(id: &str, attribute_limits: Option<AttributeLimits>) -> TenantConfig {
+        TenantConfig {
+            id: id.to_string(),
+            limits: Some(TenantLimits {
+                attribute_limits,
+                ..TenantLimits::default()
+            }),
+            ..TenantConfig::default()
+        }
+    }
+
+    fn acceptor(max_attributes: usize) -> AcceptorConfig {
+        AcceptorConfig {
+            attribute_limits: limits(max_attributes),
+            ..AcceptorConfig::default()
+        }
+    }
+
+    #[test]
+    fn tenant_override_wins_over_default_limits_and_acceptor() {
+        let auth = AuthConfig {
+            default_limits: TenantLimits {
+                attribute_limits: Some(limits(20)),
+                ..TenantLimits::default()
+            },
+            tenants: vec![tenant("acme", Some(limits(5)))],
+            ..AuthConfig::default()
+        };
+        let resolved = TenantAttributeLimits::new(&acceptor(30), &auth);
+        assert_eq!(resolved.for_tenant("acme").max_attributes, 5);
+    }
+
+    #[test]
+    fn default_limits_apply_before_the_acceptor_config() {
+        let auth = AuthConfig {
+            default_limits: TenantLimits {
+                attribute_limits: Some(limits(20)),
+                ..TenantLimits::default()
+            },
+            tenants: vec![tenant("acme", None)],
+            ..AuthConfig::default()
+        };
+        let resolved = TenantAttributeLimits::new(&acceptor(30), &auth);
+        assert_eq!(resolved.for_tenant("acme").max_attributes, 20);
+        assert_eq!(resolved.for_tenant("other").max_attributes, 20);
+    }
+
+    #[test]
+    fn acceptor_config_is_the_last_resort_for_known_and_unknown_tenants() {
+        let auth = AuthConfig {
+            tenants: vec![tenant("acme", None)],
+            ..AuthConfig::default()
+        };
+        let resolved = TenantAttributeLimits::new(&acceptor(30), &auth);
+        assert_eq!(resolved.for_tenant("acme").max_attributes, 30);
+        assert_eq!(resolved.for_tenant("unknown").max_attributes, 30);
+    }
+
+    #[test]
+    fn uniform_applies_to_every_tenant() {
+        let resolved = TenantAttributeLimits::uniform(limits(7));
+        assert_eq!(resolved.for_tenant("anyone").max_attributes, 7);
     }
 }

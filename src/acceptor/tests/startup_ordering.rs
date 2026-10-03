@@ -76,7 +76,7 @@ async fn test_resources(temp_dir: &TempDir) -> AcceptorResources {
         storage_usage,
         processor_registry,
         retry_dedup: Arc::new(acceptor::handler::RetryDedup::default()),
-        attribute_limits: Arc::new(common::config::AttributeLimits::default()),
+        attribute_limits: Arc::new(acceptor::attribute_limits::TenantAttributeLimits::default()),
         type_snapshots,
     }
 }

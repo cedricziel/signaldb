@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use common::auth::TenantContext;
-use common::config::AttributeLimits;
 use common::flight::conversion::otlp_traces_to_arrow;
 use common::flight::transport::InMemoryFlightTransport;
 use common::processors::ProcessorRegistry;
@@ -27,7 +26,7 @@ use super::ingest_error::IngestError;
 use super::otlp_log_handler::LogHandler;
 use super::processors_apply::apply_trace_processors;
 use super::retry_dedup::{RetryDedup, stamp_batch_fingerprint};
-use crate::attribute_limits::{cap_traces, record_drops};
+use crate::attribute_limits::{TenantAttributeLimits, cap_traces, record_drops};
 
 pub struct TraceHandler {
     /// Flight transport for forwarding telemetry
@@ -36,8 +35,8 @@ pub struct TraceHandler {
     wal_manager: Arc<WalManager>,
     /// Recognizes a client's resend of a batch already made durable
     retry_dedup: Arc<RetryDedup>,
-    /// Per-record attribute guardrails (`[acceptor.attribute_limits]`)
-    attribute_limits: Arc<AttributeLimits>,
+    /// Per-record attribute guardrails (`[acceptor.attribute_limits]` plus tenant overrides)
+    attribute_limits: Arc<TenantAttributeLimits>,
     /// Tenant OTTL processors (change: tenant-ottl-processors)
     processor_registry: Arc<ProcessorRegistry>,
     /// Writes the log records derived from evaluation-result span events,
@@ -90,7 +89,7 @@ impl TraceHandler {
             flight_transport,
             wal_manager,
             retry_dedup: Arc::new(RetryDedup::default()),
-            attribute_limits: Arc::new(AttributeLimits::default()),
+            attribute_limits: Arc::new(TenantAttributeLimits::default()),
             processor_registry,
             eval_log_handler: None,
         }
@@ -104,9 +103,9 @@ impl TraceHandler {
         self
     }
 
-    /// Apply the acceptor's `[acceptor.attribute_limits]`; the default is
-    /// [`AttributeLimits::default`].
-    pub fn with_attribute_limits(mut self, attribute_limits: Arc<AttributeLimits>) -> Self {
+    /// Per-tenant `[acceptor.attribute_limits]`; the default applies the
+    /// built-in limits to every tenant.
+    pub fn with_attribute_limits(mut self, attribute_limits: Arc<TenantAttributeLimits>) -> Self {
         self.attribute_limits = attribute_limits;
         self
     }
@@ -148,7 +147,10 @@ impl TraceHandler {
 
         apply_trace_processors(&self.processor_registry, tenant_context, &mut request).await?;
 
-        let dropped = cap_traces(&mut request, &self.attribute_limits);
+        let dropped = cap_traces(
+            &mut request,
+            self.attribute_limits.for_tenant(&tenant_context.tenant_id),
+        );
         record_drops(&tenant_context.tenant_id, "traces", &dropped);
 
         // Get tenant/dataset-specific WAL
@@ -647,10 +649,12 @@ mod cancellation_safety_tests {
         let wal_manager = Arc::new(test_wal_manager(temp_dir.path()));
         let (transport, processor_registry) = transport_without_writer().await;
         let handler = TraceHandler::new(transport, wal_manager.clone(), processor_registry)
-            .with_attribute_limits(Arc::new(AttributeLimits {
-                max_attributes: 2,
-                ..AttributeLimits::default()
-            }));
+            .with_attribute_limits(Arc::new(TenantAttributeLimits::uniform(
+                common::config::AttributeLimits {
+                    max_attributes: 2,
+                    ..Default::default()
+                },
+            )));
         let tenant_context = test_tenant_context();
         let mut request = sample_trace_request();
         let span = &mut request.resource_spans[0].scope_spans[0].spans[0];
@@ -672,6 +676,64 @@ mod cancellation_safety_tests {
         assert_eq!(attributes.as_object().unwrap().len(), 2);
         let dropped = column_as::<Int64Array>(&batch, "dropped_attributes_count").value(0);
         assert_eq!(dropped, 1 + 3);
+    }
+
+    #[tokio::test]
+    async fn a_tenant_attribute_limit_override_applies_only_to_that_tenant() {
+        use crate::handler::test_support::{column_as, string_attrs};
+        use common::config::{
+            AcceptorConfig, AttributeLimits, AuthConfig, TenantConfig, TenantLimits,
+        };
+        use common::wal::bytes_to_record_batch;
+        use datafusion::arrow::array::StringArray;
+
+        let auth = AuthConfig {
+            tenants: vec![TenantConfig {
+                id: "acme".to_string(),
+                limits: Some(TenantLimits {
+                    attribute_limits: Some(AttributeLimits {
+                        max_attributes: 2,
+                        ..AttributeLimits::default()
+                    }),
+                    ..TenantLimits::default()
+                }),
+                ..TenantConfig::default()
+            }],
+            ..AuthConfig::default()
+        };
+        let limits = Arc::new(TenantAttributeLimits::new(
+            &AcceptorConfig::default(),
+            &auth,
+        ));
+
+        let temp_dir = TempDir::new().unwrap();
+        let wal_manager = Arc::new(test_wal_manager(temp_dir.path()));
+        let (transport, processor_registry) = transport_without_writer().await;
+        let handler = TraceHandler::new(transport, wal_manager.clone(), processor_registry)
+            .with_attribute_limits(limits);
+
+        let capped_tenant = test_tenant_context();
+        let mut other_tenant = test_tenant_context();
+        other_tenant.tenant_id = "other-tenant".to_string();
+        for tenant_context in [&capped_tenant, &other_tenant] {
+            let mut request = sample_trace_request();
+            request.resource_spans[0].scope_spans[0].spans[0].attributes = string_attrs(5);
+            handler
+                .handle_grpc_otlp_traces(tenant_context, request)
+                .await
+                .unwrap();
+        }
+
+        for (tenant_context, expected) in [(&capped_tenant, 2), (&other_tenant, 5)] {
+            let batch = bytes_to_record_batch(
+                &only_wal_entry_bytes(&wal_manager, tenant_context, "traces").await,
+            )
+            .unwrap();
+            let attributes: serde_json::Value =
+                serde_json::from_str(column_as::<StringArray>(&batch, "attributes_json").value(0))
+                    .unwrap();
+            assert_eq!(attributes.as_object().unwrap().len(), expected);
+        }
     }
 }
 

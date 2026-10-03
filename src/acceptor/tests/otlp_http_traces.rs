@@ -171,7 +171,9 @@ async fn setup_traces_test_with(
     ));
     let trace_handler = Arc::new(
         TraceHandler::new(flight_transport, wal_manager.clone(), processor_registry)
-            .with_attribute_limits(Arc::new(attribute_limits))
+            .with_attribute_limits(Arc::new(
+                acceptor::attribute_limits::TenantAttributeLimits::uniform(attribute_limits),
+            ))
             .with_evaluation_logs(log_handler),
     );
 

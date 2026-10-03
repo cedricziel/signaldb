@@ -169,6 +169,35 @@ carries `tenant_id`, `signal` and `level` (`resource`, `scope` or `record`)
 labels. Profile attributes are interned in the profile dictionary, so only the
 number of attribute indices is capped, not key or value sizes.
 
+### Per-tenant overrides
+
+An operator can give a tenant its own caps. For each tenant, SignalDB uses the
+first of these that is set:
+
+| Order | Config section |
+| --- | --- |
+| 1 | `[auth.tenants.limits.attribute_limits]` |
+| 2 | `[auth.default_limits.attribute_limits]` |
+| 3 | `[acceptor.attribute_limits]` |
+
+```toml
+[[auth.tenants]]
+id = "acme"
+slug = "acme"
+name = "Acme"
+
+[auth.tenants.limits.attribute_limits]
+max_attributes = 128
+max_value_bytes = 1024
+```
+
+A table replaces the lower-priority one rather than merging with it: a field
+it leaves out takes the built-in default (512, 256, 4096), not the value from
+`[acceptor.attribute_limits]`. In the example, `max_key_bytes` is 256. Tenants
+created at runtime have no config entry and get the `[auth.default_limits]` or
+`[acceptor.attribute_limits]` caps. Limits are read at startup. Per-dataset
+overrides are not supported.
+
 ## What is preserved
 
 - **Attribute values keep their OTLP type.** Strings, integers (full 64-bit),

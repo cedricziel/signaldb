@@ -421,6 +421,7 @@ API get the defaults.
 | `max_api_keys` (active keys only)                          | Admin API key creation                                                | 429 `quota_exceeded`                        |
 | `max_datasets`                                             | Admin API dataset creation                                            | 429 `quota_exceeded`                        |
 | `max_storage_bytes`                                        | Acceptor (OTLP gRPC incl. profiles, OTLP/HTTP profiles, remote_write) | 429 / `RESOURCE_EXHAUSTED` `quota_exceeded` |
+| `attribute_limits` (table)                                 | Acceptor (OTLP traces, logs, metrics, profiles)                       | attributes dropped, export succeeds         |
 | `[querier].max_concurrent_queries_per_tenant` (default 8)  | Querier                                                               | query rejected                              |
 
 Ingest and query rate limits are independent token buckets per tenant.
@@ -431,6 +432,8 @@ Storage quotas compare cached per-tenant usage — refreshed from Iceberg
 manifests every `[auth].storage_usage_refresh_interval` (default 60s) —
 against `max_storage_bytes`, so enforcement is eventually consistent by
 design; usage is exported as the `signaldb.tenant.storage_usage` gauge.
+`attribute_limits` falls back to `[acceptor.attribute_limits]` rather than
+unlimited; see [attribute limits](sending-otlp.md#per-tenant-overrides).
 
 Every token-bucket rejection increments
 `signaldb_rate_limit_rejections_total{surface,kind}` (`surface` ∈
