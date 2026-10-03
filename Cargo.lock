@@ -1386,7 +1386,6 @@ dependencies = [
  "datafusion_iceberg",
  "futures",
  "humantime",
- "humantime-serde",
  "iceberg-rust",
  "object_store",
  "opentelemetry",
