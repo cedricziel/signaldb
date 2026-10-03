@@ -34,8 +34,8 @@ use tests_integration::generators::{
     self, BLOOM_HIGH_SENTINEL, BLOOM_LOW_SENTINEL, BLOOM_TARGET_TRACE_ID,
 };
 use tests_integration::ordering::{ScanReport, SequentialTraces};
+use tests_integration::test_support::writer_with_type_authority;
 use tokio::runtime::Runtime;
-use writer::IcebergTableWriter;
 
 /// One hour in microseconds (the `timestamp` column is Timestamp(Microsecond)).
 const HOUR_US: i64 = 3_600_000_000;
@@ -60,7 +60,7 @@ async fn seed_traces_catalog() -> (Arc<CatalogManager>, i64) {
         .build();
     let catalog_manager = Arc::new(CatalogManager::new(config).await.expect("catalog manager"));
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = writer_with_type_authority(
         &catalog_manager,
         TENANT.to_string(),
         DATASET.to_string(),
