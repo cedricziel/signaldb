@@ -50,11 +50,11 @@ memory_limit_mb` budget (default 512 MB), spilling to disk past it. The
 > the partition. The rewrite sorts with a fan-out of `[compactor]
 target_partitions` (default `1`): the sorters share the one budget, so
 > raising the fan-out divides it and can exhaust the pool on concurrency
-> alone. It reads the partition in batches of `[compactor] scan_batch_size`
-> rows (default `1024`, below DataFusion's 8192): the sort reserves roughly
-> twice a batch's bytes before it can spill anything, so on a table with wide
-> rows the default row count would put a single unspillable reservation above
-> the whole pool. The compactor warns at startup when these settings cannot
+> alone. It reads the partition in batches sized from the partition's own
+> bytes per row, capped at `[compactor] scan_batch_size` rows (default
+> `1024`, below DataFusion's 8192): the sort reserves roughly twice a batch's
+> bytes before it can spill anything, so on a table with wide rows a fixed
+> row count would put a single unspillable reservation above the whole pool. The compactor warns at startup when these settings cannot
 > work together — a target file size at or above the pool, a per-sorter share
 > too small for a spilling sort to use, or a spill reservation claiming half
 > of that share — since none is visible from any single value.

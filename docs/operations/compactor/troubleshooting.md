@@ -650,8 +650,10 @@ memory_limit_mb = 1024
 ```
 
 3. **Shrink the scan batch** when the failing sorter had `0.0 B` allocated —
-   the wide-row shape above. Divide the requested size by the pool to see how
-   far it must come down; the default is already 8x below DataFusion's:
+   the wide-row shape above. Each job already derives its batch from the
+   partition's bytes per row, assuming rows decode to 64x their compressed
+   size, so this shape means a table decodes to even more than that. Divide
+   the requested size by the pool to see how far the ceiling must come down:
 
 ```toml
 [compactor]
