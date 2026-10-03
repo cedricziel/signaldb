@@ -52,7 +52,7 @@ these:
 | `profiles_for_trace`            | List the profiles correlated with a hex trace id (`trace.id` on the `profiles` source, last 30 days, where the old endpoint was unbounded; newest 1,000), through the Query IR. |
 | `query_ir`                      | Native Query IR document (the structured, versioned query surface). `page_size` pages a `rows`/`trace` result (`irVersion` 14); pass the response's `page.next_cursor` back as `cursor` for the next page. `tail: {}` starts a live tail (`irVersion` 15) and `tail: {"cursor": ...}` continues it, one call per invocation.                                                                                                                                                                                                                                                                   |
 | `list_skills`                   | List the longer-form guidance documents ("skills") this server exposes beyond the tool descriptions — same catalog as the `skill://index.json` resource.                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `get_skill`                     | Read one guidance document by name (e.g. `query-ir`) — same content as the corresponding `skill://<name>/SKILL.md` resource, for clients that don't read MCP resources.                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `get_skill`                     | Read one guidance document by name (e.g. `query-ir` or `query-ir/aggregate`) — same content as the corresponding `skill://<name>/SKILL.md` resource, for clients that don't read MCP resources.                                                                                                                                                                                                                                                                                                                                                                                                |
 | `list_schema_registries`        | List the schema registries visible to your tenant in precedence order (custom first, then the bundled `signaldb` and `otel` semconv), with definition counts.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `get_schema_registry`           | Fetch one registry's summary and full document by `namespace`/`version`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `resolve_attribute`             | What an attribute key means: every definition across the visible registries, precedence-ordered (`primary` first), with brief, type, examples, deprecation.                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -306,11 +306,22 @@ kept out of the always-sent `initialize` instructions so those stay short.
 Each skill follows the common `skill://<name>/SKILL.md` convention; a
 `skill://index.json` resource lists all of them for discovery. The
 `list_skills`/`get_skill` tools above mirror the same catalog for clients
-that don't read MCP resources on their own. Currently one skill:
+that don't read MCP resources on their own.
 
-| Resource                    | Covers                                                                                                                                                                                                                                                                                                                                                            |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `skill://query-ir/SKILL.md` | When `query_ir` covers more than `search_traces`/`search_logs`/`query_metrics` (a pipeline stage they can't express, or you're already building a document from `discover_sources`/`discover_fields`/`discover_field_values`), plus the full IR document reference — the same content as [the Query IR reference](querying-ir.md), reused rather than duplicated. |
+The Query IR reference is too long for one tool result, so it is served in
+pieces:
+
+- `skill://query-ir/SKILL.md` (`get_skill("query-ir")`) says when `query_ir`
+  covers more than `search_traces`/`search_logs`/`query_metrics`, gives a
+  minimal complete document, and indexes the sections below.
+- `skill://query-ir/<section>/SKILL.md` (`get_skill("query-ir/<section>")`)
+  is one section of [the Query IR reference](querying-ir.md), reused rather
+  than duplicated: `document`, `where`, `aggregate`, `results`, `paging`,
+  `graph`, `profiles`, `metrics`, `histograms`, `correlate`, `match`,
+  `formulas`, `discovery` and `examples`.
+
+A `query_ir` call the router rejects as invalid names the section to read in
+its error message.
 
 Both `ui://` and `skill://` resources are static and compiled into the
 binary — identical for every client, so `resources/list`/`resources/read`
