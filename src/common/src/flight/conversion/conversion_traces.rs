@@ -33,7 +33,7 @@ use crate::flight::schema::FlightSchemas;
 pub fn otlp_traces_to_arrow(
     request: &ExportTraceServiceRequest,
 ) -> Result<RecordBatch, ArrowError> {
-    let schemas = FlightSchemas::new();
+    let schemas = FlightSchemas::shared();
     let schema = schemas.trace_schema.clone();
 
     // Extract spans from the request
