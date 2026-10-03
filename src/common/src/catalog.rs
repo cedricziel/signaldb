@@ -3234,6 +3234,21 @@ fn session_from_pg_row(r: &sqlx::postgres::PgRow) -> UserSessionRecord {
     }
 }
 
+/// The signal an Iceberg table belongs to: every metric table shares
+/// `metrics`, other signal tables use their own name, and anything else is
+/// `unknown`. The single table->signal predicate: attribute statistics are
+/// keyed by it and the compactor's lifecycle classifies tables through it.
+pub fn attribute_stats_signal(table_name: &str) -> &'static str {
+    match table_name.to_lowercase().as_str() {
+        "traces" => "traces",
+        "logs" => "logs",
+        "profiles" => "profiles",
+        "metrics" | "metric_exemplars" => "metrics",
+        s if s.starts_with("metrics_") => "metrics",
+        _ => "unknown",
+    }
+}
+
 /// A per-attribute-key statistics row (epic #737, #733): scan-side
 /// presence/cardinality from the compactor's analyzer plus query-demand
 /// hit counters from the querier.

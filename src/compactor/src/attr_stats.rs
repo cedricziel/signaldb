@@ -43,17 +43,6 @@ const ATTR_COLUMNS: &[&str] = &[
     "profile_attributes",
 ];
 
-/// The signal a table's statistics are recorded under.
-///
-/// Classified through [`crate::retention::SignalType::from_table_name`], the
-/// crate's single table->signal predicate, rather than a second hand-rolled
-/// match that could silently drift from it.
-pub fn signal_of_table(table_name: &str) -> &'static str {
-    crate::retention::SignalType::from_table_name(table_name)
-        .map(|s| s.table_name())
-        .unwrap_or("unknown")
-}
-
 /// Cap on the tracked distinct values per key. Keys that exceed it are
 /// reported as `>= CARDINALITY_CAP` and are never promotion candidates.
 const CARDINALITY_CAP: usize = 10_000;
@@ -279,7 +268,7 @@ pub async fn persist_stats(
     level_presence: &AttrLevelPresence,
     total_rows: u64,
 ) {
-    let signal = signal_of_table(table_name);
+    let signal = common::catalog::attribute_stats_signal(table_name);
     for (key, s) in stats {
         if let Err(e) = catalog
             .upsert_attribute_scan_stats(
@@ -674,13 +663,25 @@ mod tests {
     }
 
     #[test]
-    fn signal_of_table_maps_all_tables() {
-        assert_eq!(super::signal_of_table("traces"), "traces");
-        assert_eq!(super::signal_of_table("logs"), "logs");
-        assert_eq!(super::signal_of_table("metrics_histogram"), "metrics");
-        assert_eq!(super::signal_of_table("profiles"), "profiles");
+    fn attribute_stats_signal_maps_all_tables() {
+        assert_eq!(common::catalog::attribute_stats_signal("traces"), "traces");
+        assert_eq!(common::catalog::attribute_stats_signal("logs"), "logs");
+        assert_eq!(
+            common::catalog::attribute_stats_signal("metrics_histogram"),
+            "metrics"
+        );
+        assert_eq!(
+            common::catalog::attribute_stats_signal("profiles"),
+            "profiles"
+        );
         // otel-native-schema layer 7 (D10) cutover prep.
-        assert_eq!(super::signal_of_table("metrics"), "metrics");
-        assert_eq!(super::signal_of_table("metric_exemplars"), "metrics");
+        assert_eq!(
+            common::catalog::attribute_stats_signal("metrics"),
+            "metrics"
+        );
+        assert_eq!(
+            common::catalog::attribute_stats_signal("metric_exemplars"),
+            "metrics"
+        );
     }
 }
