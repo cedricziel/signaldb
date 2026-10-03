@@ -585,6 +585,17 @@ max_request_body_bytes = 67108864     # 64MB
 # this cache only.
 retry_dedup_window = "5m"
 
+[acceptor.attribute_limits]
+# Per-record attribute guardrails, applied to every attribute list (resource,
+# scope, span/event/link/log record/data point/profile) on every signal and
+# both OTLP transports. Overflowing attributes are dropped and added to the
+# message's dropped_attributes_count; signaldb.ingest.attributes_dropped
+# counts them. Values count bytes for strings/bytes, encoded size for
+# arrays and kvlists.
+max_attributes = 512
+max_key_bytes = 256
+max_value_bytes = 4096
+
 [compactor]
 # Compactor Service Configuration
 # The compactor manages the complete data lifecycle with three phases:
@@ -614,10 +625,10 @@ target_partitions = 1                 # DataFusion fan-out for the rewrite (0 = 
                                       # Each partition sorts independently and they share
                                       # memory_limit_mb, so raising this divides the budget
                                       # and can exhaust it on concurrency alone
-scan_batch_size = 1024                # Rows per batch read into the sort (0 = DataFusion's
-                                      # 8192). The sort reserves ~2x a batch's BYTES before
-                                      # it can spill anything, so wide rows (profile
-                                      # payloads, fat attributes) need a smaller count
+scan_batch_size = 1024                # Ceiling on rows per batch read into the sort (0 =
+                                      # DataFusion's 8192). The sort reserves ~2x a batch's
+                                      # BYTES before it can spill, so each job derives a
+                                      # smaller count from its partition's bytes per row
 sort_spill_reservation_mb = 10        # Headroom each sort holds back so its spill merge can
                                       # run; taken out of memory_limit_mb, not added to it
 

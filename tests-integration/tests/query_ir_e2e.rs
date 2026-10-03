@@ -631,6 +631,77 @@ async fn logs_ir_query_end_to_end() {
     );
 }
 
+// Issue #1533 — `http.method` and `http_method` sanitize to the same label
+// column name, so the writer gives the second a suffixed column. Each key
+// must still read its own column, not the other's.
+#[tokio::test]
+async fn logs_ir_query_resolves_colliding_materialized_labels_by_origin_key() {
+    let services = setup_with(|c| {
+        c.schema.materialized_labels.logs = vec!["http.method".into(), "http_method".into()];
+    })
+    .await;
+    let ctx = test_tenant_context();
+
+    let with_attrs = |offset_ns: i64, body: &str, dotted: &str, underscored: &str| {
+        let mut record = log_record(offset_ns, "INFO", body);
+        record.attributes = vec![
+            KeyValue {
+                key: "http.method".to_string(),
+                value: Some(string_value(dotted)),
+                ..Default::default()
+            },
+            KeyValue {
+                key: "http_method".to_string(),
+                value: Some(string_value(underscored)),
+                ..Default::default()
+            },
+        ];
+        record
+    };
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "api",
+                vec![
+                    with_attrs(0, "row-a", "GET", "alpha"),
+                    with_attrs(1_000_000, "row-b", "POST", "beta"),
+                ],
+            ),
+        )
+        .await
+        .expect("ingest logs with colliding attribute keys");
+
+    let app = build_router(&services).await;
+
+    for (field, value, expected_body) in [
+        ("http_method", "alpha", "row-a"),
+        ("http.method", "POST", "row-b"),
+        ("http_method", "beta", "row-b"),
+        ("http.method", "GET", "row-a"),
+    ] {
+        let (status, body) = post_ir_until_rows(
+            &app,
+            serde_json::json!({
+                "irVersion": 1,
+                "from": "logs",
+                "range": range(),
+                "result": "rows",
+                "fields": ["body"],
+                "pipeline": [
+                    { "where": { "field": field, "op": "eq", "value": value } }
+                ]
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{field}={value}: {body}");
+        let rows = body["rows"].as_array().expect("rows array");
+        assert_eq!(rows.len(), 1, "{field}={value} must match one row: {body}");
+        assert_eq!(rows[0][0], expected_body, "{field}={value}: {body}");
+    }
+}
+
 // Issue #1410 — ingest JSON-encodes the `body` value so non-string bodies
 // (kvlist/array/bytes) survive the Utf8 column; a plain string body must come
 // back decoded (no surrounding quotes) while a structured body must still
@@ -3444,6 +3515,60 @@ async fn match_on_span_events_and_links() {
     );
 }
 
+/// A consumer span that links back to its producer (#1802): `span_links` and
+/// `span_kind` both read back through the IR, and a span without links has
+/// no `span_links`.
+#[tokio::test]
+async fn span_links_and_kind_read_back() {
+    use opentelemetry_proto::tonic::trace::v1::span::SpanKind;
+
+    let services = setup().await;
+    let ctx = test_tenant_context();
+    let producer_trace = [0xab_u8; 16];
+    let consumer = Span {
+        kind: SpanKind::Consumer as i32,
+        ..span_with_events_and_links("river.work/notify", 1, 1, None, &[], &[producer_trace])
+    };
+    let plain = span_with_events_and_links("op", 2, 1, None, &[], &[]);
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(&ctx, traces_request("worker", vec![consumer, plain]))
+        .await
+        .expect("ingest linked spans");
+
+    let app = build_router(&services).await;
+    let (status, body) = post_ir_until_rows(
+        &app,
+        serde_json::json!({
+            "irVersion": 1, "from": "traces", "range": range(), "result": "rows",
+            "fields": ["span.name", "span_kind", "span_links"],
+            "pipeline": [ { "order": [{ "of": "span.name", "dir": "desc" }] } ]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "span links query: {body}");
+    let rows = body["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 2, "{body}");
+
+    assert_eq!(rows[0][0], "river.work/notify");
+    assert_eq!(rows[0][1], "Consumer");
+    let links: serde_json::Value = match &rows[0][2] {
+        serde_json::Value::String(s) => serde_json::from_str(s).expect("links JSON"),
+        other => other.clone(),
+    };
+    assert_eq!(
+        links,
+        serde_json::json!([{
+            "trace_id": hex::encode(producer_trace),
+            "span_id": hex::encode([7_u8; 8]),
+            "attributes": {}
+        }]),
+        "{body}"
+    );
+    assert_eq!(rows[1][0], "op");
+    assert!(rows[1][2].is_null(), "a span without links: {body}");
+}
+
 /// `match` is traces-only: on logs it is a 400 at validation.
 #[tokio::test]
 async fn match_on_logs_is_rejected() {
@@ -3514,9 +3639,15 @@ async fn match_incomplete_trace_warns_when_the_range_cuts_a_trace() {
     let (status, body) = post_ir(&app, narrow).await;
     assert_eq!(status, StatusCode::OK, "narrow match: {body}");
     assert_eq!(witnesses(&body), whole, "the warning never changes rows");
-    let warnings = body["warnings"].as_array().expect("warnings array");
+    // The fixture's 2023 timestamps also draw a `range_before_retention` warning.
+    let warnings: Vec<_> = body["warnings"]
+        .as_array()
+        .expect("warnings array")
+        .iter()
+        .filter(|w| w["code"] != "range_before_retention")
+        .collect();
     let [warning] = warnings.as_slice() else {
-        panic!("exactly one warning: {body}");
+        panic!("exactly one match warning: {body}");
     };
     assert_eq!(warning["code"], "match_incomplete_trace", "{body}");
     let message = warning["message"].as_str().expect("message");
@@ -3570,9 +3701,15 @@ async fn match_incomplete_trace_counts_a_trace_whose_span_set_is_cut_off() {
     let (status, body) = post_ir(&app, narrow).await;
     assert_eq!(status, StatusCode::OK, "narrow match: {body}");
     assert!(trace_ids_in(&body).is_empty(), "{body}");
-    let warnings = body["warnings"].as_array().expect("warnings array");
+    // The fixture's 2023 timestamps also draw a `range_before_retention` warning.
+    let warnings: Vec<_> = body["warnings"]
+        .as_array()
+        .expect("warnings array")
+        .iter()
+        .filter(|w| w["code"] != "range_before_retention")
+        .collect();
     let [warning] = warnings.as_slice() else {
-        panic!("exactly one warning: {body}");
+        panic!("exactly one match warning: {body}");
     };
     assert_eq!(warning["code"], "match_incomplete_trace", "{body}");
     let message = warning["message"].as_str().expect("message");

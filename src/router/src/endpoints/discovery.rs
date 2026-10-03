@@ -72,7 +72,7 @@ pub(super) async fn answer_describe(
     );
     async {
         let metadata = match describe.target {
-            DescribeTarget::Fields => fields(state, ctx, &doc.from, describe).await?,
+            DescribeTarget::Fields => fields(state, ctx, &doc.from, describe, window).await?,
             DescribeTarget::Values => values(state, ctx, doc, describe, window, now_ns).await?,
         };
         tracing::Span::current().record(
@@ -232,6 +232,7 @@ async fn fields(
     ctx: &TenantContext,
     source: &str,
     describe: &Describe,
+    window: ResolvedWindow,
 ) -> Result<MetadataResult, ApiError> {
     let signal = signal_for_source(source)
         .ok_or_else(|| ApiError::bad_request(format!("unknown query source '{source}'")))?;
@@ -285,14 +286,38 @@ async fn fields(
         });
 
     let limit = bounded(describe.limit, DEFAULT_FIELD_LIMIT);
-    let (fields, truncated) = merge_fields(source, &schema, &stats, &registry, &types, limit);
+    let (mut fields, truncated) = merge_fields(source, &schema, &stats, &registry, &types, limit);
+    let cost = DiscoveryCost::metadata(latest_observation(&stats)).with_statistics(
+        &stats,
+        window.start_ns,
+        window.end_ns,
+    );
+    if cost.partial {
+        // A distinct count over rows that all fall inside the window can only
+        // undercount it; one over rows outside the window bounds nothing.
+        let within: std::collections::HashSet<&str> = stats
+            .iter()
+            .filter(|record| {
+                record
+                    .analyzed_span
+                    .is_some_and(|span| span.within(window.start_ns, window.end_ns))
+            })
+            .map(|record| record.attr_key.as_str())
+            .collect();
+        for field in &mut fields {
+            let at_least = within.contains(field.name.as_str());
+            if let Some(estimate) = field.cardinality.as_mut() {
+                estimate.at_least = at_least;
+            }
+        }
+    }
     Ok(MetadataResult {
         kind: MetadataKind::Fields,
         sources: Vec::new(),
         fields,
         values: Vec::new(),
         truncated,
-        cost: DiscoveryCost::metadata(latest_observation(&stats)),
+        cost,
         hint: None,
     })
 }
@@ -368,27 +393,48 @@ async fn values(
 
     // 2. The analyzer's value sketch: still no data read, but a bounded list
     // of the most frequent values rather than the exact set, so the answer is
-    // marked approximate and dated.
+    // marked approximate, dated, and partial when the partition it was built
+    // from does not span the window. A client that asked for `sample` gets
+    // the data instead: a sketch never speaks for a window it did not read.
     let signal = signal_for_source(source)
         .ok_or_else(|| ApiError::bad_request(format!("unknown query source '{source}'")))?;
-    let sketch = state
-        .catalog()
-        .get_attribute_value_stats(
+    let hint = value_query_hint(source, field, window, limit);
+    if describe.sample {
+        let values = sampled_values(state, ctx, source, field, window, limit, now_ns).await?;
+        let truncated = values.len() >= limit;
+        return Ok(MetadataResult {
+            kind: MetadataKind::Values,
+            sources: Vec::new(),
+            fields: Vec::new(),
+            values,
+            truncated,
+            cost: DiscoveryCost::sampled_scan(),
+            hint: Some(hint),
+        });
+    }
+    let (sketch, observation) = tokio::join!(
+        state.catalog().get_attribute_value_stats(
             &ctx.tenant_slug,
             &ctx.dataset_slug,
             signal,
             key,
             limit as i64,
-        )
-        .await
-        .unwrap_or_else(|error| {
-            // A missing sketch is a normal state, not a failure: fall through
-            // to the honest "nothing covers this" rather than 500 a picker.
-            tracing::warn!(?error, "failed to read the attribute value sketch");
-            Vec::new()
-        });
+        ),
+        key_observation(state, ctx, signal, key),
+    );
+    let sketch = sketch.unwrap_or_else(|error| {
+        // A missing sketch is a normal state, not a failure: fall through
+        // to the honest "nothing covers this" rather than 500 a picker.
+        tracing::warn!(?error, "failed to read the attribute value sketch");
+        Vec::new()
+    });
     if !sketch.is_empty() {
         let as_of = sketch.iter().map(|s| s.updated_at.clone()).max();
+        let cost = DiscoveryCost::statistics(as_of).with_statistics(
+            &observation,
+            window.start_ns,
+            window.end_ns,
+        );
         let values = sketch_values(&sketch, limit);
         let truncated = values.len() >= limit;
         return Ok(MetadataResult {
@@ -397,8 +443,9 @@ async fn values(
             fields: Vec::new(),
             values,
             truncated,
-            cost: DiscoveryCost::statistics(as_of),
-            hint: None,
+            // A partial sketch names the query that reads the whole window.
+            hint: cost.partial.then_some(hint),
+            cost,
         });
     }
 
@@ -406,33 +453,36 @@ async fn values(
     // analyzer has not run, or the key's cardinality exceeded its cap and a
     // partial list would mislead. Say so, and name the query that computes the
     // answer, rather than scanning behind the client's back.
-    let hint = value_query_hint(source, field, window, limit);
-    if !describe.sample {
-        return Ok(MetadataResult {
-            kind: MetadataKind::Values,
-            sources: Vec::new(),
-            fields: Vec::new(),
-            values: Vec::new(),
-            truncated: false,
-            cost: DiscoveryCost::none(),
-            hint: Some(hint),
-        });
-    }
-
-    // 4. The client asked for the data-derived answer: run exactly the query
-    // the hint names, bounded by the window and the limit, and say that the
-    // answer came from reading data.
-    let values = sampled_values(state, ctx, source, field, window, limit, now_ns).await?;
-    let truncated = values.len() >= limit;
     Ok(MetadataResult {
         kind: MetadataKind::Values,
         sources: Vec::new(),
         fields: Vec::new(),
-        values,
-        truncated,
-        cost: DiscoveryCost::sampled_scan(),
+        values: Vec::new(),
+        truncated: false,
+        cost: DiscoveryCost::none(),
         hint: Some(hint),
     })
+}
+
+/// The analyzer's latest presence observation for one key, which says what
+/// span of data the key's value sketch was built from. A failed read is
+/// treated as no observation, which reports the sketch as partial.
+async fn key_observation(
+    state: &RouterAppState,
+    ctx: &TenantContext,
+    signal: &str,
+    key: &str,
+) -> Option<common::catalog::AttributeStatsRecord> {
+    state
+        .catalog()
+        .get_attribute_stats(&ctx.tenant_slug, &ctx.dataset_slug, signal)
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(?error, "failed to read attribute stats for value coverage");
+            Vec::new()
+        })
+        .into_iter()
+        .find(|record| record.attr_key == key)
 }
 
 /// Run the counted top-values aggregation over the window, through the same
@@ -514,7 +564,7 @@ fn value_query_document(
 /// when nothing covers the field — what the client can run itself.
 fn value_query_hint(source: &str, field: &str, window: ResolvedWindow, limit: usize) -> String {
     format!(
-        "no declared value set or maintained statistics cover '{field}'. \
+        "no declared value set or maintained statistics cover '{field}' over this window. \
          Reading data answers it: POST /api/v1/query {}",
         value_query_document(source, field, window, limit)
     )
@@ -652,6 +702,7 @@ mod tests {
                 10,
                 3,
                 false,
+                None,
             )
             .await
             .unwrap();
@@ -793,11 +844,31 @@ mod tests {
     async fn discovery_sees_only_the_authenticated_tenant() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         catalog
-            .upsert_attribute_scan_stats("acme", "default", "logs", "acme.only", 5, 10, 3, false)
+            .upsert_attribute_scan_stats(
+                "acme",
+                "default",
+                "logs",
+                "acme.only",
+                5,
+                10,
+                3,
+                false,
+                None,
+            )
             .await
             .unwrap();
         catalog
-            .upsert_attribute_scan_stats("other", "default", "logs", "other.only", 5, 10, 3, false)
+            .upsert_attribute_scan_stats(
+                "other",
+                "default",
+                "logs",
+                "other.only",
+                5,
+                10,
+                3,
+                false,
+                None,
+            )
             .await
             .unwrap();
         let app = app_with(catalog, ctx_for("acme", None)).await;
@@ -919,6 +990,167 @@ mod tests {
             !body["metadata"]["cost"]["as_of"].is_null(),
             "an approximate answer must say how old it is"
         );
+    }
+
+    /// A catalog holding a sketch for `http.route` on logs, observed by the
+    /// analyzer over `[span_start_ns, span_end_ns)`.
+    async fn catalog_with_sketch(span_start_ns: i64, span_end_ns: i64) -> Catalog {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_attribute_scan_stats(
+                "acme",
+                "default",
+                "logs",
+                "http.route",
+                1_000,
+                1_000,
+                1,
+                false,
+                Some(common::catalog::AnalyzedSpan {
+                    start_ns: span_start_ns,
+                    end_ns: span_end_ns,
+                }),
+            )
+            .await
+            .unwrap();
+        catalog
+            .replace_attribute_value_stats(
+                "acme",
+                "default",
+                "logs",
+                "http.route",
+                &[("/api/orders".to_string(), 1_000)],
+            )
+            .await
+            .unwrap();
+        catalog
+    }
+
+    fn describe_between(start_ns: i64, end_ns: i64, stage: serde_json::Value) -> serde_json::Value {
+        let mut doc = describe("logs", stage);
+        doc["range"] =
+            serde_json::json!({ "from": start_ns.to_string(), "to": end_ns.to_string() });
+        doc
+    }
+
+    const HOUR_NS: i64 = 3_600_000_000_000;
+
+    #[tokio::test]
+    async fn sample_reads_data_even_when_a_sketch_exists() {
+        let app = app_with(catalog_with_sketch(0, HOUR_NS).await, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            describe(
+                "logs",
+                serde_json::json!({"target": "values", "field": "http.route", "sample": true}),
+            ),
+        )
+        .await;
+
+        // No querier is registered: 503 proves the request went to read data
+        // rather than answering from the sketch (#2170).
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn a_sketch_from_one_partition_is_partial_for_a_longer_window() {
+        let app = app_with(catalog_with_sketch(0, HOUR_NS).await, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            describe_between(
+                0,
+                30 * 24 * HOUR_NS,
+                serde_json::json!({"target": "values", "field": "http.route"}),
+            ),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        let cost = &body["metadata"]["cost"];
+        assert_eq!(cost["partial"], true, "cost: {cost}");
+        assert_eq!(cost["analyzed"]["rows_analyzed"], 1_000);
+        assert_eq!(cost["analyzed"]["start_ns"], 0);
+        assert_eq!(cost["analyzed"]["end_ns"], HOUR_NS);
+        assert!(
+            body["metadata"]["hint"]
+                .as_str()
+                .is_some_and(|hint| hint.contains("POST /api/v1/query")),
+            "a partial answer names the query that reads the whole window: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sketch_spanning_the_window_is_not_partial() {
+        let app = app_with(catalog_with_sketch(0, HOUR_NS).await, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            describe_between(
+                HOUR_NS / 4,
+                HOUR_NS / 2,
+                serde_json::json!({"target": "values", "field": "http.route"}),
+            ),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        assert_eq!(body["metadata"]["cost"]["partial"], false, "body: {body}");
+        assert!(body["metadata"]["hint"].is_null(), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn partial_statistics_report_cardinality_as_a_lower_bound() {
+        let app = app_with(catalog_with_sketch(0, HOUR_NS).await, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            describe_between(
+                0,
+                30 * 24 * HOUR_NS,
+                serde_json::json!({"target": "fields"}),
+            ),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        assert_eq!(body["metadata"]["cost"]["partial"], true);
+        let route = body["metadata"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == "http.route")
+            .unwrap_or_else(|| panic!("http.route not listed: {body}"));
+        assert_eq!(route["cardinality"]["estimate"], 1);
+        assert_eq!(route["cardinality"]["at_least"], true);
+    }
+
+    #[tokio::test]
+    async fn statistics_from_outside_the_window_bound_nothing() {
+        // The sketch covers [0, 1h); the window starts half-way through it
+        // and runs past it, so the count may include values from before it.
+        let app = app_with(catalog_with_sketch(0, HOUR_NS).await, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            describe_between(
+                HOUR_NS / 2,
+                2 * HOUR_NS,
+                serde_json::json!({"target": "fields"}),
+            ),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        assert_eq!(body["metadata"]["cost"]["partial"], true);
+        let route = body["metadata"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["name"] == "http.route")
+            .unwrap_or_else(|| panic!("http.route not listed: {body}"));
+        assert_eq!(route["cardinality"]["at_least"], false);
     }
 
     #[tokio::test]

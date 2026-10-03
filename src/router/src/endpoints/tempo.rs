@@ -778,8 +778,12 @@ fn trace_lookup_status_to_http(trace_id: &str, status: &tonic::Status) -> ApiErr
     params(tempo_api::SearchQueryParams),
     responses(
         (status = 200, description = "TraceQL search results", body = tempo_api::SearchResult),
-        (status = 400, description = "Invalid query"),
+        (status = 400, description = "Invalid query", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 429, response = crate::endpoints::api_error::RateLimited),
+        (status = 500, description = "The search failed", body = crate::endpoints::api_error::ApiErrorBody),
+        (status = 501, description = "The query uses TraceQL the querier does not implement; the error names the construct", body = crate::endpoints::api_error::ApiErrorBody),
+        (status = 503, description = "No querier service available", body = crate::endpoints::api_error::ApiErrorBody),
+        (status = 504, description = "The search timed out", body = crate::endpoints::api_error::ApiErrorBody),
     )
 )]
 #[tracing::instrument(

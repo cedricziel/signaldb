@@ -733,6 +733,7 @@ export type DiscoveredValue = {
  * What a discovery answer cost and how far it can be trusted.
  */
 export type DiscoveryCost = {
+    analyzed?: null | StatisticsCoverage;
     /**
      * Whether the answer is approximate — a bounded sketch of the most
      * frequent values rather than the exact set. A declared value set is
@@ -746,6 +747,14 @@ export type DiscoveryCost = {
      */
     as_of?: string | null;
     mode: CostMode;
+    /**
+     * Whether the statistics behind the answer cover less than the
+     * requested window. The analyzer observes one compacted partition at a
+     * time, so a statistics answer over a longer window can miss values and
+     * fields that only occur elsewhere, and its cardinalities are lower
+     * bounds. Pass `sample: true` to read the window instead.
+     */
+    partial: boolean;
     /**
      * Whether the answer is sampled, and therefore possibly incomplete.
      */
@@ -2580,6 +2589,7 @@ export type QueryIrResponse = {
      * `graph`, `metadata`, `scalar`, or `trace`.
      */
     result: string;
+    retention?: null | QueryRetention;
     rows?: Array<Array<unknown>>;
     series?: Array<ResultSeries>;
     step_ns?: number | null;
@@ -2623,6 +2633,36 @@ export type QueryRange = {
 };
 
 /**
+ * The retention policy that applies to the queried signal for the caller's
+ * tenant and dataset. The compactor deletes data older than `cutoff_ns`, so
+ * a window reaching further back is answered only from what remains.
+ */
+export type QueryRetention = {
+    /**
+     * Server time minus the retention period and its grace period, in unix
+     * nanoseconds. Data older than this is subject to deletion.
+     */
+    cutoff_ns: number;
+    /**
+     * `true` when the compactor deletes expired data: retention is enabled
+     * and not in dry-run mode.
+     */
+    enforced: boolean;
+    /**
+     * The retention period as a humantime string, for example `30d`.
+     */
+    period: string;
+    /**
+     * The retention period in seconds.
+     */
+    period_s: number;
+    /**
+     * Which setting supplied the period: `global`, `tenant` or `dataset`.
+     */
+    source: string;
+};
+
+/**
  * The `tail` member of a live-tail response.
  */
 export type QueryTail = {
@@ -2655,8 +2695,9 @@ export type QueryWarning = {
      * Stable machine-readable identifier — clients branch on this, not on
      * `message`. Today `unknown_group_by_field`, `no_attribute_statistics`,
      * `correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`,
-     * `graph_node_limit`, `match_incomplete_trace` and `tail_lagged` (a
-     * live tail skipped forward).
+     * `graph_node_limit`, `match_incomplete_trace`, `tail_lagged` (a
+     * live tail skipped forward) and `range_before_retention` (the window
+     * starts before the retention cutoff).
      */
     code: string;
     /**
@@ -2998,6 +3039,26 @@ export type StatementError = {
     column?: number | null;
     message: string;
     statement: number;
+};
+
+/**
+ * What a statistics-derived answer was built from: the rows the analyzer
+ * last read and the event-time span they came from.
+ */
+export type StatisticsCoverage = {
+    /**
+     * End (exclusive) of that span, in Unix nanoseconds.
+     */
+    end_ns?: number | null;
+    /**
+     * Rows the analyzer read for the most recent observation.
+     */
+    rows_analyzed: number;
+    /**
+     * Start of the event-time span those rows came from, in Unix
+     * nanoseconds. Absent for statistics written before spans were recorded.
+     */
+    start_ns?: number | null;
 };
 
 /**
@@ -8055,7 +8116,7 @@ export type SearchErrors = {
     /**
      * Invalid query
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
@@ -8083,6 +8144,22 @@ export type SearchErrors = {
          */
         status: string;
     };
+    /**
+     * The search failed
+     */
+    500: ApiErrorBody;
+    /**
+     * The query uses TraceQL the querier does not implement; the error names the construct
+     */
+    501: ApiErrorBody;
+    /**
+     * No querier service available
+     */
+    503: ApiErrorBody;
+    /**
+     * The search timed out
+     */
+    504: ApiErrorBody;
 };
 
 export type SearchError = SearchErrors[keyof SearchErrors];

@@ -974,6 +974,7 @@ mod tests {
             capped: false,
             query_hits: 0,
             promote_streak: 0,
+            analyzed_span: None,
             updated_at: "2026-08-17 09:00:00".into(),
         });
         assert_eq!(stat.name, "http.route");
@@ -995,6 +996,7 @@ mod tests {
             capped: false,
             query_hits: 0,
             promote_streak: 0,
+            analyzed_span: None,
             updated_at: "2026-08-17 09:00:00".into(),
         });
         assert_eq!(stat.presence, 0.0);
@@ -1005,22 +1007,28 @@ mod tests {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         // Two metrics keys — one a high-cardinality, capped label.
         catalog
-            .upsert_attribute_scan_stats("acme", "prod", "metrics", "service", 100, 100, 12, false)
+            .upsert_attribute_scan_stats(
+                "acme", "prod", "metrics", "service", 100, 100, 12, false, None,
+            )
             .await
             .unwrap();
         catalog
             .upsert_attribute_scan_stats(
-                "acme", "prod", "metrics", "k8s.pod", 90, 100, 10_000, true,
+                "acme", "prod", "metrics", "k8s.pod", 90, 100, 10_000, true, None,
             )
             .await
             .unwrap();
         // A logs key and another dataset must be excluded.
         catalog
-            .upsert_attribute_scan_stats("acme", "prod", "logs", "trace.id", 100, 100, 9000, true)
+            .upsert_attribute_scan_stats(
+                "acme", "prod", "logs", "trace.id", 100, 100, 9000, true, None,
+            )
             .await
             .unwrap();
         catalog
-            .upsert_attribute_scan_stats("acme", "staging", "metrics", "region", 10, 10, 3, false)
+            .upsert_attribute_scan_stats(
+                "acme", "staging", "metrics", "region", 10, 10, 3, false, None,
+            )
             .await
             .unwrap();
 

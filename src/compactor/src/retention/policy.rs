@@ -1,8 +1,6 @@
 //! Retention policy resolution logic with override hierarchy.
 
-use super::config::{
-    RetentionConfig, RetentionConfigError, RetentionOverride, RetentionPolicySource, SignalType,
-};
+use super::config::{RetentionConfig, RetentionConfigError, RetentionPolicySource, SignalType};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use std::time::Duration;
@@ -161,43 +159,10 @@ impl RetentionPolicyResolver {
         dataset_id: &str,
         signal_type: SignalType,
     ) -> (Duration, RetentionPolicySource) {
-        // Check dataset-level override
-        if let Some(tenant_config) = self.config.tenant_overrides.get(tenant_id) {
-            if let Some(dataset_config) = tenant_config.dataset_overrides.get(dataset_id)
-                && let Some(period) = self.get_signal_retention(dataset_config, signal_type)
-            {
-                return (period, RetentionPolicySource::Dataset);
-            }
-
-            // Check tenant-level override
-            if let Some(period) = self.get_signal_retention(tenant_config, signal_type) {
-                return (period, RetentionPolicySource::Tenant);
-            }
-        }
-
-        // Fall back to global default
-        let period = match signal_type {
-            SignalType::Traces => self.config.traces,
-            SignalType::Logs => self.config.logs,
-            SignalType::Metrics => self.config.metrics,
-            SignalType::Profiles => self.config.profiles,
-        };
-
-        (period, RetentionPolicySource::Global)
-    }
-
-    /// Extract signal-specific retention from config.
-    fn get_signal_retention(
-        &self,
-        config: &impl RetentionOverride,
-        signal_type: SignalType,
-    ) -> Option<Duration> {
-        match signal_type {
-            SignalType::Traces => config.traces(),
-            SignalType::Logs => config.logs(),
-            SignalType::Metrics => config.metrics(),
-            SignalType::Profiles => config.profiles(),
-        }
+        let resolved = self
+            .config
+            .resolve_period(tenant_id, dataset_id, signal_type);
+        (resolved.period, resolved.source)
     }
 
     /// Get the configured timezone (for logging/display purposes).

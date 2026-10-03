@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { client } from "./gen/client.gen";
 import {
+  buildLinkedFromDoc,
   buildTraceProfilesDoc,
   buildTraceSpansDoc,
   fetchTraceDetail,
+  linkedFromFromResponse,
   traceFromIrResponses,
 } from "./traceDetail";
 
@@ -125,6 +127,7 @@ describe("buildTraceSpansDoc", () => {
       "scope.attributes",
       "resource.attributes",
       "span_events",
+      "span_links",
     ]);
     expect(doc.pipeline).toEqual([
       { where: { field: "trace_id", op: "eq", value: "t1cafe" } },
@@ -274,5 +277,115 @@ describe("fetchTraceDetail", () => {
       }),
     );
     expect(await fetchTraceDetail("nope", RANGE, 5_000_000)).toBeNull();
+  });
+});
+
+const LINK_COLUMNS = [
+  { name: "trace_id", type: "string" },
+  { name: "span_id", type: "string" },
+  { name: "span_links", type: "string" },
+];
+
+describe("span_links decoding", () => {
+  const withLinks = (cell: unknown) =>
+    traceFromIrResponses(
+      "t1",
+      {
+        result: "rows",
+        window: { start_ns: 0, end_ns: 0 },
+        columns: LINK_COLUMNS,
+        rows: [["t1", "s1", cell]],
+      } as never,
+      undefined,
+    )!.spans[0]!;
+
+  const link = {
+    trace_id: "aaaa",
+    span_id: "bbbb",
+    attributes: { "messaging.system": "sidekiq", attempt: 2 },
+  };
+
+  it("decodes a JSON string into links", () => {
+    expect(withLinks(JSON.stringify([link])).links).toEqual([
+      {
+        traceId: "aaaa",
+        spanId: "bbbb",
+        attributes: { "messaging.system": "sidekiq", attempt: 2 },
+      },
+    ]);
+  });
+
+  it("accepts an already-parsed array", () => {
+    expect(withLinks([link]).links).toHaveLength(1);
+  });
+
+  it("treats null, empty, and malformed cells as no links", () => {
+    expect(withLinks(null).links).toEqual([]);
+    expect(withLinks("").links).toEqual([]);
+    expect(withLinks("{not json").links).toEqual([]);
+    expect(withLinks('{"a":1}').links).toEqual([]);
+  });
+});
+
+describe("buildLinkedFromDoc", () => {
+  it("filters on links.trace_id over the trace start to +24h", () => {
+    const doc = buildLinkedFromDoc("t1cafe", 1_000_000);
+    expect(doc.from).toBe("traces");
+    expect(doc.result).toBe("rows");
+    expect(doc.range).toEqual({
+      from: "1000000000000",
+      to: String((1_000_000 + 24 * 60 * 60 * 1000) * 1_000_000),
+    });
+    expect(doc.fields).toContain("span_links");
+    expect(doc.pipeline?.[0]).toEqual({
+      where: { field: "links.trace_id", op: "eq", value: "t1cafe" },
+    });
+  });
+});
+
+describe("linkedFromFromResponse", () => {
+  it("keeps only links into this trace, from other traces, with the targeted span", () => {
+    const into = (spanId: string) => ({
+      trace_id: "t1",
+      span_id: spanId,
+      attributes: {},
+    });
+    const res = {
+      result: "rows",
+      window: { start_ns: 0, end_ns: 0 },
+      columns: [
+        { name: "trace_id", type: "string" },
+        { name: "span_id", type: "string" },
+        { name: "span_name", type: "string" },
+        { name: "service_name", type: "string" },
+        { name: "start_time_unix_nano", type: "timestamp_ns" },
+        { name: "span_links", type: "string" },
+      ],
+      rows: [
+        [
+          "job",
+          "j1",
+          "process",
+          "worker",
+          5,
+          JSON.stringify([
+            { trace_id: "other", span_id: "x", attributes: {} },
+            into("producer"),
+          ]),
+        ],
+        ["t1", "self", "loop", "web", 6, JSON.stringify([into("producer")])],
+        ["job2", "j2", "noop", "worker", 7, null],
+      ],
+    };
+    expect(linkedFromFromResponse("t1", res as never)).toEqual([
+      {
+        traceId: "job",
+        spanId: "j1",
+        name: "process",
+        serviceName: "worker",
+        startNs: "5",
+        targetSpanId: "producer",
+      },
+    ]);
   });
 });

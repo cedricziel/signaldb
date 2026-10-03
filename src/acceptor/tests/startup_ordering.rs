@@ -76,6 +76,7 @@ async fn test_resources(temp_dir: &TempDir) -> AcceptorResources {
         storage_usage,
         processor_registry,
         retry_dedup: Arc::new(acceptor::handler::RetryDedup::default()),
+        attribute_limits: Arc::new(common::config::AttributeLimits::default()),
         type_snapshots,
     }
 }
@@ -147,6 +148,7 @@ async fn http_bind_failure_is_returned_as_error_not_a_panic() {
             storage_usage: resources.storage_usage,
             processor_registry: resources.processor_registry,
             retry_dedup: resources.retry_dedup,
+            attribute_limits: resources.attribute_limits,
             max_request_body_bytes: 64 * 1024 * 1024,
             type_snapshots: resources.type_snapshots,
         },
@@ -232,6 +234,7 @@ async fn http_init_send_after_receiver_dropped_is_returned_as_error_not_a_panic(
             storage_usage: resources.storage_usage,
             processor_registry: resources.processor_registry,
             retry_dedup: resources.retry_dedup,
+            attribute_limits: resources.attribute_limits,
             max_request_body_bytes: 64 * 1024 * 1024,
             type_snapshots: resources.type_snapshots,
         },

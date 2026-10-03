@@ -5477,10 +5477,57 @@
             }
           },
           "400": {
-            "description": "Invalid query"
+            "description": "Invalid query",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
           },
           "429": {
             "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "The search failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "The query uses TraceQL the querier does not implement; the error names the construct",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No querier service available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The search timed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7368,9 +7415,21 @@
           "mode",
           "window_scoped",
           "sampled",
-          "approximate"
+          "approximate",
+          "partial"
         ],
         "properties": {
+          "analyzed": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StatisticsCoverage",
+                "description": "What the statistics behind the answer were built from, when\nstatistics contributed to it."
+              }
+            ]
+          },
           "approximate": {
             "type": "boolean",
             "description": "Whether the answer is approximate — a bounded sketch of the most\nfrequent values rather than the exact set. A declared value set is\nexact; a statistics- or scan-derived one is not, and saying so is the\ndifference between a suggestion and a claim."
@@ -7384,6 +7443,10 @@
           },
           "mode": {
             "$ref": "#/components/schemas/CostMode"
+          },
+          "partial": {
+            "type": "boolean",
+            "description": "Whether the statistics behind the answer cover less than the\nrequested window. The analyzer observes one compacted partition at a\ntime, so a statistics answer over a longer window can miss values and\nfields that only occur elsewhere, and its cardinalities are lower\nbounds. Pass `sample: true` to read the window instead."
           },
           "sampled": {
             "type": "boolean",
@@ -11546,6 +11609,17 @@
             "type": "string",
             "description": "The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`,\n`graph`, `metadata`, `scalar`, or `trace`."
           },
+          "retention": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/QueryRetention",
+                "description": "How far back this answer can reach. Present for a single-document\nquery against a signal source (`traces`, `logs`, `metrics`,\n`profiles`); omitted for a formula document and for sources that are\nnot signals. The window is never clamped to it."
+              }
+            ]
+          },
           "rows": {
             "type": "array",
             "items": {
@@ -11631,6 +11705,44 @@
           }
         }
       },
+      "QueryRetention": {
+        "type": "object",
+        "description": "The retention policy that applies to the queried signal for the caller's\ntenant and dataset. The compactor deletes data older than `cutoff_ns`, so\na window reaching further back is answered only from what remains.",
+        "required": [
+          "period",
+          "period_s",
+          "source",
+          "enforced",
+          "cutoff_ns"
+        ],
+        "properties": {
+          "cutoff_ns": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Server time minus the retention period and its grace period, in unix\nnanoseconds. Data older than this is subject to deletion."
+          },
+          "enforced": {
+            "type": "boolean",
+            "description": "`true` when the compactor deletes expired data: retention is enabled\nand not in dry-run mode."
+          },
+          "period": {
+            "type": "string",
+            "description": "The retention period as a humantime string, for example `30d`.",
+            "example": "30d"
+          },
+          "period_s": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The retention period in seconds.",
+            "minimum": 0
+          },
+          "source": {
+            "type": "string",
+            "description": "Which setting supplied the period: `global`, `tenant` or `dataset`.",
+            "example": "global"
+          }
+        }
+      },
       "QueryTail": {
         "type": "object",
         "description": "The `tail` member of a live-tail response.",
@@ -11671,7 +11783,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable machine-readable identifier — clients branch on this, not on\n`message`. Today `unknown_group_by_field`, `no_attribute_statistics`,\n`correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`,\n`graph_node_limit`, `match_incomplete_trace` and `tail_lagged` (a\nlive tail skipped forward).",
+            "description": "Stable machine-readable identifier — clients branch on this, not on\n`message`. Today `unknown_group_by_field`, `no_attribute_statistics`,\n`correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`,\n`graph_node_limit`, `match_incomplete_trace`, `tail_lagged` (a\nlive tail skipped forward) and `range_before_retention` (the window\nstarts before the retention cutoff).",
             "example": "unknown_group_by_field"
           },
           "field": {
@@ -12359,6 +12471,36 @@
           "statement": {
             "type": "integer",
             "minimum": 0
+          }
+        }
+      },
+      "StatisticsCoverage": {
+        "type": "object",
+        "description": "What a statistics-derived answer was built from: the rows the analyzer\nlast read and the event-time span they came from.",
+        "required": [
+          "rows_analyzed"
+        ],
+        "properties": {
+          "end_ns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "End (exclusive) of that span, in Unix nanoseconds."
+          },
+          "rows_analyzed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Rows the analyzer read for the most recent observation."
+          },
+          "start_ns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Start of the event-time span those rows came from, in Unix\nnanoseconds. Absent for statistics written before spans were recorded."
           }
         }
       },

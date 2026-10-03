@@ -124,9 +124,10 @@ pub struct ValuesArgs {
     /// Maximum values to return
     #[arg(long)]
     limit: Option<u64>,
-    /// Read data to answer when no declared value set or maintained statistics
-    /// cover the field. Without this the command reports what would answer it
-    /// instead of scanning.
+    /// Read the range's data to answer whenever no declared value set covers
+    /// the field, rather than answering from maintained statistics (which
+    /// cover one compacted partition). Without this the command answers from
+    /// statistics or reports what would answer it instead of scanning.
     #[arg(long)]
     sample: bool,
     #[command(flatten)]
@@ -173,9 +174,10 @@ pub struct AttributesArgs {
     /// land on an intrinsic (`span.kind`).
     #[arg(long, value_enum)]
     scope: Option<TagScope>,
-    /// With `--tag`: read data to answer when no declared value set or
-    /// maintained statistics cover the field. Without this the command reports
-    /// what would answer it instead of scanning.
+    /// With `--tag`: read the range's data to answer whenever no declared
+    /// value set covers the field, rather than answering from maintained
+    /// statistics (which cover one compacted partition). Without this the
+    /// command answers from statistics or reports what would answer it.
     #[arg(long)]
     sample: bool,
     #[command(flatten)]
@@ -529,7 +531,7 @@ mod tests {
             "window": { "start_ns": 0, "end_ns": 1 },
             "metadata": {
                 "kind": "fields", "truncated": false,
-                "cost": { "mode": "metadata", "window_scoped": false, "sampled": false, "approximate": false },
+                "cost": { "mode": "metadata", "window_scoped": false, "sampled": false, "approximate": false, "partial": false },
                 "fields": [
                     { "name": "trace_id", "type": "string", "filterable": true, "origin": "declared" },
                     { "name": "duration", "type": "duration_ns", "filterable": true, "origin": "declared" },
@@ -583,7 +585,7 @@ mod tests {
         assert_eq!(TagScope::Intrinsic.qualify("duration"), None);
     }
 
-    const DESCRIBE_EMPTY: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"fields","fields":[],"truncated":false,"cost":{"mode":"metadata","window_scoped":false,"sampled":false,"approximate":false}}}"#;
+    const DESCRIBE_EMPTY: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"fields","fields":[],"truncated":false,"cost":{"mode":"metadata","window_scoped":false,"sampled":false,"approximate":false,"partial":false}}}"#;
 
     /// A mock of the Query IR endpoint that only matches a version-4 `describe`
     /// document with the given source, range and stage, sent with the tenant

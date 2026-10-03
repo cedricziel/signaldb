@@ -37,6 +37,16 @@ async fn ensure_sqlite_text_column(
     table: &str,
     column: &str,
 ) -> Result<(), sqlx::Error> {
+    ensure_sqlite_column(pool, table, column, "TEXT").await
+}
+
+/// [`ensure_sqlite_text_column`] for a column of any declared type.
+async fn ensure_sqlite_column(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+    declared_type: &str,
+) -> Result<(), sqlx::Error> {
     let columns = query(&format!("PRAGMA table_info({table})"))
         .fetch_all(pool)
         .await?;
@@ -44,9 +54,11 @@ async fn ensure_sqlite_text_column(
         .iter()
         .any(|row| row.get::<String, _>("name") == column);
     if !has_column {
-        query(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"))
-            .execute(pool)
-            .await?;
+        query(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {declared_type}"
+        ))
+        .execute(pool)
+        .await?;
     }
     Ok(())
 }
@@ -1032,10 +1044,17 @@ impl Catalog {
                     capped INTEGER NOT NULL DEFAULT 0,
                     query_hits BIGINT NOT NULL DEFAULT 0,
                     promote_streak BIGINT NOT NULL DEFAULT 0,
+                    analyzed_start_ns BIGINT,
+                    analyzed_end_ns BIGINT,
                     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                     PRIMARY KEY (tenant_id, dataset_id, signal, attr_key)
                 )"#;
                 query(create_attribute_stats).execute(pool).await?;
+                // The time span the analyzer read (#2170); tables created
+                // before it was tracked gain it here.
+                ensure_sqlite_column(pool, "attribute_stats", "analyzed_start_ns", "BIGINT")
+                    .await?;
+                ensure_sqlite_column(pool, "attribute_stats", "analyzed_end_ns", "BIGINT").await?;
 
                 // Per-level attribute statistics (change: otel-native-schema
                 // layer 6, D4/D5): the same advisory presence/demand
@@ -1606,10 +1625,20 @@ impl Catalog {
                     capped BOOLEAN NOT NULL DEFAULT FALSE,
                     query_hits BIGINT NOT NULL DEFAULT 0,
                     promote_streak BIGINT NOT NULL DEFAULT 0,
+                    analyzed_start_ns BIGINT,
+                    analyzed_end_ns BIGINT,
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     PRIMARY KEY (tenant_id, dataset_id, signal, attr_key)
                 )"#;
                 query(create_attribute_stats).execute(pool).await?;
+                // See the SQLite branch.
+                query(
+                    "ALTER TABLE attribute_stats \
+                     ADD COLUMN IF NOT EXISTS analyzed_start_ns BIGINT, \
+                     ADD COLUMN IF NOT EXISTS analyzed_end_ns BIGINT",
+                )
+                .execute(pool)
+                .await?;
 
                 // Per-level attribute statistics (change: otel-native-schema
                 // layer 6, D4/D5): see the SQLite branch.
@@ -3266,9 +3295,33 @@ pub struct AttributeStatsRecord {
     /// Consecutive analyzer cycles this key scored above the promotion
     /// threshold (hysteresis state for auto-promotion, #734).
     pub promote_streak: i64,
+    /// The time span of the rows the analyzer last read for this key —
+    /// one compacted partition, not the whole table. `None` for rows written
+    /// before the span was tracked.
+    pub analyzed_span: Option<AnalyzedSpan>,
     /// When the analyzer last wrote this row. Discovery reports it so a
     /// client can see how stale a statistics-derived answer is.
     pub updated_at: String,
+}
+
+/// A half-open `[start_ns, end_ns)` span of event time the analyzer read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnalyzedSpan {
+    pub start_ns: i64,
+    pub end_ns: i64,
+}
+
+impl AnalyzedSpan {
+    /// Whether this span covers the whole `[start_ns, end_ns)` window.
+    pub fn covers(&self, start_ns: i64, end_ns: i64) -> bool {
+        self.start_ns <= start_ns && end_ns <= self.end_ns
+    }
+
+    /// True when this span lies inside `[start_ns, end_ns)`, so whatever was
+    /// counted over it is a lower bound for the window.
+    pub fn within(&self, start_ns: i64, end_ns: i64) -> bool {
+        start_ns <= self.start_ns && self.end_ns <= end_ns
+    }
 }
 
 /// One value of an attribute key, with how often the analyzer saw it.
@@ -3292,9 +3345,10 @@ impl AttributeStatsRecord {
 /// Advisory attribute-statistics methods (epic #737, #733).
 impl Catalog {
     /// Upsert the scan-side statistics for one attribute key, replacing the
-    /// previous presence/cardinality observation (the analyzer sees the
-    /// whole rewritten table, so newer observations supersede older ones).
-    /// `query_hits` is left untouched.
+    /// previous presence/cardinality observation. Each observation covers
+    /// only the partition the analyzer just rewrote, recorded as
+    /// `analyzed_span`, so readers can tell how much of the data it speaks
+    /// for. `query_hits` is left untouched.
     #[allow(clippy::too_many_arguments)]
     pub async fn upsert_attribute_scan_stats(
         &self,
@@ -3306,20 +3360,28 @@ impl Catalog {
         total_rows: i64,
         distinct_estimate: i64,
         capped: bool,
+        analyzed_span: Option<AnalyzedSpan>,
     ) -> Result<(), sqlx::Error> {
+        let (span_start, span_end) = match analyzed_span {
+            Some(span) => (Some(span.start_ns), Some(span.end_ns)),
+            None => (None, None),
+        };
         match self {
             Catalog::Sqlite(pool) => {
                 query(
                     r#"
                 INSERT INTO attribute_stats
                     (tenant_id, dataset_id, signal, attr_key, present_rows,
-                     total_rows, distinct_estimate, capped, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                     total_rows, distinct_estimate, capped, analyzed_start_ns,
+                     analyzed_end_ns, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT (tenant_id, dataset_id, signal, attr_key) DO UPDATE SET
                     present_rows = excluded.present_rows,
                     total_rows = excluded.total_rows,
                     distinct_estimate = excluded.distinct_estimate,
                     capped = excluded.capped,
+                    analyzed_start_ns = excluded.analyzed_start_ns,
+                    analyzed_end_ns = excluded.analyzed_end_ns,
                     updated_at = datetime('now')
                 "#,
                 )
@@ -3331,6 +3393,8 @@ impl Catalog {
                 .bind(total_rows)
                 .bind(distinct_estimate)
                 .bind(capped)
+                .bind(span_start)
+                .bind(span_end)
                 .execute(pool)
                 .await?;
             }
@@ -3339,13 +3403,16 @@ impl Catalog {
                     r#"
                 INSERT INTO attribute_stats
                     (tenant_id, dataset_id, signal, attr_key, present_rows,
-                     total_rows, distinct_estimate, capped, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                     total_rows, distinct_estimate, capped, analyzed_start_ns,
+                     analyzed_end_ns, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
                 ON CONFLICT (tenant_id, dataset_id, signal, attr_key) DO UPDATE SET
                     present_rows = EXCLUDED.present_rows,
                     total_rows = EXCLUDED.total_rows,
                     distinct_estimate = EXCLUDED.distinct_estimate,
                     capped = EXCLUDED.capped,
+                    analyzed_start_ns = EXCLUDED.analyzed_start_ns,
+                    analyzed_end_ns = EXCLUDED.analyzed_end_ns,
                     updated_at = NOW()
                 "#,
                 )
@@ -3357,6 +3424,8 @@ impl Catalog {
                 .bind(total_rows)
                 .bind(distinct_estimate)
                 .bind(capped)
+                .bind(span_start)
+                .bind(span_end)
                 .execute(pool)
                 .await?;
             }
@@ -3467,7 +3536,8 @@ impl Catalog {
         let sql_sqlite = r#"
             SELECT tenant_id, dataset_id, signal, attr_key, present_rows,
                    total_rows, distinct_estimate, capped, query_hits,
-                   promote_streak, CAST(updated_at AS TEXT) AS updated_at
+                   promote_streak, analyzed_start_ns, analyzed_end_ns,
+                   CAST(updated_at AS TEXT) AS updated_at
             FROM attribute_stats
             WHERE tenant_id = ? AND dataset_id = ? AND signal = ?
             ORDER BY attr_key
@@ -3475,7 +3545,8 @@ impl Catalog {
         let sql_pg = r#"
             SELECT tenant_id, dataset_id, signal, attr_key, present_rows,
                    total_rows, distinct_estimate, capped, query_hits,
-                   promote_streak, CAST(updated_at AS TEXT) AS updated_at
+                   promote_streak, analyzed_start_ns, analyzed_end_ns,
+                   CAST(updated_at AS TEXT) AS updated_at
             FROM attribute_stats
             WHERE tenant_id = $1 AND dataset_id = $2 AND signal = $3
             ORDER BY attr_key
@@ -3486,7 +3557,10 @@ impl Catalog {
             for<'a> String: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
             for<'a> i64: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
             for<'a> bool: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+            for<'a> Option<i64>: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
         {
+            let start: Option<i64> = row.get("analyzed_start_ns");
+            let end: Option<i64> = row.get("analyzed_end_ns");
             AttributeStatsRecord {
                 tenant_id: row.get("tenant_id"),
                 dataset_id: row.get("dataset_id"),
@@ -3498,6 +3572,9 @@ impl Catalog {
                 capped: row.get("capped"),
                 query_hits: row.get("query_hits"),
                 promote_streak: row.get("promote_streak"),
+                analyzed_span: start
+                    .zip(end)
+                    .map(|(start_ns, end_ns)| AnalyzedSpan { start_ns, end_ns }),
                 updated_at: row.get("updated_at"),
             }
         }
@@ -3538,6 +3615,28 @@ impl Catalog {
         attr_key: &str,
         values: &[(String, i64)],
     ) -> Result<(), sqlx::Error> {
+        self.replace_attribute_value_sketch(tenant_id, dataset_id, signal, attr_key, values, None)
+            .await
+    }
+
+    /// [`Self::replace_attribute_value_stats`], also recording on the key's
+    /// `attribute_stats` row the span the new sketch was built from, in the
+    /// same transaction: a reader never pairs a sketch with another pass's
+    /// span, and a failed replacement leaves the previous span with the
+    /// previous sketch.
+    pub async fn replace_attribute_value_sketch(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+        attr_key: &str,
+        values: &[(String, i64)],
+        analyzed_span: Option<AnalyzedSpan>,
+    ) -> Result<(), sqlx::Error> {
+        let span_sqlite = "UPDATE attribute_stats SET analyzed_start_ns = ?, analyzed_end_ns = ? \
+             WHERE tenant_id = ? AND dataset_id = ? AND signal = ? AND attr_key = ?";
+        let span_pg = "UPDATE attribute_stats SET analyzed_start_ns = $1, analyzed_end_ns = $2 \
+             WHERE tenant_id = $3 AND dataset_id = $4 AND signal = $5 AND attr_key = $6";
         let delete_sqlite = "DELETE FROM attribute_value_stats \
              WHERE tenant_id = ? AND dataset_id = ? AND signal = ? AND attr_key = ?";
         let delete_pg = "DELETE FROM attribute_value_stats \
@@ -3573,6 +3672,17 @@ impl Catalog {
                         .execute(&mut *tx)
                         .await?;
                 }
+                if let Some(span) = analyzed_span {
+                    query(span_sqlite)
+                        .bind(span.start_ns)
+                        .bind(span.end_ns)
+                        .bind(tenant_id)
+                        .bind(dataset_id)
+                        .bind(signal)
+                        .bind(attr_key)
+                        .execute(&mut *tx)
+                        .await?;
+                }
                 tx.commit().await?;
             }
             Catalog::Postgres(pool) => {
@@ -3592,6 +3702,17 @@ impl Catalog {
                         .bind(attr_key)
                         .bind(value)
                         .bind(count)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                if let Some(span) = analyzed_span {
+                    query(span_pg)
+                        .bind(span.start_ns)
+                        .bind(span.end_ns)
+                        .bind(tenant_id)
+                        .bind(dataset_id)
+                        .bind(signal)
+                        .bind(attr_key)
                         .execute(&mut *tx)
                         .await?;
                 }
@@ -8819,11 +8940,41 @@ mod multi_tenancy_tests {
     }
 
     #[tokio::test]
+    async fn a_replaced_sketch_carries_its_span_onto_the_key_stats() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_attribute_scan_stats("t", "d", "logs", "http.route", 10, 10, 1, false, None)
+            .await
+            .unwrap();
+        let span = AnalyzedSpan {
+            start_ns: 100,
+            end_ns: 200,
+        };
+        catalog
+            .replace_attribute_value_sketch(
+                "t",
+                "d",
+                "logs",
+                "http.route",
+                &[("/a".to_string(), 10)],
+                Some(span),
+            )
+            .await
+            .unwrap();
+        let stats = catalog.get_attribute_stats("t", "d", "logs").await.unwrap();
+        let route = stats
+            .iter()
+            .find(|record| record.attr_key == "http.route")
+            .expect("the key's stats row exists");
+        assert_eq!(route.analyzed_span, Some(span));
+    }
+
+    #[tokio::test]
     async fn attribute_stats_scan_upsert_and_demand_accumulate() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
 
         catalog
-            .upsert_attribute_scan_stats("t", "d", "logs", "namespace", 80, 100, 5, false)
+            .upsert_attribute_scan_stats("t", "d", "logs", "namespace", 80, 100, 5, false, None)
             .await
             .unwrap();
         // Demand accumulates across flushes; scan stats replace.
@@ -8836,7 +8987,7 @@ mod multi_tenancy_tests {
             .await
             .unwrap();
         catalog
-            .upsert_attribute_scan_stats("t", "d", "logs", "namespace", 90, 120, 7, true)
+            .upsert_attribute_scan_stats("t", "d", "logs", "namespace", 90, 120, 7, true, None)
             .await
             .unwrap();
         // A demand-only key exists with zeroed scan stats.

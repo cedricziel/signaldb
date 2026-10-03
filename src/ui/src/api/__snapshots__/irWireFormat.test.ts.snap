@@ -52,7 +52,7 @@ exports[`IR wire format > buildTraceLatencyHeatmapDoc 1`] = `"{"irVersion":2,"fr
 
 exports[`IR wire format > buildTraceProfilesDoc 1`] = `"{"irVersion":1,"from":"profiles","range":{"from":"1000000000000","to":"4600000000000"},"result":"rows","pipeline":[{"where":{"field":"trace.id","op":"eq","value":"abc"}}]}"`;
 
-exports[`IR wire format > buildTraceSpansDoc 1`] = `"{"irVersion":1,"from":"traces","range":{"from":"1000000000000","to":"4600000000000"},"result":"rows","fields":["trace_id","span_id","parent_span_id","span.name","service.name","status.code","status_message","start_time_unix_nano","duration","span_kind","span.attributes","scope.attributes","resource.attributes","span_events"],"pipeline":[{"where":{"field":"trace_id","op":"eq","value":"abc"}}]}"`;
+exports[`IR wire format > buildTraceSpansDoc 1`] = `"{"irVersion":1,"from":"traces","range":{"from":"1000000000000","to":"4600000000000"},"result":"rows","fields":["trace_id","span_id","parent_span_id","span.name","service.name","status.code","status_message","start_time_unix_nano","duration","span_kind","span.attributes","scope.attributes","resource.attributes","span_events","span_links"],"pipeline":[{"where":{"field":"trace_id","op":"eq","value":"abc"}}]}"`;
 
 exports[`IR wire format > buildTraceVolumeDoc 1`] = `"{"irVersion":1,"from":"traces","range":{"from":"1000000000000","to":"4600000000000"},"result":"series","pipeline":[{"where":{"field":"service.name","op":"eq","value":"api"}},{"where":{"field":"span_kind","op":"in","value":["Server","Client"]}},{"where":{"not":{"field":"host.name","op":"exists"}}},{"aggregate":{"by":["status.code"],"aggs":[{"fn":"count","as":"n"}],"step":"1m"}}]}"`;
 

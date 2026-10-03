@@ -48,6 +48,18 @@ struct PromotionOutcome {
 /// spilling — the #1064 failure in miniature.
 const MIN_PER_SORTER_MB: u64 = 64;
 
+/// Assumed ratio of a row's decoded, in-memory size to its compressed
+/// Parquet size. Measured at ~50x on hive's profiles table (42 KB on
+/// disk, ~2 MB decoded); narrow rows expand less, so this overestimates
+/// them, which only shrinks their batch toward the floor that
+/// `scan_batch_size` sets as the ceiling anyway.
+const MEMORY_EXPANSION: u64 = 64;
+
+/// One scan batch may claim this fraction of a sorter's share. The sort
+/// reserves about twice a batch's bytes before it can spill, and needs
+/// room left over to accumulate the batches it does spill.
+const BATCH_SHARE_OF_SORTER: u64 = 8;
+
 /// Whether a partition read should be sorted for output, or is only being
 /// scanned for statistics.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,6 +186,7 @@ impl ParquetRewriter {
         table: &Table,
         partition_hours: i64,
         target_file_size_bytes: u64,
+        compressed_row_bytes: u64,
     ) -> Result<Option<RewriteOutcome>> {
         let table_name = table.identifier().name().to_string();
 
@@ -183,7 +196,7 @@ impl ParquetRewriter {
             crate::attr_stats::AttrStatsAccumulator::new().with_sketch_size(self.value_sketch_size);
         {
             let mut stream = self
-                .partition_stream(table, partition_hours, SortRows::No)
+                .partition_stream(table, partition_hours, compressed_row_bytes, SortRows::No)
                 .await
                 .context("Failed to read partition data for attribute analysis")?;
             use futures::StreamExt;
@@ -217,6 +230,7 @@ impl ParquetRewriter {
                     &attr_stats,
                     &attr_level_presence,
                     rows_read,
+                    Self::partition_span(partition_hours),
                 )
                 .await;
                 promotion = self
@@ -288,7 +302,12 @@ impl ParquetRewriter {
             attest,
         } = Self::rewrite_sort_key(&write_table);
         let stream = self
-            .partition_stream(table, partition_hours, SortRows::By(sort_columns))
+            .partition_stream(
+                table,
+                partition_hours,
+                compressed_row_bytes,
+                SortRows::By(sort_columns),
+            )
             .await
             .context("Failed to read and merge partition data")?;
 
@@ -970,10 +989,13 @@ impl ParquetRewriter {
     }
 
     /// Each sorter's slice of the pool: the budget is divided by the
-    /// fan-out, and `0` means DataFusion picks the fan-out itself, which
-    /// is at least one.
+    /// fan-out, and `0` means DataFusion's own fan-out (the core count).
     fn per_sorter_mb(config: &common::config::CompactorConfig) -> u64 {
-        config.memory_limit_mb as u64 / config.target_partitions.max(1) as u64
+        let fan_out = match config.target_partitions {
+            0 => datafusion::prelude::SessionConfig::new().target_partitions(),
+            n => n,
+        };
+        config.memory_limit_mb as u64 / fan_out.max(1) as u64
     }
 
     /// Build the compaction session context.
@@ -1013,10 +1035,10 @@ impl ParquetRewriter {
     ///
     /// A runtime that fails to build falls back to an unbounded context
     /// rather than failing the cycle, which is logged.
-    fn compaction_context(&self) -> SessionContext {
+    fn compaction_context(&self, compressed_row_bytes: u64) -> SessionContext {
         let compactor = &self.catalog_manager.config().compactor;
         let memory_limit_mb = compactor.memory_limit_mb;
-        let session_config = Self::compaction_session_config(compactor);
+        let session_config = Self::compaction_session_config(compactor, compressed_row_bytes);
         let builder =
             datafusion::execution::runtime_env::RuntimeEnvBuilder::new().with_memory_pool(
                 common::datafusion_runtime::bounded_memory_pool(memory_limit_mb * 1024 * 1024, 1.0),
@@ -1046,20 +1068,62 @@ impl ParquetRewriter {
     ///
     /// The batch size is a memory bound rather than a throughput knob;
     /// [`common::config::CompactorConfig::scan_batch_size`] carries the
-    /// reasoning.
+    /// reasoning, and [`Self::scan_batch_rows`] derives it per partition.
     ///
     /// `0` means "use DataFusion's default" for both counts —
     /// `with_target_partitions` rejects zero, and a zero batch size would
     /// stall the scan.
     fn compaction_session_config(
         compactor: &common::config::CompactorConfig,
+        compressed_row_bytes: u64,
     ) -> datafusion::prelude::SessionConfig {
         let shape = common::datafusion_runtime::ScanShape::from_mb(
-            compactor.scan_batch_size,
+            Self::scan_batch_rows(compactor, compressed_row_bytes),
             compactor.target_partitions,
             compactor.sort_spill_reservation_mb,
         );
         shape.apply(datafusion::prelude::SessionConfig::new())
+    }
+
+    /// The event-time span of one hour partition, as the analyzer records it
+    /// (#2170). [`Self::partition_predicate`] selects exactly these rows.
+    fn partition_span(partition_hours: i64) -> common::catalog::AnalyzedSpan {
+        const NANOS_PER_HOUR: i64 = 3_600 * 1_000_000_000;
+        common::catalog::AnalyzedSpan {
+            start_ns: partition_hours * NANOS_PER_HOUR,
+            end_ns: (partition_hours + 1) * NANOS_PER_HOUR,
+        }
+    }
+
+    /// Rows per scan batch, sized so one batch's decoded bytes fit
+    /// `1 / BATCH_SHARE_OF_SORTER` of a sorter's share of the pool.
+    ///
+    /// `compressed_row_bytes` is the widest input file's bytes per row,
+    /// from the manifests; times [`MEMORY_EXPANSION`] it estimates a
+    /// decoded row, because no static row count suits both a 1 KB trace
+    /// row and a 2 MB profile (#1358). The widest file rather than the
+    /// partition average, so a few wide rows among narrow ones still
+    /// bound the batch. DataFusion coalesces scan output up to the batch
+    /// size, so this bounds the coalesced batch too, including on a
+    /// partition smaller than `scan_batch_size`. The configured
+    /// `scan_batch_size` stays the ceiling (`0` makes DataFusion's default
+    /// the ceiling), and is used as is when the width is unknown (`0`).
+    fn scan_batch_rows(
+        compactor: &common::config::CompactorConfig,
+        compressed_row_bytes: u64,
+    ) -> usize {
+        let ceiling = match compactor.scan_batch_size {
+            0 => datafusion::prelude::SessionConfig::new().batch_size(),
+            rows => rows,
+        };
+        if compressed_row_bytes == 0 {
+            return ceiling;
+        }
+        let row_bytes = compressed_row_bytes * MEMORY_EXPANSION;
+        let budget = Self::per_sorter_mb(compactor) * 1024 * 1024 / BATCH_SHARE_OF_SORTER;
+        usize::try_from(budget / row_bytes)
+            .unwrap_or(usize::MAX)
+            .clamp(1, ceiling)
     }
 
     /// Predicate selecting exactly the rows of one hour partition.
@@ -1074,9 +1138,8 @@ impl ParquetRewriter {
     /// predicate is also applied as a row filter, so correctness does not
     /// depend on pruning being exact.
     fn partition_predicate(partition_hours: i64) -> Expr {
-        const MICROS_PER_HOUR: i64 = 3_600 * 1_000_000;
-        let start = partition_hours * MICROS_PER_HOUR;
-        let end = start + MICROS_PER_HOUR;
+        let span = Self::partition_span(partition_hours);
+        let (start, end) = (span.start_ns / 1_000, span.end_ns / 1_000);
         col("timestamp")
             .gt_eq(lit(ScalarValue::TimestampMicrosecond(Some(start), None)))
             .and(col("timestamp").lt(lit(ScalarValue::TimestampMicrosecond(Some(end), None))))
@@ -1092,9 +1155,10 @@ impl ParquetRewriter {
         &self,
         table: &Table,
         partition_hours: i64,
+        compressed_row_bytes: u64,
         sort: SortRows,
     ) -> Result<datafusion::execution::SendableRecordBatchStream> {
-        let ctx = self.compaction_context();
+        let ctx = self.compaction_context(compressed_row_bytes);
 
         let table_name = table.identifier().name().to_string();
         let datafusion_table = Arc::new(datafusion_iceberg::DataFusionTable::from(table.clone()));
@@ -1536,7 +1600,7 @@ mod tests {
     #[tokio::test]
     async fn compaction_context_does_not_fan_out_to_core_count() {
         let rewriter = rewriter_with_config(|_| {}).await;
-        let ctx = rewriter.compaction_context();
+        let ctx = rewriter.compaction_context(0);
 
         assert_eq!(
             ctx.state().config().target_partitions(),
@@ -1548,7 +1612,7 @@ mod tests {
     #[tokio::test]
     async fn compaction_context_honors_configured_target_partitions() {
         let rewriter = rewriter_with_config(|c| c.compactor.target_partitions = 3).await;
-        let ctx = rewriter.compaction_context();
+        let ctx = rewriter.compaction_context(0);
 
         assert_eq!(ctx.state().config().target_partitions(), 3);
     }
@@ -1563,7 +1627,7 @@ mod tests {
 
         let rewriter = rewriter_with_config(|c| c.compactor.memory_limit_mb = 100).await;
         let pool = rewriter
-            .compaction_context()
+            .compaction_context(0)
             .runtime_env()
             .memory_pool
             .clone();
@@ -1607,7 +1671,7 @@ mod tests {
     #[tokio::test]
     async fn compaction_context_treats_zero_target_partitions_as_auto() {
         let rewriter = rewriter_with_config(|c| c.compactor.target_partitions = 0).await;
-        let ctx = rewriter.compaction_context();
+        let ctx = rewriter.compaction_context(0);
 
         assert_eq!(
             ctx.state().config().target_partitions(),
@@ -1622,7 +1686,7 @@ mod tests {
     #[tokio::test]
     async fn compaction_context_bounds_the_scan_batch_size() {
         let rewriter = rewriter_with_config(|_| {}).await;
-        let ctx = rewriter.compaction_context();
+        let ctx = rewriter.compaction_context(0);
 
         assert!(
             ctx.state().config().batch_size()
@@ -1639,7 +1703,7 @@ mod tests {
     #[tokio::test]
     async fn compaction_context_honors_configured_batch_size() {
         let rewriter = rewriter_with_config(|c| c.compactor.scan_batch_size = 256).await;
-        let ctx = rewriter.compaction_context();
+        let ctx = rewriter.compaction_context(0);
 
         assert_eq!(ctx.state().config().batch_size(), 256);
     }
@@ -1649,12 +1713,74 @@ mod tests {
     #[tokio::test]
     async fn compaction_context_treats_zero_batch_size_as_auto() {
         let rewriter = rewriter_with_config(|c| c.compactor.scan_batch_size = 0).await;
-        let ctx = rewriter.compaction_context();
+        let ctx = rewriter.compaction_context(0);
 
         assert_eq!(
             ctx.state().config().batch_size(),
             datafusion::prelude::SessionConfig::new().batch_size()
         );
+    }
+
+    /// hive's failing profiles partitions: 61 files, 5.1 MB on disk,
+    /// ~120 rows, ~2 MB per row decoded. The default 1024-row ceiling
+    /// never binds there, so the batch has to come from the row width.
+    #[test]
+    fn wide_rows_get_a_batch_that_fits_the_sorter() {
+        let config = common::config::CompactorConfig::default();
+        let rows = ParquetRewriter::scan_batch_rows(&config, 5_100_000 / 120);
+
+        let decoded_row_bytes = 2 * 1024 * 1024;
+        let reservation = 2 * rows as u64 * decoded_row_bytes;
+        let per_sorter = ParquetRewriter::per_sorter_mb(&config) * 1024 * 1024;
+        assert!(
+            reservation * 2 <= per_sorter,
+            "{rows} rows reserve {reservation} B, more than half of a {per_sorter} B sorter share"
+        );
+        assert!(rows >= 1);
+    }
+
+    #[test]
+    fn narrow_or_unknown_input_keeps_the_configured_ceiling() {
+        let config = common::config::CompactorConfig::default();
+        for row_bytes in [64, 0] {
+            assert_eq!(
+                ParquetRewriter::scan_batch_rows(&config, row_bytes),
+                config.scan_batch_size,
+                "{row_bytes} B/row"
+            );
+        }
+    }
+
+    /// With `scan_batch_size = 0` the ceiling is DataFusion's default, but
+    /// a wide partition still gets a derived batch.
+    #[test]
+    fn zero_batch_size_still_bounds_wide_rows() {
+        let config = common::config::CompactorConfig {
+            scan_batch_size: 0,
+            ..Default::default()
+        };
+        assert!(ParquetRewriter::scan_batch_rows(&config, 5_100_000 / 120) < 1024);
+        assert_eq!(
+            ParquetRewriter::scan_batch_rows(&config, 1),
+            datafusion::prelude::SessionConfig::new().batch_size()
+        );
+    }
+
+    #[tokio::test]
+    async fn compaction_context_sizes_batches_from_the_partition() {
+        let rewriter = rewriter_with_config(|_| {}).await;
+        let row_bytes = 5_100_000 / 120;
+
+        let ctx = rewriter.compaction_context(row_bytes);
+
+        assert_eq!(
+            ctx.state().config().batch_size(),
+            ParquetRewriter::scan_batch_rows(
+                &common::config::CompactorConfig::default(),
+                row_bytes
+            )
+        );
+        assert!(ctx.state().config().batch_size() < 120);
     }
 
     /// The headroom the sorter holds back so its spill merge can run is
@@ -1663,7 +1789,7 @@ mod tests {
     #[tokio::test]
     async fn compaction_context_sets_the_sort_spill_reservation() {
         let rewriter = rewriter_with_config(|c| c.compactor.sort_spill_reservation_mb = 32).await;
-        let ctx = rewriter.compaction_context();
+        let ctx = rewriter.compaction_context(0);
 
         assert_eq!(
             ctx.state()

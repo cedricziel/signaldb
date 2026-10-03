@@ -10,11 +10,14 @@
 //!
 //! ## Supported subset
 //!
-//! A single spanset of `&&`-conjoined equality matchers:
+//! A single spanset of `&&`-conjoined matchers:
 //!
 //! ```text
-//! { resource.service.name = "api" && span.http.method = "GET" }
+//! { resource.service.name = "api" && span.http.method != "GET" && .env =~ "prod-.*" }
 //! ```
+//!
+//! - **Operators**: `=`, `!=`, `=~` and `!~`. A regex operand must be a quoted
+//!   string, and TraceQL regexes match the whole value.
 //!
 //! - **Intrinsics**: `name`, `status`, `kind`, and service name spelled either
 //!   `resource.service.name` or `.service.name`.
@@ -30,7 +33,7 @@
 //! | Input | Variant |
 //! |-------|---------|
 //! | not TraceQL at all (`notbraces`, `{ foo }`, `{ zzz = 1 }`) | [`ParseError::Syntax`] |
-//! | valid TraceQL we do not implement (`\|\|`, `!=`, `=~`, `duration`) | [`ParseError::Unsupported`] |
+//! | valid TraceQL we do not implement (`\|\|`, `>`, `<=`, `duration`) | [`ParseError::Unsupported`] |
 //!
 //! A caller serving HTTP maps `Syntax` to a client error and `Unsupported` to
 //! not-implemented. Nothing outside the subset is silently ignored: a query is
@@ -47,5 +50,5 @@
 pub mod ast;
 pub mod parser;
 
-pub use ast::{Condition, FilterValue, Selector};
+pub use ast::{Condition, FilterValue, MatchOp, Selector};
 pub use parser::{ParseError, parse};

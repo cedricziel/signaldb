@@ -481,6 +481,7 @@
         serviceName: s.serviceName || trace.rootServiceName || "",
         status: s.status || "unset",
         events: s.events || [],
+        links: s.links || [],
         attributes: s.attributes || {},
         startNanos: start2,
         offset: start2 === null ? 0 : Number(start2 - t0),
@@ -740,6 +741,11 @@
         '<span class="msg">' + esc(event.name || "") + "</span></div>";
     }).join("");
 
+    var links = span.links.map(function (link) {
+      return '<div class="ev"><span class="msg">trace <b>' + esc(link.traceID || "") +
+        "</b> span <b>" + esc(link.spanID || "—") + "</b></span></div>";
+    }).join("");
+
     document.getElementById("detail").innerHTML =
       '<div class="dhead"><span class="n">' + esc(span.name) + "</span>" +
       '<div class="ids">' +
@@ -764,7 +770,8 @@
         ? "<details><summary class=\"ghead lbl\">Resource attributes · " + resource.length +
           "</summary>" + attrTable(resource, "resource.") + "</details>"
         : "") +
-      (events ? '<div><div class="ghead lbl">Events · ' + span.events.length + "</div>" + events + "</div>" : "");
+      (events ? '<div><div class="ghead lbl">Events · ' + span.events.length + "</div>" + events + "</div>" : "") +
+      (links ? '<div><div class="ghead lbl">Links · ' + span.links.length + "</div>" + links + "</div>" : "");
 
     scheduleSizeReport();
   }

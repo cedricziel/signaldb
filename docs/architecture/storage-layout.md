@@ -665,21 +665,16 @@ logs = ["team", "region"]
 - **Querying**: the IR-lowered dialects follow the stand-in rule above; the
   non-IR paths route a label to its `label_<key>` column when the table has one
   (see the [LogQL reference](../users/logql-reference.md#materialized-labels)).
-  **Known limitation**: every querier resolution point
-  (`SchemaResolver::column_for`/`is_known` in `ir_planner.rs`, plus the
-  `logql`/`logs`/`metrics` lowerings) recomputes `materialized_column_name`
-  directly rather than consulting a column's `doc` or the tenant's
-  configured list — this predates #1448 and also affects auto-promoted
-  columns (#814). Under a collision, a query for the _second_ colliding key
-  still resolves to the first key's column instead of failing to resolve at
-  all: the query no longer errors, but it can silently read the wrong
-  key's values rather than its own. Closing this needs either the tenant's
-  resolved materialized-label list threaded into query planning (which
-  today runs in tenant-_slug_ space, while the config lookup is keyed by
-  tenant _id_ — bridging that safely is its own scoped change) or `doc`
-  propagated into the Arrow schema DataFusion scans so `SchemaResolver` can
-  resolve both mechanisms uniformly by origin key; tracked as a follow-up
-  to #1448, out of scope for the writer/schema-creation fix here.
+  The querier resolves key to column exactly (#1533): `LiveIcebergSchema`
+  copies each label column's origin key from the Iceberg field `doc` onto the
+  scanned Arrow schema as `signaldb.origin_key` field metadata
+  (iceberg-rust drops `doc` on conversion), and every resolution point
+  (`SchemaResolver` in `ir_planner.rs` and the `logql`/`logs`/`metrics`
+  lowerings) goes through `common::schema::MaterializedLabels::column_for`.
+  A column documented with the key resolves to it; a column documented with a
+  different key never matches; an undocumented (legacy) column matches by
+  recomputed name unless a `<base>_<n>` sibling exists, in which case the
+  query falls back to attribute extraction.
 
 The writer fills the columns for all four signals (metrics per exploded data
 point); how a query reads them is the rule above. Profiles populate them for

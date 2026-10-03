@@ -12,6 +12,7 @@ sources:
   - src/common/src/attrs/typed.rs
   - src/writer/src/storage/iceberg.rs
   - src/acceptor/src/type_warning.rs
+  - src/acceptor/src/attribute_limits.rs
 ---
 
 # Send OTLP data to SignalDB
@@ -144,6 +145,29 @@ canonical types within about 30 seconds, so the first exports of a new key
 aren't flagged. Operators see the same condition as the
 `signaldb.writer.attribute_type_mismatches` counter, and the per-key total
 as `off_type_count` on `GET /api/v1/schema/attributes/{key}`.
+
+## Attribute limits
+
+The acceptor caps every attribute list (resource, scope, and each span, span
+event, span link, log record, metric data point and profile) on all four
+signals, over both gRPC and HTTP. Defaults, set under
+`[acceptor.attribute_limits]` in `signaldb.toml`:
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `max_attributes` | 512 | Attributes past this many in one list are dropped |
+| `max_key_bytes` | 256 | An attribute whose key is longer is dropped |
+| `max_value_bytes` | 4096 | An attribute whose value is longer is dropped (strings and bytes by length, arrays and key-value lists by encoded size) |
+
+Attributes are dropped, never truncated, and the export still succeeds. The
+number dropped from a list is added to the `dropped_attributes_count` you
+sent, on the resource, scope, span, span event, span link and log record.
+Metric data points have no such field, and for a profile only the profile
+itself does (sample attribute indices are capped but not counted there), so
+for those the `signaldb.ingest.attributes_dropped` counter is the signal. It
+carries `tenant_id`, `signal` and `level` (`resource`, `scope` or `record`)
+labels. Profile attributes are interned in the profile dictionary, so only the
+number of attribute indices is capped, not key or value sizes.
 
 ## What is preserved
 

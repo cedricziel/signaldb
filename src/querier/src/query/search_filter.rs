@@ -12,7 +12,7 @@
 //! `ir-single-lowering` §5) or the IR predicate [`super::tags_to_ir`] builds
 //! today — is not this module's concern; it only recognises the wire format.
 
-use traceql::{Condition, FilterValue, Selector};
+use traceql::{Condition, FilterValue, MatchOp, Selector};
 
 use super::error::QuerierError;
 
@@ -53,6 +53,7 @@ pub fn parse_tags(tags: &str) -> Result<Vec<Condition>, QuerierError> {
         let (raw_value, remainder) = take_value(after_key)?;
         conditions.push(Condition {
             selector: tags_selector(key),
+            op: MatchOp::Eq,
             value: FilterValue::String(raw_value),
         });
         rest = remainder.trim_start();
@@ -90,6 +91,7 @@ mod tests {
             conditions,
             vec![Condition {
                 selector: Selector::ServiceName,
+                op: MatchOp::Eq,
                 value: FilterValue::String("user-service".to_string()),
             }]
         );
@@ -127,7 +129,7 @@ mod tests {
         let syntax: QuerierError = traceql::parse(r#"name = "no-braces""#).unwrap_err().into();
         assert!(matches!(syntax, QuerierError::InvalidInput(_)), "{syntax}");
 
-        let unsupported: QuerierError = traceql::parse(r#"{ span.x != "y" }"#).unwrap_err().into();
+        let unsupported: QuerierError = traceql::parse(r#"{ span.x > 1 }"#).unwrap_err().into();
         assert!(
             matches!(unsupported, QuerierError::Unsupported(_)),
             "{unsupported}"

@@ -181,6 +181,11 @@ async fn whoami() -> Response {
     .into_response()
 }
 
+/// The router's `ApiErrorBody` error envelope.
+fn api_error_body(error_type: &str, error: &str) -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({"status": "error", "errorType": error_type, "error": error}))
+}
+
 async fn behaviour(
     axum::extract::State(mock): axum::extract::State<MockRouter>,
     headers: HeaderMap,
@@ -198,8 +203,26 @@ async fn behaviour(
             ),
         )
             .into_response(),
-        "boom" => (StatusCode::INTERNAL_SERVER_ERROR, "boom").into_response(),
-        "throttle" => (StatusCode::TOO_MANY_REQUESTS, "slow down").into_response(),
+        // Error bodies are the router's real `ApiErrorBody` envelope: a typed
+        // client (search_traces) decodes them to recover the reason.
+        "boom" => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            api_error_body("internal", "boom"),
+        )
+            .into_response(),
+        "unsupported" => (
+            StatusCode::NOT_IMPLEMENTED,
+            api_error_body(
+                "not_implemented",
+                "TraceQL operator '>' is not supported yet (clause: 'span.x > 1')",
+            ),
+        )
+            .into_response(),
+        "throttle" => (
+            StatusCode::TOO_MANY_REQUESTS,
+            api_error_body("rate_limited", "slow down"),
+        )
+            .into_response(),
         "throttle-once" => {
             let hit = mock
                 .throttle_once_hits
@@ -208,7 +231,7 @@ async fn behaviour(
                 (
                     StatusCode::TOO_MANY_REQUESTS,
                     [("retry-after", "0")],
-                    "slow down",
+                    api_error_body("rate_limited", "slow down"),
                 )
                     .into_response()
             } else {
@@ -218,7 +241,7 @@ async fn behaviour(
         "throttle-long" => (
             StatusCode::TOO_MANY_REQUESTS,
             [("retry-after", "30")],
-            "slow down",
+            api_error_body("rate_limited", "slow down"),
         )
             .into_response(),
         "slow" => {
@@ -244,7 +267,7 @@ fn ok_body(path: &str, big: bool) -> Response {
             "window": {"start_ns": 0, "end_ns": 1},
             "metadata": {
                 "kind": "values", "values": [], "truncated": false,
-                "cost": {"mode": "none", "window_scoped": false, "sampled": false, "approximate": false}
+                "cost": {"mode": "none", "window_scoped": false, "sampled": false, "approximate": false, "partial": false}
             }
         })
     } else if big {
@@ -512,6 +535,27 @@ async fn denied_call_is_warn_and_distinguishable_from_a_failed_one() {
     assert_eq!(failed.level, Level::ERROR);
     assert_eq!(failed.field("outcome"), Some("error"));
     assert_eq!(failed.field("error.type"), Some("500"));
+}
+
+/// A 501 names the construct the router does not implement; that reason
+/// must reach the agent rather than a bare status (#2171).
+#[tokio::test]
+async fn an_unsupported_search_reports_the_routers_reason() {
+    let (_guard, _events, _spans, _provider) = install_capture();
+    let (app, _mock) = app_with_limit(8).await;
+    let mut session = McpSession::open(app, None).await;
+
+    let reply = session
+        .call_tool(
+            "search_traces",
+            serde_json::json!({"query": "{ span.x > 1 }", "dataset": "unsupported"}),
+        )
+        .await;
+    let message = reply["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("TraceQL operator '>' is not supported yet"),
+        "expected the router's reason, got: {reply}"
+    );
 }
 
 /// A router that never responds (`"slow"` in the mock, never released) must

@@ -45,13 +45,45 @@ pub enum FilterValue {
     Bool(bool),
 }
 
-/// One `selector = value` equality matcher.
+/// How a matcher compares its selector with its value.
 ///
-/// Deliberately *not* `#[non_exhaustive]`: a matcher is exactly a selector and
-/// a value, and consumers both read and construct these.
+/// Non-exhaustive for the same reason as [`Selector`]: the ordering
+/// comparisons (`>`, `<`, `>=`, `<=`) are valid TraceQL this crate does not
+/// implement yet.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchOp {
+    /// `=`
+    Eq,
+    /// `!=`
+    Ne,
+    /// `=~`: the value is a regular expression the whole attribute must match
+    /// (TraceQL regexes are fully anchored).
+    Regex,
+    /// `!~`: the negation of [`MatchOp::Regex`].
+    NotRegex,
+}
+
+impl MatchOp {
+    /// The operator as TraceQL spells it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MatchOp::Eq => "=",
+            MatchOp::Ne => "!=",
+            MatchOp::Regex => "=~",
+            MatchOp::NotRegex => "!~",
+        }
+    }
+}
+
+/// One `selector <op> value` matcher.
+///
+/// Deliberately *not* `#[non_exhaustive]`: a matcher is exactly a selector,
+/// an operator and a value, and consumers both read and construct these.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Condition {
     pub selector: Selector,
+    pub op: MatchOp,
     pub value: FilterValue,
 }
 

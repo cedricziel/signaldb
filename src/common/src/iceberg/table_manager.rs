@@ -1417,7 +1417,9 @@ mod tests {
         let (tenant, dataset) = ("stats_tenant", "stats_dataset");
         for signal in ["traces", "logs"] {
             stats
-                .upsert_attribute_scan_stats(tenant, dataset, signal, "busy_ns", 10, 10, 3, false)
+                .upsert_attribute_scan_stats(
+                    tenant, dataset, signal, "busy_ns", 10, 10, 3, false, None,
+                )
                 .await?;
             stats
                 .upsert_attribute_level_scan_stats(

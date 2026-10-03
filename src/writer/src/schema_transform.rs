@@ -27,7 +27,7 @@ use std::sync::Arc;
 /// name collision between config generations cannot misroute a value (see
 /// #1534). A batch with no such metadata predates this change and falls
 /// back to the old name-based guard.
-pub(crate) const LABEL_ORIGIN_KEY_METADATA: &str = "signaldb.origin_key";
+pub(crate) use common::schema::LABEL_ORIGIN_KEY_METADATA;
 
 /// Struct to hold all extracted metadata from Flight messages
 #[derive(Debug, Clone)]

@@ -71,3 +71,30 @@ pub(crate) async fn only_wal_entry_bytes(
     assert_eq!(entries.len(), 1);
     wal.read_entry_data(&entries[0]).await.unwrap()
 }
+
+/// `n` string attributes `k0..k{n-1}`, each with value `"v"`.
+pub(crate) fn string_attrs(n: usize) -> Vec<opentelemetry_proto::tonic::common::v1::KeyValue> {
+    use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
+    (0..n)
+        .map(|i| KeyValue {
+            key: format!("k{i}"),
+            value: Some(AnyValue {
+                value: Some(Value::StringValue("v".to_string())),
+            }),
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// Column `name` of `batch`, downcast to `A`.
+pub(crate) fn column_as<'a, A: 'static>(
+    batch: &'a datafusion::arrow::record_batch::RecordBatch,
+    name: &str,
+) -> &'a A {
+    batch
+        .column_by_name(name)
+        .unwrap()
+        .as_any()
+        .downcast_ref::<A>()
+        .unwrap()
+}

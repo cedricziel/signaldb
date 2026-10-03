@@ -114,7 +114,15 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   that value. A value over ~200 characters (a Rust `Debug` dump, a stack
   trace) collapses behind a "More" toggle rather than flooding the panel;
   the copy button always copies the untruncated value. Open-by-ID works
-  from any level. A **Waterfall | Map | Both** switch sits above the trace:
+  from any level. A span with
+  [span links](https://opentelemetry.io/docs/concepts/signals/traces/#span-links)
+  (for example a job's consumer span pointing at the web request that
+  enqueued it) shows a **Links** section listing each target and its link
+  attributes; clicking one opens the linked trace. The reverse direction is
+  a **Linked from** section: spans in other traces that link to this one,
+  found with a Query IR `links.trace_id` filter over the 24 hours after the
+  trace started, each opening its own trace. Waterfall rows with either kind
+  of link carry a small arrow marker (↗ outgoing, ↙ incoming). A **Waterfall | Map | Both** switch sits above the trace:
   Map draws the services involved in that one trace — built from the spans
   already loaded, no extra query — as nodes sized by time spent in each
   service, with edges showing the calls between them; a failed call colours

@@ -179,8 +179,8 @@ Operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `between`, `contains`,
 
 Some logical fields are **retrieval-only**: they can appear in `fields`
 projections but are rejected in predicates, `aggregate.by`, `topk.of`,
-`bottomk.of`, and `order` keys. The trace `span_events` is retrieval-only
-today. A retrieval-only field used in a predicate raises an
+`bottomk.of`, and `order` keys. The trace `span_events` and `span_links` are
+retrieval-only today. A retrieval-only field used in a predicate raises an
 `UnfilterableField` error.
 
 The log `body` is filterable for string operators (`contains`, `regex`, `eq`,
@@ -204,6 +204,16 @@ observed it yet) resolves as a string.
 `[{"name", "timestamp_unix_nano", "attributes": {...}}, ...]`, `null` for a
 span that recorded none. To filter on an exception, use the `exception.*`
 fields below instead of the list.
+
+`span_links` on `traces` is the span's links list as a JSON string:
+`[{"trace_id", "span_id", "attributes": {...}}, ...]`, `null` for a span with
+no links. A consumer span that links back to the producer span which enqueued
+it carries that producer's trace and span id here. To find the spans that link
+to a trace, filter on `links.trace_id` instead of the list:
+
+```jsonc
+{ "field": "links.trace_id", "op": "eq", "value": "4c20…859e" }
+```
 
 ### Addressing an attribute scope
 
@@ -719,6 +729,8 @@ rejection because an unpromoted attribute cannot be enumerated while planning:
 grouping by a real attribute that is simply absent from a short window is a
 legitimate query, and would otherwise fail a quiet dashboard panel.
 
+`range_before_retention` is described under [Retention](#retention).
+
 `match_incomplete_trace` is raised when a
 [`match`](#structural-matching-the-match-stage-ir-v12) stage with a relation
 saw traces that the `range` visibly cut (see its Semantics for which traces
@@ -730,6 +742,35 @@ to three example trace ids:
 { "code": "match_incomplete_trace",
   "message": "1 matched trace may be missing witness spans and 2 traces did not match but may match over a wider range: a span's parent is not in the queried range (it started before the range or was not ingested) or a span ends after the range (its children may start after it). Widen `range` to see whole traces. Examples: 0102…, 0a0b…, 0c0d…" }
 ```
+
+### Retention
+
+A single-document response over a signal source (`traces`, `logs`,
+`metrics`, `exemplars`, `profiles`) carries a `retention` member saying how far back the
+answer can reach. The compactor deletes expired data, so the window is never
+clamped: it stays as you requested it and `retention` reports the policy.
+The member is absent for a [formula](#formulas-cross-query-arithmetic-d5)
+document, for a `describe` document, and for sources that are not signals.
+
+```jsonc
+{ "result": "rows", "window": {...}, "rows": [...],
+  "retention": { "period": "30d", "period_s": 2592000, "source": "global",
+                 "enforced": true, "cutoff_ns": 1767225600000000000 } }
+```
+
+- `period`, `period_s`: the retention period for this tenant, dataset and
+  signal, as a humantime string and in seconds.
+- `source`: which `[compactor.retention]` setting supplied it, `global`,
+  `tenant` or `dataset`.
+- `enforced`: `true` when retention is enabled and not in dry-run mode.
+- `cutoff_ns`: server time minus the period and the grace period, in unix
+  nanoseconds. Data older than this is subject to deletion.
+
+When `enforced` is true and `window.start_ns` is before `cutoff_ns`, the
+response also carries a `range_before_retention` warning on `range.from`.
+The message names the cutoff as an RFC 3339 time, the period and its source.
+It does not appear for a recent window, with retention disabled, or in
+dry-run mode.
 
 ## Pagination (IR v14)
 
@@ -2244,7 +2285,9 @@ stage answers that, and it is deliberately cheap: the answer comes from the
 canonical field catalog, your tenant's schema registries, and the statistics
 the compactor maintains — **not** from reading your signal data. A `describe`
 document never reaches a querier, so a field picker keeps working while query
-execution is busy.
+execution is busy. The one exception is `sample: true` on a `values` target
+that no declared value set covers: that reads the requested range through the
+querier (see the sampled tier below).
 
 `describe` is terminal, pairs with the `metadata` result envelope, and requires
 `irVersion` 4.
@@ -2334,12 +2377,18 @@ Values are answered in tiers:
    recorded by the compactor's analyzer while it was already reading the data
    for compaction. Still free (no data is read to answer you), but bounded and
    therefore `approximate: true`, with `cost.as_of` giving its age. Values come
-   back with `origin: "statistics"`.
+   back with `origin: "statistics"`. The analyzer observes one compacted
+   partition (an hour of data) at a time, so the sketch can miss values that
+   only occur elsewhere in your range: `cost.analyzed` names the rows and time
+   span it was built from, and `cost.partial: true` says that span does not
+   cover your `range`. A partial answer also carries the `hint` that reads the
+   whole range.
 3. **Nothing covers it.** The response returns no values, `cost.mode: "none"`,
    and a `hint` naming the query that _would_ compute the answer by reading
    data. It does not scan behind your back.
-4. **You asked for the data-derived answer** with `"sample": true`. SignalDB
-   then runs exactly the aggregation the hint names — bounded by your window
+4. **You asked for the data-derived answer** with `"sample": true`. Unless a
+   declared value set covers the field, SignalDB skips the sketch and runs
+   exactly the aggregation the hint names — bounded by your window
    and `limit` — and reports `cost.mode: "sampled_scan"` with
    `window_scoped: true` and `sampled: true`. Values come back with counts and
    `origin: "sampled"`.
@@ -2362,6 +2411,8 @@ its trustworthiness are part of the answer:
 | `sampled`       | whether the answer is sampled and therefore possibly incomplete                                                                                                       |
 | `approximate`   | whether the answer is a bounded sketch of the most frequent values rather than the exact set. A declared value set is exact; a statistics- or scan-derived one is not |
 | `as_of`         | how recent the statistics behind it are. `null` means none exist yet — on a tenant whose compactor has not run, `describe: fields` returns the declared fields only   |
+| `analyzed`      | what the statistics were built from: `rows_analyzed` and the event-time span `start_ns`/`end_ns` of those rows (absent for statistics older than span tracking)      |
+| `partial`       | whether the statistics cover less than your `range`. Fields seen only elsewhere can be missing, and every `cardinality` is then `at_least: true`                       |
 
 **`mode` and `approximate` are independent, and the combination that matters is
 `mode: "metadata"` with `approximate: true`.** That is a sketch answer: it cost
@@ -2372,7 +2423,7 @@ the two fields together:
 | `mode`         | `approximate` | what you have                                                                  |
 | -------------- | ------------- | ------------------------------------------------------------------------------ |
 | `metadata`     | `false`       | a declared value set — free and complete                                       |
-| `metadata`     | `true`        | a maintained sketch — free, bounded, and dated; suggest it, do not count on it |
+| `metadata`     | `true`        | a maintained sketch — free, bounded, dated, and `partial` when it saw less than your range |
 | `sampled_scan` | `true`        | a bounded read of your window, run because you asked                           |
 | `none`         | `false`       | no answer, with a `hint` naming the query that would produce one               |
 

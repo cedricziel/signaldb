@@ -161,6 +161,31 @@ pub struct DiscoveryCost {
     /// it). `null` means no statistics exist yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub as_of: Option<String>,
+    /// What the statistics behind the answer were built from, when
+    /// statistics contributed to it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analyzed: Option<StatisticsCoverage>,
+    /// Whether the statistics behind the answer cover less than the
+    /// requested window. The analyzer observes one compacted partition at a
+    /// time, so a statistics answer over a longer window can miss values and
+    /// fields that only occur elsewhere, and its cardinalities are lower
+    /// bounds. Pass `sample: true` to read the window instead.
+    pub partial: bool,
+}
+
+/// What a statistics-derived answer was built from: the rows the analyzer
+/// last read and the event-time span they came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct StatisticsCoverage {
+    /// Rows the analyzer read for the most recent observation.
+    pub rows_analyzed: i64,
+    /// Start of the event-time span those rows came from, in Unix
+    /// nanoseconds. Absent for statistics written before spans were recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_ns: Option<i64>,
+    /// End (exclusive) of that span, in Unix nanoseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_ns: Option<i64>,
 }
 
 impl DiscoveryCost {
@@ -172,6 +197,8 @@ impl DiscoveryCost {
             sampled: false,
             approximate: false,
             as_of,
+            analyzed: None,
+            partial: false,
         }
     }
 
@@ -184,6 +211,8 @@ impl DiscoveryCost {
             sampled: false,
             approximate: true,
             as_of,
+            analyzed: None,
+            partial: false,
         }
     }
 
@@ -195,6 +224,8 @@ impl DiscoveryCost {
             sampled: false,
             approximate: false,
             as_of: None,
+            analyzed: None,
+            partial: false,
         }
     }
 
@@ -207,7 +238,39 @@ impl DiscoveryCost {
             sampled: true,
             approximate: true,
             as_of: None,
+            analyzed: None,
+            partial: false,
         }
+    }
+
+    /// Record what the statistics rows behind this answer cover, and whether
+    /// that falls short of the requested `[start_ns, end_ns)` window. No rows
+    /// is no coverage at all, so it is partial too.
+    pub fn with_statistics<'r>(
+        mut self,
+        stats: impl IntoIterator<Item = &'r AttributeStatsRecord>,
+        start_ns: i64,
+        end_ns: i64,
+    ) -> Self {
+        // Rows the querier created for demand counters alone carry no
+        // observation.
+        let stats: Vec<&AttributeStatsRecord> = stats
+            .into_iter()
+            .filter(|record| record.total_rows > 0)
+            .collect();
+        let newest = stats.iter().max_by(|a, b| a.updated_at.cmp(&b.updated_at));
+        self.analyzed = newest.map(|record| StatisticsCoverage {
+            rows_analyzed: record.total_rows,
+            start_ns: record.analyzed_span.map(|span| span.start_ns),
+            end_ns: record.analyzed_span.map(|span| span.end_ns),
+        });
+        self.partial = stats.is_empty()
+            || !stats.iter().all(|record| {
+                record
+                    .analyzed_span
+                    .is_some_and(|span| span.covers(start_ns, end_ns))
+            });
+        self
     }
 }
 
@@ -563,6 +626,7 @@ mod tests {
             capped,
             query_hits: 0,
             promote_streak: 0,
+            analyzed_span: None,
             updated_at: "2026-08-17 09:00:00".to_string(),
         }
     }
@@ -765,6 +829,52 @@ mod tests {
         assert!(values.iter().all(|v| v.origin == ValueOrigin::Statistics));
         assert_eq!(sketch_values(&stats, 1).len(), 1);
         assert!(sketch_values(&[], 10).is_empty());
+    }
+
+    fn spanning(start_ns: i64, end_ns: i64) -> AttributeStatsRecord {
+        AttributeStatsRecord {
+            analyzed_span: Some(crate::catalog::AnalyzedSpan { start_ns, end_ns }),
+            ..stat("k", 10, 10, 1, false)
+        }
+    }
+
+    #[test]
+    fn statistics_covering_the_window_are_not_partial() {
+        let record = spanning(0, 100);
+        let cost = DiscoveryCost::metadata(None).with_statistics([&record], 10, 90);
+        assert!(!cost.partial);
+        assert_eq!(
+            cost.analyzed,
+            Some(StatisticsCoverage {
+                rows_analyzed: 10,
+                start_ns: Some(0),
+                end_ns: Some(100),
+            })
+        );
+    }
+
+    #[test]
+    fn statistics_short_of_the_window_are_partial() {
+        let record = spanning(50, 100);
+        assert!(
+            DiscoveryCost::metadata(None)
+                .with_statistics([&record], 0, 100)
+                .partial
+        );
+    }
+
+    #[test]
+    fn statistics_without_a_recorded_span_or_rows_are_partial() {
+        let unspanned = stat("k", 10, 10, 1, false);
+        let cost = DiscoveryCost::metadata(None).with_statistics([&unspanned], 0, 1);
+        assert!(cost.partial);
+        assert_eq!(cost.analyzed.and_then(|a| a.start_ns), None);
+
+        // A demand-only row (no rows analyzed) is no observation at all.
+        let demand_only = stat("k", 0, 0, 0, false);
+        let cost = DiscoveryCost::metadata(None).with_statistics([&demand_only], 0, 1);
+        assert!(cost.partial);
+        assert_eq!(cost.analyzed, None);
     }
 
     #[test]
