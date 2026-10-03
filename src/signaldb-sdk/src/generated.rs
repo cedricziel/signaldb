@@ -4554,6 +4554,11 @@ pub mod types {
     ///A resolved metric definition.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct MetricDef {
+        /**Other names emitters report this metric under, for emitters that do
+        not follow the canonical name (`container.memory.usage.total` for
+        `container.memory.usage`).*/
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub aliases: ::std::vec::Vec<::std::string::String>,
         pub attributes: ::std::vec::Vec<MetricAttribute>,
         pub brief: ::std::string::String,
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
@@ -4577,6 +4582,11 @@ pub mod types {
     ///A resolved metric definition tagged with provenance.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct MetricHit {
+        /**Other names emitters report this metric under, for emitters that do
+        not follow the canonical name (`container.memory.usage.total` for
+        `container.memory.usage`).*/
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub aliases: ::std::vec::Vec<::std::string::String>,
         pub attributes: ::std::vec::Vec<MetricAttribute>,
         pub brief: ::std::string::String,
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
@@ -17487,6 +17497,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct MetricDef {
+            aliases: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
             attributes: ::std::result::Result<
                 ::std::vec::Vec<super::MetricAttribute>,
                 ::std::string::String,
@@ -17516,6 +17530,7 @@ pub mod types {
         impl ::std::default::Default for MetricDef {
             fn default() -> Self {
                 Self {
+                    aliases: Ok(Default::default()),
                     attributes: Err("no value supplied for attributes".to_string()),
                     brief: Err("no value supplied for brief".to_string()),
                     deprecated: Ok(Default::default()),
@@ -17532,6 +17547,16 @@ pub mod types {
             }
         }
         impl MetricDef {
+            pub fn aliases<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.aliases = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for aliases: {e}"));
+                self
+            }
             pub fn attributes<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::vec::Vec<super::MetricAttribute>>,
@@ -17639,6 +17664,7 @@ pub mod types {
                 value: MetricDef,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    aliases: value.aliases?,
                     attributes: value.attributes?,
                     brief: value.brief?,
                     deprecated: value.deprecated?,
@@ -17655,6 +17681,7 @@ pub mod types {
         impl ::std::convert::From<super::MetricDef> for MetricDef {
             fn from(value: super::MetricDef) -> Self {
                 Self {
+                    aliases: Ok(value.aliases),
                     attributes: Ok(value.attributes),
                     brief: Ok(value.brief),
                     deprecated: Ok(value.deprecated),
@@ -17670,6 +17697,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct MetricHit {
+            aliases: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
             attributes: ::std::result::Result<
                 ::std::vec::Vec<super::MetricAttribute>,
                 ::std::string::String,
@@ -17702,6 +17733,7 @@ pub mod types {
         impl ::std::default::Default for MetricHit {
             fn default() -> Self {
                 Self {
+                    aliases: Ok(Default::default()),
                     attributes: Err("no value supplied for attributes".to_string()),
                     brief: Err("no value supplied for brief".to_string()),
                     deprecated: Ok(Default::default()),
@@ -17721,6 +17753,16 @@ pub mod types {
             }
         }
         impl MetricHit {
+            pub fn aliases<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.aliases = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for aliases: {e}"));
+                self
+            }
             pub fn attributes<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::vec::Vec<super::MetricAttribute>>,
@@ -17858,6 +17900,7 @@ pub mod types {
                 value: MetricHit,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    aliases: value.aliases?,
                     attributes: value.attributes?,
                     brief: value.brief?,
                     deprecated: value.deprecated?,
@@ -17877,6 +17920,7 @@ pub mod types {
         impl ::std::convert::From<super::MetricHit> for MetricHit {
             fn from(value: super::MetricHit) -> Self {
                 Self {
+                    aliases: Ok(value.aliases),
                     attributes: Ok(value.attributes),
                     brief: Ok(value.brief),
                     deprecated: Ok(value.deprecated),

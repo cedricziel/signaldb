@@ -117,6 +117,9 @@ pub struct Group {
     pub unit: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entity_associations: Vec<String>,
+    /// Other names emitters report this metric under (`type: metric`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attributes: Vec<AttributeSpec>,
     #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -541,6 +544,8 @@ struct V2Metric {
     unit: String,
     #[serde(default)]
     entity_associations: Vec<String>,
+    #[serde(default)]
+    aliases: Vec<String>,
     #[serde(flatten)]
     common: V2Common,
 }
@@ -572,7 +577,7 @@ struct V2Refinement {
 
 /// `Group` field names; a v2 key landing in `extra` under one of these would
 /// be read back into the typed field, so it is kept as `v2_<key>` instead.
-const GROUP_FIELDS: [&str; 14] = [
+const GROUP_FIELDS: [&str; 15] = [
     "id",
     "type",
     "brief",
@@ -586,6 +591,7 @@ const GROUP_FIELDS: [&str; 14] = [
     "instrument",
     "unit",
     "entity_associations",
+    "aliases",
     "attributes",
 ];
 
@@ -638,6 +644,7 @@ fn lower_v2(files: Vec<(String, ModelFileV2)>) -> Result<Vec<Group>, ParseError>
             group.instrument = Some(m.instrument);
             group.unit = Some(m.unit);
             group.entity_associations = m.entity_associations;
+            group.aliases = m.aliases;
             pending.push((group, attrs));
         }
         for s in file.spans {

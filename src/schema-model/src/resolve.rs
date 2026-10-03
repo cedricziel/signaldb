@@ -133,6 +133,11 @@ pub struct MetricDef {
     pub attributes: Vec<MetricAttribute>,
     /// Entity type names this metric describes.
     pub entity_associations: Vec<String>,
+    /// Other names emitters report this metric under, for emitters that do
+    /// not follow the canonical name (`container.memory.usage.total` for
+    /// `container.memory.usage`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
 }
 
 /// An entity in which an attribute plays a role (reverse index entry).
@@ -509,6 +514,23 @@ impl Registry {
                             ));
                         }
                     }
+                    let mut seen_aliases = BTreeSet::new();
+                    for (ai, alias) in group.aliases.iter().enumerate() {
+                        let apath = format!("{gpath}.aliases[{ai}]");
+                        if alias.trim().is_empty() {
+                            errors.push(err(&apath, "alias must not be empty"));
+                        } else if alias == &name {
+                            errors.push(err(
+                                &apath,
+                                format!("metric `{name}` lists its own name as an alias"),
+                            ));
+                        } else if !seen_aliases.insert(alias.as_str()) {
+                            errors.push(err(
+                                &apath,
+                                format!("metric `{name}` lists alias `{alias}` twice"),
+                            ));
+                        }
+                    }
                     for entity in &group.entity_associations {
                         out.entity_metrics
                             .entry(entity.clone())
@@ -528,6 +550,7 @@ impl Registry {
                             deprecated: group.deprecated.as_ref().map(Into::into),
                             attributes,
                             entity_associations: group.entity_associations.clone(),
+                            aliases: group.aliases.clone(),
                         },
                     );
                 }

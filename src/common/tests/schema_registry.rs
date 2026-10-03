@@ -324,6 +324,12 @@ async fn resolve_metrics_batches_exact_names_precedence_first_wins_deduped() {
         vec!["acme.order".to_string()]
     );
 
+    // aliases ride along on the definition, so the Catalog can match them
+    assert_eq!(
+        latency.def.aliases,
+        vec!["acme.checkout.duration".to_string()]
+    );
+
     // first visible registry that defines it wins: otel bundled here.
     let cpu = out.get("k8s.pod.cpu.time").expect("k8s metric hit");
     assert_eq!(cpu.namespace, "otel");

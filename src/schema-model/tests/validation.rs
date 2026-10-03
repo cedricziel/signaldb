@@ -362,3 +362,74 @@ groups:
     assert_eq!(dep.reason, None);
     assert_eq!(dep.note.as_deref(), Some("Use acme.new instead."));
 }
+
+const ALIASED_METRIC: &str = r#"
+name: acme
+version: 1.0.0
+groups:
+  - id: metric.acme.mem
+    type: metric
+    metric_name: acme.mem
+    brief: m
+    instrument: gauge
+    unit: By
+    aliases: [acme.mem.total, legacy.mem]
+"#;
+
+fn resolve_aliases_of(yaml: &str, metric: &str) -> Vec<String> {
+    let doc = RegistryDocument::from_yaml(yaml).expect("yaml parses");
+    let otel = otel_resolved();
+    let resolved = Registry::resolve(&doc, &[&otel]).expect("resolves");
+    resolved.metrics[metric].aliases.clone()
+}
+
+#[test]
+fn metric_aliases_resolve_onto_the_definition() {
+    assert_eq!(
+        resolve_aliases_of(ALIASED_METRIC, "acme.mem"),
+        vec!["acme.mem.total".to_string(), "legacy.mem".to_string()]
+    );
+}
+
+#[test]
+fn definition_v2_metric_aliases_resolve_onto_the_definition() {
+    let yaml = r#"
+name: acme
+version: 1.0.0
+file_format: definition/2
+metrics:
+  - name: acme.mem
+    instrument: gauge
+    unit: By
+    brief: m
+    aliases: [acme.mem.total]
+"#;
+    assert_eq!(
+        resolve_aliases_of(yaml, "acme.mem"),
+        vec!["acme.mem.total".to_string()]
+    );
+}
+
+#[test]
+fn duplicate_alias_is_rejected() {
+    let errs = errors_of(&ALIASED_METRIC.replace("legacy.mem]", "acme.mem.total]"));
+    assert_eq!(
+        errs,
+        vec!["groups[0].aliases[1]: metric `acme.mem` lists alias `acme.mem.total` twice"]
+    );
+}
+
+#[test]
+fn alias_equal_to_the_canonical_name_is_rejected() {
+    let errs = errors_of(&ALIASED_METRIC.replace("legacy.mem]", "acme.mem]"));
+    assert_eq!(
+        errs,
+        vec!["groups[0].aliases[1]: metric `acme.mem` lists its own name as an alias"]
+    );
+}
+
+#[test]
+fn blank_alias_is_rejected() {
+    let errs = errors_of(&ALIASED_METRIC.replace("legacy.mem]", "\" \"]"));
+    assert_eq!(errs, vec!["groups[0].aliases[1]: alias must not be empty"]);
+}
