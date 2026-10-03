@@ -35,6 +35,14 @@ const host: EntityTypeDef = {
   registryEntity: "host",
 };
 
+const container: EntityTypeDef = {
+  id: "container",
+  label: "Containers",
+  singular: "container",
+  identity: ["container.id"],
+  registryEntity: "container",
+};
+
 function metric(name: string, entities: string[]): MetricHit {
   return {
     name,
@@ -87,6 +95,52 @@ describe("useEntityMetrics", () => {
         "system.cpu.time",
       ]),
     );
+  });
+
+  it("matches an observed alias of an associated metric", async () => {
+    discoverObservedMetricNames.mockResolvedValue([
+      "container.memory.usage.total",
+    ]);
+    fetchEntityMetricNames.mockResolvedValue(["container.memory.usage"]);
+    fetchMetricDefinitions.mockResolvedValue([
+      {
+        ...metric("container.memory.usage", ["container"]),
+        aliases: ["container.memory.usage.total"],
+      } as MetricHit,
+    ]);
+
+    const { result } = renderHook(
+      () => useEntityMetrics(container, r1, "1h|acme|prod"),
+      { wrapper: clientWrapper() },
+    );
+
+    await waitFor(() =>
+      expect(result.current.metrics.map((m) => m.name)).toEqual([
+        "container.memory.usage.total",
+      ]),
+    );
+    expect(result.current.metrics[0]!.aliasOf).toBe("container.memory.usage");
+  });
+
+  it("reports observed names in the entity's namespace when none match", async () => {
+    discoverObservedMetricNames.mockResolvedValue([
+      "container.cpu.usage.total",
+      "system.cpu.time",
+    ]);
+    fetchEntityMetricNames.mockResolvedValue(["container.memory.usage"]);
+    fetchMetricDefinitions.mockResolvedValue([
+      metric("container.memory.usage", ["container"]),
+    ]);
+
+    const { result } = renderHook(
+      () => useEntityMetrics(container, r1, "1h|acme|prod"),
+      { wrapper: clientWrapper() },
+    );
+
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+    expect(result.current.metrics).toEqual([]);
+    expect(result.current.associated).toEqual(["container.memory.usage"]);
+    expect(result.current.unmatched).toEqual(["container.cpu.usage.total"]);
   });
 
   it("re-discovers on a range change but does not re-read the registry", async () => {

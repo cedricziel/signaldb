@@ -7,6 +7,7 @@
  * is keyed by tenant and entity — re-reading it on every range change would
  * re-fetch an identical answer.
  */
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   fetchEntityActivity,
@@ -17,10 +18,11 @@ import {
   discoverObservedMetricNames,
   fetchEntityMetricNames,
   fetchMetricDefinitions,
+  matchObservedMetrics,
   METRICS_SOURCE,
+  unmatchedObservedNames,
 } from "../../api/entityMetrics";
-import type { MetricHit } from "../schema/api";
-import type { IrSeries } from "../../api/entityMetrics";
+import type { IrSeries, ObservedMetric } from "../../api/entityMetrics";
 import {
   durationToSeconds,
   stepForRange,
@@ -32,6 +34,8 @@ import { tenantScope } from "./useEntityTypes";
 /** Points per sparkline — enough shape to read a trend at cell size. */
 const SPARKLINE_POINTS = 40;
 
+const NONE: readonly string[] = Object.freeze([]);
+
 export interface SparklineColumn {
   /** What the column charts, for its header. Absent means no column. */
   label?: string;
@@ -39,8 +43,18 @@ export interface SparklineColumn {
 }
 
 export interface EntityMetrics {
-  /** The entity's associated metric definitions observed in this window. */
-  metrics: MetricHit[];
+  /**
+   * The entity's associated metric definitions observed in this window, each
+   * under the name the window holds (see `ObservedMetric`).
+   */
+  metrics: ObservedMetric[];
+  /** Every metric name the registry associates with the entity. */
+  associated: readonly string[];
+  /**
+   * Observed names in the namespaces the entity's metrics live in, when none
+   * of them matched. Empty when something matched or nothing is close.
+   */
+  unmatched: readonly string[];
   isPending: boolean;
   /**
    * Whether asking *failed*, as opposed to answering "none".
@@ -77,32 +91,47 @@ export function useEntityMetrics(
     staleTime: 60_000,
   });
 
-  const names = observed.data ?? [];
-  const definitions = useQuery({
+  // The registry's side does not depend on the window, so it is keyed by
+  // tenant and entity alone and fetched alongside the observed names. It asks
+  // for every associated definition, not just the observed ones: an alias is
+  // only visible on the definition it belongs to.
+  const registry = useQuery({
     queryKey: [
       "entity-metric-definitions",
       tenantScope(rangeKey),
       entity.registryEntity,
-      names,
     ],
     queryFn: async () => {
-      // The registry says which metrics describe this entity; the window says
-      // which of them exist. The panel wants the intersection, and asking for
-      // definitions of only that intersection keeps the prefix searches down
-      // to the families the entity actually uses.
       const associated = await fetchEntityMetricNames(entity.registryEntity!);
-      const inWindow = new Set(names);
-      return fetchMetricDefinitions(associated.filter((n) => inWindow.has(n)));
+      return {
+        associated,
+        definitions: await fetchMetricDefinitions(associated),
+      };
     },
-    enabled: enabled && observed.isSuccess,
+    enabled,
     staleTime: 10 * 60_000,
   });
 
+  const names = observed.data;
+  const matched = useMemo(() => {
+    if (!names || !registry.data) return { metrics: [], unmatched: NONE };
+    const metrics = matchObservedMetrics(registry.data.definitions, names);
+    return {
+      metrics,
+      unmatched:
+        metrics.length === 0
+          ? unmatchedObservedNames(registry.data.associated, names)
+          : NONE,
+    };
+  }, [names, registry.data]);
+
   return {
-    metrics: definitions.data ?? [],
-    isPending: enabled && (observed.isPending || definitions.isPending),
-    isError: observed.isError || definitions.isError,
-    error: observed.error ?? definitions.error,
+    metrics: matched.metrics,
+    associated: registry.data?.associated ?? NONE,
+    unmatched: matched.unmatched,
+    isPending: enabled && (observed.isPending || registry.isPending),
+    isError: observed.isError || registry.isError,
+    error: observed.error ?? registry.error,
   };
 }
 

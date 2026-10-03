@@ -1210,6 +1210,81 @@ export const EntityDetailNoCallers: Story = {
   ),
 };
 
+const serviceEntity = {
+  name: "service",
+  group_id: "entity.service",
+  brief: "A logical service.",
+  identifying: [{ key: "service.name", role: "identifying" }],
+  descriptive: [],
+  metrics: ["service.requests"],
+  namespace: "otel",
+  source: "bundled",
+  version: "1.43.0",
+};
+
+/** The registry describes `service` by `service.requests`, while the window
+ * holds only `service.request.count`: same namespace, no shared name, so the
+ * metrics panel explains the mismatch instead of rendering nothing. */
+const metricNamesMismatchRoutes: JsonRoute[] = [
+  ...routes,
+  {
+    match: "/api/v1/schema/entities",
+    body: {
+      hits: [
+        serviceEntity,
+      ],
+    },
+  },
+  {
+    match: "/api/v1/schema/entities/service",
+    body: {
+      key: "service",
+      hits: [
+        serviceEntity,
+      ],
+    },
+  },
+  {
+    match: "/api/v1/schema/metrics",
+    body: {
+      hits: [
+        {
+          name: "service.requests",
+          group_id: "metric.service.requests",
+          brief: "Requests served.",
+          instrument: "counter",
+          unit: "{request}",
+          attributes: [],
+          entity_associations: ["service"],
+          namespace: "otel",
+          source: "bundled",
+          version: "1.43.0",
+        },
+      ],
+    },
+  },
+  {
+    match: "/api/v1/query",
+    bodyMatch: irBody(
+      (body) =>
+        body.from === "metrics" &&
+        body.result === "table" &&
+        body.pipeline?.[0]?.aggregate?.by?.[0] === "metric.name",
+    ),
+    body: {
+      result: "table",
+      window: { start_ns: 0, end_ns: 0 },
+      rows: [["service.request.count", 1200]],
+    },
+  },
+];
+
+export const EntityDetailMetricNamesMismatch: Story = {
+  render: () => (
+    <CatalogPage state={entityDetailState} routes={metricNamesMismatchRoutes} />
+  ),
+};
+
 const catalogMapState: ExploreState = {
   ...DEFAULT_STATE,
   signal: "catalog",

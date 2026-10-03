@@ -145,6 +145,8 @@ beforeEach(() => {
     ],
     isPending: false,
     isError: false,
+    associated: [],
+    unmatched: [],
   });
   useEntityKpis.mockReset();
   useEntityKpis.mockReturnValue({
