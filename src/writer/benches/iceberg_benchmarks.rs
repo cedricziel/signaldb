@@ -22,12 +22,16 @@
 //! throughput.
 
 use std::hint::black_box;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::CatalogManager;
+use common::catalog::Catalog;
 use common::config::{Configuration, SchemaConfig, StorageConfig};
 use common::flight::conversion::otlp_metrics_to_arrow;
 use common::iceberg::sort::{canonical_sort_columns, sort_batch_by};
+use common::schema::type_authority::TypeAuthority;
+use common::schema_registry::SchemaResolver;
 use common::testing::sample_metrics_request;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use datafusion::arrow::array::{RecordBatch, UInt32Array};
@@ -73,6 +77,22 @@ async fn create_writer(config: &Configuration) -> IcebergTableWriter {
     .expect("Failed to create writer")
 }
 
+/// [`create_writer`] plus its own in-memory `TypeAuthority`, which an append
+/// to the typed attribute layout requires.
+async fn create_appending_writer(config: &Configuration) -> IcebergTableWriter {
+    let sql_catalog = Catalog::new_in_memory()
+        .await
+        .expect("Failed to create type catalog");
+    let type_authority = TypeAuthority::new(
+        sql_catalog.clone(),
+        SchemaResolver::new(sql_catalog),
+        Arc::new(config.clone()),
+    );
+    create_writer(config)
+        .await
+        .with_type_authority(Arc::new(type_authority))
+}
+
 /// A `metrics` batch already in the wide STORED schema (so no wire->wide
 /// transform runs inside the timed append) with `num_rows` rows and ~100
 /// distinct metric names — realistic cardinality for a metrics table. Built
@@ -94,7 +114,7 @@ fn time_appends(
 ) -> Duration {
     let mut total = Duration::ZERO;
     for _ in 0..iters {
-        let mut writer = rt.block_on(create_writer(config));
+        let mut writer = rt.block_on(create_appending_writer(config));
         let entries: Vec<_> = batches
             .iter()
             .cloned()
@@ -122,7 +142,7 @@ fn time_concurrent_appends(
     let mut total = Duration::ZERO;
     for _ in 0..iters {
         let writers: Vec<IcebergTableWriter> = (0..num_writers)
-            .map(|_| rt.block_on(create_writer(config)))
+            .map(|_| rt.block_on(create_appending_writer(config)))
             .collect();
 
         let start = Instant::now();
