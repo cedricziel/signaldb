@@ -350,24 +350,10 @@ async fn main() -> Result<()> {
     }
 
     // Create QuerierFlightService with shared CatalogManager for per-tenant catalog support.
-    //
-    // Unlike the standalone querier, this process also runs ingest, so an
-    // unbounded query memory pool ([querier].memory_limit_mb left unset) can
-    // take ingest down with it, not just itself (#1359). Resolve the default
-    // here, on a clone, rather than in `QuerierConfig::default` so the
-    // standalone querier binary keeps today's unbounded-by-default behavior.
-    let mut querier_config = config.querier.clone();
-    let monolith_total_ram_bytes = common::self_monitoring::metrics::total_system_memory_bytes();
-    querier_config.resolve_monolith_memory_limit(monolith_total_ram_bytes);
-    tracing::info!(
-        signaldb.querier.memory_limit_mb = querier_config.memory_limit_mb.map(|mb| mb as i64),
-        signaldb.querier.host_memory_bytes = monolith_total_ram_bytes as i64,
-        "Resolved monolith querier memory limit"
-    );
     let querier_flight_service = QuerierFlightService::new_with_catalog_manager(
         querier_flight_transport.clone(),
         catalog_manager.clone(),
-        querier_config,
+        config.querier.clone(),
     )
     .await
     .context("Failed to create querier flight service")?;

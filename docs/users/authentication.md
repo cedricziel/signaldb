@@ -421,7 +421,7 @@ API get the defaults.
 | `max_api_keys` (active keys only)                          | Admin API key creation                                                | 429 `quota_exceeded`                        |
 | `max_datasets`                                             | Admin API dataset creation                                            | 429 `quota_exceeded`                        |
 | `max_storage_bytes`                                        | Acceptor (OTLP gRPC incl. profiles, OTLP/HTTP profiles, remote_write) | 429 / `RESOURCE_EXHAUSTED` `quota_exceeded` |
-| `[querier].max_concurrent_queries_per_tenant`              | Querier                                                               | query rejected                              |
+| `[querier].max_concurrent_queries_per_tenant` (default 8)  | Querier                                                               | query rejected                              |
 
 Ingest and query rate limits are independent token buckets per tenant.
 `burst_seconds` (default 10, minimum 1) sets how many seconds of budget a
