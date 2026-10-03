@@ -221,6 +221,31 @@ impl TableProviderCache {
     }
 }
 
+tokio::task_local! {
+    /// The tables one query has resolved, keyed like [`TableProviderCache`].
+    /// A query that references a table more than once reads every reference
+    /// from the same snapshot, even when the shared cache expires or is off
+    /// in between (#949).
+    static QUERY_TABLES: std::cell::RefCell<std::collections::HashMap<String, TableRef>>;
+}
+
+/// Run `query` with its own [`QUERY_TABLES`] scope.
+async fn with_pinned_tables<F: std::future::Future>(query: F) -> F::Output {
+    QUERY_TABLES.scope(Default::default(), query).await
+}
+
+fn pinned_table(key: &str) -> Option<TableRef> {
+    QUERY_TABLES
+        .try_with(|tables| tables.borrow().get(key).cloned())
+        .ok()
+        .flatten()
+}
+
+fn pin_table(key: String, table: &TableRef) {
+    // Outside a query scope there is nothing to pin to.
+    let _ = QUERY_TABLES.try_with(|tables| tables.borrow_mut().insert(key, Arc::clone(table)));
+}
+
 /// Queries the Iceberg catalog directly, bypassing `datafusion_iceberg`'s
 /// stale `Mirror` cache so newly-created tables are immediately visible.
 struct LiveIcebergSchema {
@@ -249,7 +274,6 @@ impl SchemaProvider for LiveIcebergSchema {
         name: &str,
     ) -> datafusion::error::Result<Option<Arc<dyn datafusion::datasource::TableProvider>>> {
         use iceberg_rust::catalog::identifier::Identifier;
-        use iceberg_rust::catalog::tabular::Tabular;
         use std::ops::Deref;
 
         let ident = Identifier::try_new(
@@ -258,11 +282,37 @@ impl SchemaProvider for LiveIcebergSchema {
         )
         .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
         let cache_key = ident.to_string();
-        if let Some(table) = self.tables.get(&cache_key) {
+        if let Some(table) = pinned_table(&cache_key) {
             return Ok(Some(table));
         }
+        let table = match self.tables.get(&cache_key) {
+            Some(table) => table,
+            None => match self.load_table(&ident).await? {
+                Some(table) => {
+                    self.tables.insert(cache_key.clone(), Arc::clone(&table));
+                    table
+                }
+                None => return Ok(None),
+            },
+        };
+        pin_table(cache_key, &table);
+        Ok(Some(table))
+    }
 
-        match self.catalog.clone().load_tabular(&ident).await {
+    fn table_exist(&self, _name: &str) -> bool {
+        true
+    }
+}
+
+impl LiveIcebergSchema {
+    /// Load `ident` from the catalog; `None` when it doesn't exist.
+    async fn load_table(
+        &self,
+        ident: &iceberg_rust::catalog::identifier::Identifier,
+    ) -> datafusion::error::Result<Option<TableRef>> {
+        use iceberg_rust::catalog::tabular::Tabular;
+
+        match self.catalog.clone().load_tabular(ident).await {
             Ok(tabular) => {
                 // Captured (when enabled at all) before `tabular` is moved
                 // into `DataFusionTable::new` below, since that's the only
@@ -295,16 +345,11 @@ impl SchemaProvider for LiveIcebergSchema {
                     ),
                     None => table,
                 };
-                self.tables.insert(cache_key, Arc::clone(&table));
                 Ok(Some(table))
             }
             Err(iceberg_rust::error::Error::CatalogNotFound) => Ok(None),
             Err(e) => Err(datafusion::error::DataFusionError::External(Box::new(e))),
         }
-    }
-
-    fn table_exist(&self, _name: &str) -> bool {
-        true
     }
 }
 
@@ -2372,8 +2417,11 @@ impl FlightService for QuerierFlightService {
                             span: tracing::Span::current(),
                             _permit: query_permit,
                         };
-                        let query_future =
-                            self.execute_ticket(ticket_request, caller_tenant.as_ref(), &metadata);
+                        let query_future = with_pinned_tables(self.execute_ticket(
+                            ticket_request,
+                            caller_tenant.as_ref(),
+                            &metadata,
+                        ));
                         // Bound every query's wall-clock time, planning and
                         // streaming alike, so a heavy scan cannot occupy the
                         // querier indefinitely.
@@ -2587,6 +2635,42 @@ mod tests {
         let cache = TableProviderCache::new(Duration::ZERO);
         cache.insert("acme.prod.traces".to_string(), empty_table());
         assert!(cache.get("acme.prod.traces").is_none());
+    }
+
+    /// A query that resolves one table twice gets the same provider, and so
+    /// the same snapshot, even with the shared cache off (#949).
+    #[tokio::test]
+    async fn a_query_resolves_each_table_once() {
+        let manager = common::CatalogManager::new_in_memory().await.unwrap();
+        manager
+            .ensure_table("default", "default", "traces")
+            .await
+            .unwrap();
+        let schema = LiveIcebergSchema {
+            namespace: iceberg_rust::catalog::namespace::Namespace::try_new(&[
+                "default".to_string(),
+                "default".to_string(),
+            ])
+            .unwrap(),
+            catalog: manager.catalog(),
+            warm_index: Default::default(),
+            tables: Arc::new(TableProviderCache::new(Duration::ZERO)),
+        };
+
+        let (first, second) = with_pinned_tables(async {
+            (
+                schema.table("traces").await.unwrap().unwrap(),
+                schema.table("traces").await.unwrap().unwrap(),
+            )
+        })
+        .await;
+        assert!(Arc::ptr_eq(&first, &second));
+
+        let unpinned = schema.table("traces").await.unwrap().unwrap();
+        assert!(
+            !Arc::ptr_eq(&first, &unpinned),
+            "the next query must load the table again"
+        );
     }
 
     #[test]

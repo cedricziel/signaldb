@@ -419,6 +419,9 @@ so newly created tables are visible at once, and instead reuses a resolved
 table for `[querier].table_cache_ttl` (default `1s`, `0s` disables it), shared
 by every tenant catalog. A missing table is never cached, so a new table shows
 up on the next query; a newly committed snapshot shows up within the TTL.
+Independently of the TTL, one query resolves each table once: every reference
+to a table within a `do_get` reads the same loaded snapshot, so a query that
+touches a table twice can't see two different snapshots of it.
 
 ### 5.2 Schema Design ✅ **Implemented**
 
