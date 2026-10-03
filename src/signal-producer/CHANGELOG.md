@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/cedricziel/signaldb/compare/signal-producer-v0.2.2...signal-producer-v0.2.3) (2026-10-03)
+
+
+### Build System
+
+* fix the beta test leg for cargo's unused-dependency lints ([#2047](https://github.com/cedricziel/signaldb/issues/2047)) ([6867d69](https://github.com/cedricziel/signaldb/commit/6867d69dceb26f2e55ccfac31e60ae42aad76418))
+
 ## [0.2.2](https://github.com/cedricziel/signaldb/compare/signal-producer-v0.2.1...signal-producer-v0.2.2) (2026-08-17)
 
 
