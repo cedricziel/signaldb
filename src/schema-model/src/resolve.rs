@@ -601,14 +601,22 @@ impl Registry {
 
         // Alias index; an alias may not shadow a metric name or another alias.
         for (apath, owner, alias) in alias_sites {
-            if out.metrics.contains_key(&alias) {
+            let alias_owner = || {
+                out.metric_aliases
+                    .get(&alias)
+                    .or_else(|| deps.iter().find_map(|d| d.metric_aliases.get(&alias)))
+                    .cloned()
+            };
+            if out.metrics.contains_key(&alias)
+                || deps.iter().any(|d| d.metrics.contains_key(&alias))
+            {
                 errors.push(err(
                     &apath,
                     format!(
                         "metric `{owner}` lists alias `{alias}`, which is another metric's name"
                     ),
                 ));
-            } else if let Some(other) = out.metric_aliases.get(&alias) {
+            } else if let Some(other) = alias_owner() {
                 errors.push(err(
                     &apath,
                     format!("alias `{alias}` is already an alias of metric `{other}`"),

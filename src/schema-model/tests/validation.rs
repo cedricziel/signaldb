@@ -484,3 +484,14 @@ fn alias_equal_to_another_metrics_alias_is_rejected() {
         vec!["groups[1].aliases[0]: alias `legacy.mem` is already an alias of metric `acme.mem`"]
     );
 }
+
+#[test]
+fn alias_equal_to_a_dependency_metric_name_is_rejected() {
+    let errs = errors_of(&ALIASED_METRIC.replace("legacy.mem]", "system.memory.usage]"));
+    assert_eq!(
+        errs,
+        vec![
+            "groups[0].aliases[1]: metric `acme.mem` lists alias `system.memory.usage`, which is another metric's name"
+        ]
+    );
+}
