@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use datafusion::arrow::datatypes::{DataType, Field, Fields, Schema};
 
@@ -20,7 +20,14 @@ impl Default for FlightSchemas {
     }
 }
 
+static SHARED: LazyLock<FlightSchemas> = LazyLock::new(FlightSchemas::new);
+
 impl FlightSchemas {
+    /// Process-wide instance, built once. Use this on per-request paths.
+    pub fn shared() -> &'static FlightSchemas {
+        &SHARED
+    }
+
     /// Create a new instance of FlightSchemas with all defined schemas
     pub fn new() -> Self {
         Self {

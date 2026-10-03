@@ -265,7 +265,7 @@ pub fn otlp_profiles_to_model(request: &ExportProfilesServiceRequest) -> Vec<Pro
 /// Convert internal profiles to an Arrow RecordBatch using the Flight
 /// profile schema.
 pub fn profiles_to_arrow(profiles: &[Profile]) -> RecordBatch {
-    let schemas = FlightSchemas::new();
+    let schemas = FlightSchemas::shared();
     let schema = schemas.profile_schema.clone();
 
     let mut profile_ids: Vec<&[u8]> = Vec::with_capacity(profiles.len());
