@@ -39,9 +39,9 @@ use common::profile::{aggregate_profiles_to_diff_flamegraph, aggregate_profiles_
 use common::query_cursor::{PageReport, PageRequest};
 use common::query_ir::{
     Aggregate, BinopOperand, ComparisonOp, Correlate, CorrelateTarget, Document, Extract,
-    FieldResolver, Heatmap, HistogramMode, JoinKind, Leaf, Literal, Match, Parser, Predicate,
-    Resolved, ResultEnvelope, SourceRegistry, SpanListField, Stage, TimestampLiteral, ValueType,
-    coerce, parse_duration_ns, safe_ident, validate,
+    FieldResolver, Heatmap, HistogramMode, HistogramMoment, JoinKind, Leaf, Literal, Match, Parser,
+    Predicate, Resolved, ResultEnvelope, SourceRegistry, SpanListField, Stage, TimestampLiteral,
+    ValueType, coerce, parse_duration_ns, safe_ident, validate,
 };
 use common::query_ir::{PageUnit, page::BODY_HASH};
 use common::schema::logical::{AttributeLevel, Filterability, LogicalSchema, LogicalType};
@@ -1827,8 +1827,25 @@ impl<'a> HistStage<'a> {
                 lookback: hf.lookback.as_deref(),
                 as_name: &hf.as_name,
             },
+            Stage::HistogramAvg(m) => Self::moment("histogram_avg", HistStat::Avg, m),
+            Stage::HistogramStddev(m) => Self::moment("histogram_stddev", HistStat::Stddev, m),
+            Stage::HistogramStdvar(m) => Self::moment("histogram_stdvar", HistStat::Stdvar, m),
             _ => return None,
         })
+    }
+
+    fn moment(name: &'static str, stat: HistStat, m: &'a HistogramMoment) -> Self {
+        Self {
+            name,
+            stat,
+            by: &m.by,
+            per_series: m.per_series,
+            step: &m.step,
+            mode: m.mode,
+            window: m.window.as_deref(),
+            lookback: m.lookback.as_deref(),
+            as_name: &m.as_name,
+        }
     }
 }
 
@@ -2627,9 +2644,14 @@ impl<'a> Lowering<'a> {
             Stage::Heatmap(heatmap) => self.lower_heatmap(df, heatmap),
             // Lowered by `plan_operand`'s stage loop through `lower_histogram`
             // (it needs the stage's resolved window) — never reached.
-            Stage::HistogramQuantile(_) | Stage::HistogramFraction(_) => Err(
-                QuerierError::InvalidInput(format!("{} requires async lowering", stage.name())),
-            ),
+            Stage::HistogramQuantile(_)
+            | Stage::HistogramFraction(_)
+            | Stage::HistogramAvg(_)
+            | Stage::HistogramStddev(_)
+            | Stage::HistogramStdvar(_) => Err(QuerierError::InvalidInput(format!(
+                "{} requires async lowering",
+                stage.name()
+            ))),
             // Discovery is answered from the registry and maintained
             // statistics in the router; a `describe` document never becomes a
             // plan, so reaching here means one was routed to a querier by
@@ -5112,7 +5134,7 @@ mod page_tests;
 mod tests {
     use super::*;
     use crate::query::metric_ops::fixtures::{
-        HIVE_MERGED_P50, HIVE_SERIES, counter_points, histogram_points, with_series_id,
+        HIVE_MERGED_P50, HIVE_SERIES, counter_points, histogram_points, with_series_id, with_sum,
     };
     use common::schema::type_authority::{ObservedKind, Placement};
     use datafusion::arrow::array::{
@@ -7601,6 +7623,69 @@ mod tests {
             .unwrap()
             .unwrap();
         histogram_value(&df.collect().await.unwrap(), "f", Some("svc"))
+    }
+
+    /// One of `histogram_avg`/`histogram_stddev`/`histogram_stdvar` per
+    /// service at the instant 1000, reading each series' latest point in the
+    /// 5m before it, through the IR.
+    async fn moment_ir(ctx: SessionContext, stage: &str) -> Vec<f64> {
+        let mut stage_doc = serde_json::Map::new();
+        stage_doc.insert(
+            stage.to_string(),
+            serde_json::json!({
+                "by": ["service.name"], "step": "1us", "mode": "instant", "lookback": "5m", "as": "v"
+            }),
+        );
+        let d = doc(serde_json::json!({
+            "irVersion": 16, "from": "metrics", "result": "series",
+            "range": { "from": 1000, "to": 1000 },
+            "pipeline": [stage_doc]
+        }));
+        let (df, _) = IrService::new(ctx)
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .unwrap();
+        histogram_value(&df.collect().await.unwrap(), "v", Some("svc"))
+    }
+
+    /// Scale-0 buckets (1, 2] and (2, 4] hold two observations each, with a
+    /// recorded sum of 6 (mean 1.5): the bucket representatives are sqrt(2)
+    /// and 2 sqrt(2).
+    fn moment_ctx(kind: &str) -> SessionContext {
+        let counts: &[i64] = if kind == "exponential_histogram" {
+            &[2, 2]
+        } else {
+            &[2, 2, 0, 0]
+        };
+        points_ctx(with_sum(
+            histogram_points(kind, &[("x", 10, counts)]),
+            &[6.0],
+        ))
+    }
+
+    #[tokio::test]
+    async fn histogram_avg_is_sum_over_count() {
+        let got = moment_ir(moment_ctx("exponential_histogram"), "histogram_avg").await;
+        assert_close(&got, &[1.5], "exponential avg");
+        let got = moment_ir(moment_ctx("histogram"), "histogram_avg").await;
+        assert_close(&got, &[1.5], "explicit avg");
+    }
+
+    #[tokio::test]
+    async fn histogram_stdvar_and_stddev_use_geometric_bucket_midpoints() {
+        let sq2 = std::f64::consts::SQRT_2;
+        let var = ((sq2 - 1.5).powi(2) + (2.0 * sq2 - 1.5).powi(2)) / 2.0;
+        let got = moment_ir(moment_ctx("exponential_histogram"), "histogram_stdvar").await;
+        assert_close(&got, &[var], "stdvar");
+        let got = moment_ir(moment_ctx("exponential_histogram"), "histogram_stddev").await;
+        assert_close(&got, &[var.sqrt()], "stddev");
+    }
+
+    #[tokio::test]
+    async fn histogram_stddev_of_explicit_buckets_has_no_sample() {
+        let got = moment_ir(moment_ctx("histogram"), "histogram_stddev").await;
+        assert!(got.is_empty(), "{got:?}");
     }
 
     /// `got` equals `want` element-wise, to floating-point noise.

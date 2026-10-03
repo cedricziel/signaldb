@@ -372,6 +372,34 @@ pub struct HistogramFraction {
     pub as_name: String,
 }
 
+/// The operands of `histogram_avg`, `histogram_stddev` and `histogram_stdvar`
+/// (`irVersion` 16), which share `histogram_fraction`'s grouping, evaluation
+/// and window operands. Each reduces the merged histogram of a group to one
+/// number: `sum / count`, or the population standard deviation / variance
+/// estimated from bucket representatives (see `docs/users/querying-ir.md`).
+/// The deviation and variance exist only for exponential histograms; a group
+/// of explicit-bucket histograms yields no value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrHistogramMoment))]
+#[serde(deny_unknown_fields)]
+pub struct HistogramMoment {
+    #[serde(default)]
+    pub by: Vec<String>,
+    /// One result per stored series instead of merging them. Excludes `by`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub per_series: bool,
+    pub step: String,
+    #[serde(default)]
+    pub mode: HistogramMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+    /// As on `histogram_quantile`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lookback: Option<String>,
+    #[serde(rename = "as")]
+    pub as_name: String,
+}
+
 /// What a `describe` stage introspects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrDescribeTarget))]
@@ -1057,6 +1085,9 @@ pub enum Stage {
     Binop(Binop),
     HistogramFraction(HistogramFraction),
     Match(Match),
+    HistogramAvg(HistogramMoment),
+    HistogramStddev(HistogramMoment),
+    HistogramStdvar(HistogramMoment),
 }
 
 impl Stage {
@@ -1087,6 +1118,9 @@ impl Stage {
             Stage::Binop(_) => "binop",
             Stage::HistogramFraction(_) => "histogram_fraction",
             Stage::Match(_) => "match",
+            Stage::HistogramAvg(_) => "histogram_avg",
+            Stage::HistogramStddev(_) => "histogram_stddev",
+            Stage::HistogramStdvar(_) => "histogram_stdvar",
         }
     }
 
@@ -1114,6 +1148,9 @@ impl Stage {
             Stage::Binop(_) => Feature::Binop,
             Stage::HistogramFraction(_) => Feature::HistogramFraction,
             Stage::Match(_) => Feature::Match,
+            Stage::HistogramAvg(_) | Stage::HistogramStddev(_) | Stage::HistogramStdvar(_) => {
+                Feature::HistogramMoments
+            }
             _ => return None,
         })
     }

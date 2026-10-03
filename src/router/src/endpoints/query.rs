@@ -1955,7 +1955,7 @@ pub(super) fn ir_table(
 }
 
 /// The step a Series or Scalar result is evaluated at: the last `sample`,
-/// `aggregate`, `histogram_quantile` or `histogram_fraction` stage's own
+/// `aggregate` or histogram stage's own
 /// `step`, else the document's.
 fn evaluation_step_ns(document: &serde_json::Value) -> Option<i64> {
     use common::query_ir::Stage;
@@ -1965,6 +1965,9 @@ fn evaluation_step_ns(document: &serde_json::Value) -> Option<i64> {
         Stage::Aggregate(a) => a.step.as_deref(),
         Stage::HistogramQuantile(h) => Some(h.step.as_str()),
         Stage::HistogramFraction(h) => Some(h.step.as_str()),
+        Stage::HistogramAvg(h) | Stage::HistogramStddev(h) | Stage::HistogramStdvar(h) => {
+            Some(h.step.as_str())
+        }
         _ => None,
     });
     common::query_ir::parse_duration_ns(stage_step.or(doc.step.as_deref())?)

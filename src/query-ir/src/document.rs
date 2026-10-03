@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::page::{Page, Tail};
-use super::stage::Stage;
+use super::stage::{BinopOperand, Stage};
 
 /// The declared result envelope. Validated against the inferred terminal
 /// relation type.
@@ -167,45 +167,62 @@ impl Document {
         if super::source::is_pseudo_source(&self.from) {
             needed = needed.max(OperatorRegistry::feature_min_version(Feature::PseudoSource));
         }
-        for stage in &self.pipeline {
-            needed = needed.max(match stage {
-                Stage::HistogramQuantile(hq) if hq.window.is_some() => {
-                    OperatorRegistry::feature_min_version(Feature::HistogramWindow)
-                }
-                Stage::HistogramQuantile(hq) if hq.per_series => {
-                    OperatorRegistry::feature_min_version(Feature::HistogramPerSeries)
-                }
-                Stage::Aggregate(a) => a
-                    .aggs
-                    .iter()
-                    .map(|agg| {
-                        let mut agg_needed = OperatorRegistry::agg_min_version(agg.func);
-                        if agg.divisor.is_some() {
-                            agg_needed = agg_needed.max(OperatorRegistry::feature_min_version(
-                                Feature::AggregateDivisor,
-                            ));
-                        }
-                        if agg.across.is_some() {
-                            agg_needed = agg_needed.max(OperatorRegistry::feature_min_version(
-                                Feature::AggregateAcross,
-                            ));
-                        }
-                        if agg.window.is_some() {
-                            agg_needed = agg_needed.max(OperatorRegistry::feature_min_version(
-                                Feature::AggregateWindow,
-                            ));
-                        }
-                        agg_needed
-                    })
-                    .max()
-                    .unwrap_or(1),
-                other => other
-                    .feature()
-                    .map_or(1, OperatorRegistry::feature_min_version),
-            });
-        }
-        needed
+        needed.max(pipeline_min_version(&self.pipeline))
     }
+}
+
+/// The lowest `irVersion` whose features cover every stage of `pipeline`,
+/// including the pipelines nested in `binop` sub-documents, which inherit
+/// the enclosing document's version.
+fn pipeline_min_version(pipeline: &[Stage]) -> i64 {
+    use super::version::{Feature, OperatorRegistry};
+
+    let mut needed = 1;
+    for stage in pipeline {
+        needed = needed.max(match stage {
+            Stage::HistogramQuantile(hq) if hq.window.is_some() => {
+                OperatorRegistry::feature_min_version(Feature::HistogramWindow)
+            }
+            Stage::HistogramQuantile(hq) if hq.per_series => {
+                OperatorRegistry::feature_min_version(Feature::HistogramPerSeries)
+            }
+            Stage::Aggregate(a) => a
+                .aggs
+                .iter()
+                .map(|agg| {
+                    let mut agg_needed = OperatorRegistry::agg_min_version(agg.func);
+                    if agg.divisor.is_some() {
+                        agg_needed = agg_needed.max(OperatorRegistry::feature_min_version(
+                            Feature::AggregateDivisor,
+                        ));
+                    }
+                    if agg.across.is_some() {
+                        agg_needed = agg_needed.max(OperatorRegistry::feature_min_version(
+                            Feature::AggregateAcross,
+                        ));
+                    }
+                    if agg.window.is_some() {
+                        agg_needed = agg_needed.max(OperatorRegistry::feature_min_version(
+                            Feature::AggregateWindow,
+                        ));
+                    }
+                    agg_needed
+                })
+                .max()
+                .unwrap_or(1),
+            Stage::Binop(b) => {
+                let right = match &b.right {
+                    BinopOperand::Document(sub) => pipeline_min_version(&sub.pipeline),
+                    BinopOperand::Number(_) => 1,
+                };
+                OperatorRegistry::feature_min_version(Feature::Binop).max(right)
+            }
+            other => other
+                .feature()
+                .map_or(1, OperatorRegistry::feature_min_version),
+        });
+    }
+    needed
 }
 
 #[cfg(test)]

@@ -26,9 +26,9 @@ use promql_parser::parser::{
 use promql_parser::util::{ExprVisitor, walk_expr};
 use query_ir::{
     Absent, Binop, BinopGroup, BinopOp, BinopOperand, CompareOp, ComparisonOp, Direction, Document,
-    Filter, GroupSide, HistogramFraction, HistogramMode, HistogramQuantile, LabelJoin,
-    LabelReplace, Labels, Leaf, Map, MapFn, NoOperands, OverTime, OverTimeFn, Predicate, Range,
-    Reduce, ReduceFn, ResultEnvelope, Sample, SampleFn, SampleOf, Stage, SubDocument,
+    Filter, GroupSide, HistogramFraction, HistogramMode, HistogramMoment, HistogramQuantile,
+    LabelJoin, LabelReplace, Labels, Leaf, Map, MapFn, NoOperands, OverTime, OverTimeFn, Predicate,
+    Range, Reduce, ReduceFn, ResultEnvelope, Sample, SampleFn, SampleOf, Stage, SubDocument,
     is_pseudo_source,
 };
 
@@ -146,7 +146,7 @@ pub fn promql_to_ir(query: &str, params: &PromqlParams) -> Result<Document, Lowe
     };
     let operand = lowerer.lower(&expr)?;
     let pipe = operand.into_pipe()?;
-    Ok(Document {
+    let mut document = Document {
         ir_version: IR_VERSION,
         from: pipe.from.to_string(),
         range: Range {
@@ -167,7 +167,10 @@ pub fn promql_to_ir(query: &str, params: &PromqlParams) -> Result<Document, Lowe
         constant: pipe.constant,
         page: None,
         tail: None,
-    })
+    };
+    // Newer stages (`histogram_stddev`, `histogram_stdvar`) need a newer version.
+    document.ir_version = document.minimum_ir_version().max(IR_VERSION);
+    Ok(document)
 }
 
 /// The logical field a PromQL label name addresses.
@@ -305,6 +308,8 @@ impl Lowerer<'_> {
         let stage = match name {
             "pi" => return Ok(Operand::Number(std::f64::consts::PI)),
             "histogram_quantile" | "histogram_fraction" => return self.histogram(call),
+            "histogram_stddev" => return self.histogram_moment(call, Stage::HistogramStddev),
+            "histogram_stdvar" => return self.histogram_moment(call, Stage::HistogramStdvar),
             "histogram_count" => {
                 return Ok(Operand::Pipe(
                     self.histogram_unnamed(call, SampleOf::Count)?,
@@ -505,6 +510,27 @@ impl Lowerer<'_> {
             })
         };
         Ok(Operand::Pipe(input.pipe.push(stage)))
+    }
+
+    /// `histogram_stddev`/`histogram_stdvar`: the spread of each group's
+    /// merged exponential histogram.
+    fn histogram_moment(
+        &self,
+        call: &Call,
+        stage: fn(HistogramMoment) -> Stage,
+    ) -> Result<Operand, LowerError> {
+        let input = self.histogram_input(call, 0)?;
+        let mode = input.mode;
+        let moment = HistogramMoment {
+            by: input.by,
+            per_series: input.per_series,
+            step: duration_ns(self.step_ns),
+            mode,
+            window: input.window,
+            lookback: (mode == HistogramMode::Instant).then(|| LOOKBACK.to_string()),
+            as_name: "moment".to_string(),
+        };
+        Ok(Operand::Pipe(input.pipe.push(stage(moment))))
     }
 
     /// A histogram function's operand: a selector, optionally rated

@@ -26,7 +26,8 @@ queries over `logs`, `traces`, profile summaries, and metrics**. The `metrics`
 source holds every metric type — group/filter a metric by name, type and
 attributes, aggregate, bucket by `step` — the same as every other source. The
 `histogram_quantile` and `histogram_fraction` stages cover percentiles and
-fractions over buckets, and the `rate`/`increase`/`irate`/`*_over_time`
+fractions over buckets (`histogram_avg`, `histogram_stddev` and
+`histogram_stdvar` the mean and spread), and the `rate`/`increase`/`irate`/`*_over_time`
 per-series range functions cover counter rates and windowed reductions (see
 [Counter rate](#counter-rate-rateincrease-v6) and
 [More range functions](#more-range-functions-across-and-window-v7)).
@@ -59,7 +60,7 @@ body. The response is the declared result envelope (see
 
 ```jsonc
 {
-  "irVersion": 1, // 1 to 15; declare the lowest version that carries every feature you use (see Pipeline stages)
+  "irVersion": 1, // 1 to 16; declare the lowest version that carries every feature you use (see Pipeline stages)
   "from": "logs", // a registered source: "logs", "traces", "profiles", "metrics", or "exemplars"
   "range": { "from": "now-1h", "to": "now" },
   "result": "series", // v1: rows | series | table; v2 adds heatmap; flamegraph is profiles-only
@@ -106,6 +107,7 @@ single-key object naming the stage:
 | `heatmap` (v2)     | `{x, y, value}`                  | terminal time-by-distribution count aggregate     |
 | `histogram_quantile` (v3) | `{ q, by?, step, mode?, … }` | quantile from histogram buckets (`metrics` only)  |
 | `histogram_fraction` (v10) | `{ lower, upper, … }`    | fraction of observations in `(lower, upper]` (`metrics` only) |
+| `histogram_avg` / `histogram_stddev` / `histogram_stdvar` (v16) | `{ by?, step, mode?, … }` | mean / standard deviation / variance of the observations (`metrics` only) |
 | `describe` (v4)    | `{ target, field?, limit?, … }`  | terminal; field and source discovery (`metadata`) |
 | `correlate` (v8, v11) | `{ to, on?, kind, window?, … }` | join to the parent span, or to another signal     |
 | `sample` (v10)     | `{ fn, window?, lookback?, … }`  | a metric point stream → a Series (`metrics` only) |
@@ -129,7 +131,7 @@ joins on matching timestamps. Samples after the last instant are not
 counted. On every other source, `step` buckets are epoch-aligned
 `[t, t + step)` and labelled by their start `t`.
 
-What each `irVersion` unlocks (the server supports 1 to 15; the source of
+What each `irVersion` unlocks (the server supports 1 to 16; the source of
 truth is `src/query-ir/src/version.rs`):
 
 | Version | Adds |
@@ -149,6 +151,7 @@ truth is `src/query-ir/src/version.rs`):
 | 13 | the `flamegraph` envelope's `baseline` (a differential flamegraph) |
 | 14 | document-level `page` ([Pagination](#pagination-ir-v14)) |
 | 15 | document-level `tail` ([Live tail](#live-tail-ir-v15)) |
+| 16 | `histogram_avg`, `histogram_stddev`, `histogram_stdvar` ([details](#histogram_avg-histogram_stddev-and-histogram_stdvar-ir-v16)) |
 
 Every earlier document keeps its exact meaning; a document using a feature
 while declaring a lower version is rejected naming the version it needs, never
@@ -1384,8 +1387,9 @@ value at every instant.
 
 ### Series algebra
 
-These stages take a Series from `sample`, `histogram_quantile` or
-`histogram_fraction` (labelled by its `by` labels, or with `per_series` by
+These stages take a Series from `sample`, `histogram_quantile`,
+`histogram_fraction` or the `histogram_avg`/`histogram_stddev`/`histogram_stdvar`
+stages (labelled by its `by` labels, or with `per_series` by
 each series' labels, at its `step`) or `vector` and return a Series, with
 PromQL's semantics: they are what a PromQL expression lowers to. Over a
 Series from an `aggregate` with `step` they are not supported yet (501).
@@ -1689,6 +1693,43 @@ The bounds must be finite, so PromQL's `±Inf` idioms need rewriting:
   PromQL, which takes `+Inf` as `upper`. A large finite `upper` does not stand
   in for `+Inf` on an explicit-bucket histogram: the open `+Inf` bucket's
   observations lie above every finite bound, so `(X, 1e300]` leaves them out.
+
+### `histogram_avg`, `histogram_stddev` and `histogram_stdvar` (IR v16)
+
+Three more siblings of `histogram_quantile`, reducing each group's merged
+histogram to the mean, the standard deviation or the variance of its
+observations. They take no extra operand beyond `histogram_quantile`'s `by`,
+`per_series`, `step`, `mode`, `window`, `lookback` and `as`, read the same
+rows and evaluate at the same instants.
+
+```json
+{ "histogram_stddev": { "by": ["service.name"], "step": "1m", "window": "5m", "as": "spread" } }
+```
+
+| Stage | Value | Layouts |
+| ----- | ----- | ------- |
+| `histogram_avg` | `sum / count` of the merged histogram, NaN when `count` is 0 | explicit and exponential |
+| `histogram_stdvar` | population variance, estimated from buckets | exponential only |
+| `histogram_stddev` | square root of `histogram_stdvar` | exponential only |
+
+Variance follows Prometheus' native-histogram `histogram_stdvar`: the mean is
+the recorded `sum / count`, and every bucket's observations are taken to sit
+at one representative value. That value is the geometric mean of the bucket's
+bounds, `sqrt(lower * upper)`, negated in a negative bucket; the zero bucket
+(and any bucket inside the zero threshold) counts as 0. The result is
+`sum(count * (value - mean)^2) / total_count`. It is an estimate: the
+recorded sum is exact but the spread within a bucket is not, so the variance
+can differ from the true one by up to the bucket width. Exponential histograms
+with a different scale or zero threshold merge by the OTel rule before the
+estimate.
+
+Explicit-bucket histograms have no `histogram_stddev`/`histogram_stdvar`
+value, as Prometheus defines both only for native histograms: those groups
+yield no sample. A histogram with no recorded `sum` yields none either. Summary points are
+rejected as for `histogram_quantile`. PromQL's `histogram_stddev` and
+`histogram_stdvar` lower to these stages (the document then declares
+`irVersion` 16); `histogram_avg` lowers to `sum / count` over the `sample`
+stage's `metric.sum` and `metric.count`.
 
 ### Heatmap envelope (IR v2)
 

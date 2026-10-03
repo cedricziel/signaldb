@@ -55,9 +55,10 @@ pub use stage::{
     Absent, Agg, AggFn, Aggregate, Binop, BinopGroup, BinopOp, BinopOperand, CompareOp, Correlate,
     CorrelateKey, CorrelateTarget, CorrelateWindow, DerivedField, Describe, DescribeTarget,
     Direction, Extract, Filter, GroupSide, Heatmap, HeatmapAxisX, HeatmapAxisY, HeatmapValue,
-    HistogramFraction, HistogramMode, HistogramQuantile, JoinKind, LabelJoin, LabelReplace, Labels,
-    Map, MapFn, Match, MatchOp, MatchRelation, NoOperands, Order, OverTime, OverTimeFn, Parser,
-    Rank, Reduce, ReduceFn, Sample, SampleFn, SampleOf, SpanSets, Stage, SubDocument,
+    HistogramFraction, HistogramMode, HistogramMoment, HistogramQuantile, JoinKind, LabelJoin,
+    LabelReplace, Labels, Map, MapFn, Match, MatchOp, MatchRelation, NoOperands, Order, OverTime,
+    OverTimeFn, Parser, Rank, Reduce, ReduceFn, Sample, SampleFn, SampleOf, SpanSets, Stage,
+    SubDocument,
 };
 pub use validate::{IrError, Validated, check_structure, validate, validate_describe};
 pub use value::{

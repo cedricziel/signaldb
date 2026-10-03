@@ -37,8 +37,8 @@ use super::source::{SourceDef, SourceRegistry, is_pseudo_source};
 use super::stage::{
     Absent, Agg, AggFn, Aggregate, Binop, BinopOperand, Correlate, CorrelateTarget, Describe,
     DescribeTarget, Extract, Filter, GroupSide, Heatmap, HistogramFraction, HistogramMode,
-    HistogramQuantile, JoinKind, Labels, Map, Match, Order, OverTime, OverTimeFn, Rank, Reduce,
-    ReduceFn, Sample, SampleFn, Stage, SubDocument, is_expression_string,
+    HistogramMoment, HistogramQuantile, JoinKind, Labels, Map, Match, Order, OverTime, OverTimeFn,
+    Rank, Reduce, ReduceFn, Sample, SampleFn, Stage, SubDocument, is_expression_string,
 };
 use super::value::{Literal, TimestampLiteral, ValueType, coerce, parse_duration_ns};
 use super::version::{Feature, OperatorRegistry};
@@ -373,6 +373,9 @@ impl InferCtx<'_> {
             Stage::OverTime(over) => self.apply_over_time(over),
             Stage::Binop(binop) => self.apply_binop(binop),
             Stage::HistogramFraction(hf) => self.apply_histogram_fraction(hf),
+            Stage::HistogramAvg(m) | Stage::HistogramStddev(m) | Stage::HistogramStdvar(m) => {
+                self.apply_histogram_moment(stage.name(), m)
+            }
             Stage::Match(m) => self.apply_match(m),
             Stage::Scalar(_) => {
                 let step_ns = self.require_series("scalar")?.step_ns;
@@ -1318,6 +1321,23 @@ impl InferCtx<'_> {
                 lookback: hf.lookback.as_ref(),
                 mode: hf.mode,
                 as_name: &hf.as_name,
+            },
+        )
+    }
+
+    /// `histogram_avg`, `histogram_stddev`, `histogram_stdvar` (`irVersion` 16).
+    fn apply_histogram_moment(&mut self, name: &str, m: &HistogramMoment) -> Result<(), IrError> {
+        self.require_histogram_input(name)?;
+        self.apply_histogram(
+            name,
+            HistogramShape {
+                by: &m.by,
+                per_series: m.per_series,
+                step: &m.step,
+                window: m.window.as_ref(),
+                lookback: m.lookback.as_ref(),
+                mode: m.mode,
+                as_name: &m.as_name,
             },
         )
     }
@@ -3701,13 +3721,13 @@ mod tests {
 
     #[test]
     fn an_unsupported_version_still_reports_the_range() {
-        let err = validate_json(describe_doc(16, json!({ "target": "fields" }))).unwrap_err();
+        let err = validate_json(describe_doc(17, json!({ "target": "fields" }))).unwrap_err();
         assert!(
             matches!(
                 err,
                 IrError::UnsupportedVersion {
-                    found: 16,
-                    max: 15,
+                    found: 17,
+                    max: 16,
                     ..
                 }
             ),

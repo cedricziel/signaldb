@@ -295,6 +295,46 @@ pub fn fraction(h: &HistPoint, lo: f64, hi: f64) -> f64 {
     if lo >= hi && !f.is_nan() { 0.0 } else { f }
 }
 
+/// `sum / count`, NaN for an empty histogram; `None` when no sum was recorded.
+pub fn avg(h: &HistPoint) -> Option<f64> {
+    Some(h.sum()? / h.count() as f64)
+}
+
+/// Population variance of an exponential histogram, as Prometheus'
+/// `histogram_stdvar` estimates it: the mean is the recorded `sum / count`, and
+/// each bucket's observations sit at one representative value, the geometric
+/// mean of its bounds (negated for a negative bucket, 0 for the zero bucket).
+/// NaN when empty; `None` without a recorded sum or for explicit buckets, which
+/// are not native histograms.
+pub fn variance(h: &HistPoint) -> Option<f64> {
+    let HistPoint::Exp(e, Some(sum)) = h else {
+        return None;
+    };
+    let e = e.normalised();
+    let total = e.count() as f64;
+    if total == 0.0 {
+        return Some(f64::NAN);
+    }
+    let mean = sum / total;
+    let spread = |value: f64, count: u64| {
+        let d = value - mean;
+        d * d * count as f64
+    };
+    let mut acc = spread(0.0, e.zero_count);
+    for (b, sign) in [(&e.positive, 1.0), (&e.negative, -1.0)] {
+        for (k, &c) in b.counts.iter().enumerate() {
+            let (l, u) = bounds_at(e.scale, i64::from(b.offset) + k as i64);
+            acc += spread(sign * (l * u).sqrt(), c);
+        }
+    }
+    Some(acc / total)
+}
+
+/// Square root of [`variance`].
+pub fn stddev(h: &HistPoint) -> Option<f64> {
+    variance(h).map(f64::sqrt)
+}
+
 /// Observations `<= x`: exponential interpolation inside a boundary bucket, linear across zero.
 /// `min`/`max` play no part, as in Prometheus (a rate-mode increase has none).
 fn exp_cumulative(e: &ExpHistogram, x: f64) -> f64 {
@@ -334,6 +374,68 @@ fn exp_cumulative(e: &ExpHistogram, x: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn exp_full(zero: u64, pos: (i32, &[u64]), neg: (i32, &[u64]), sum: Option<f64>) -> HistPoint {
+        let h = ExpHistogram {
+            scale: 0,
+            zero_count: zero,
+            positive: Buckets {
+                offset: pos.0,
+                counts: pos.1.to_vec(),
+            },
+            negative: Buckets {
+                offset: neg.0,
+                counts: neg.1.to_vec(),
+            },
+            ..Default::default()
+        };
+        HistPoint::Exp(h, sum)
+    }
+
+    const SQ2: f64 = std::f64::consts::SQRT_2;
+
+    #[test]
+    fn avg_is_sum_over_count_for_both_layouts() {
+        assert_eq!(avg(&ex(&[2, 2], 6.0)), Some(1.5));
+        assert_eq!(avg(&eb(&[1, 1, 0, 0], 3.0)), Some(1.5));
+        assert!(avg(&ex(&[0, 0], 0.0)).unwrap().is_nan());
+        assert_eq!(avg(&exp_full(0, (0, &[2]), (0, &[]), None)), None);
+    }
+
+    #[test]
+    fn variance_uses_geometric_bucket_midpoints() {
+        // (1, 2] and (2, 4] hold two observations each: representatives are
+        // sqrt(2) and 2 sqrt(2); the reported sum 6 gives mean 1.5.
+        let want = ((SQ2 - 1.5).powi(2) + (2.0 * SQ2 - 1.5).powi(2)) / 2.0;
+        let h = ex(&[2, 2], 6.0);
+        assert!((variance(&h).unwrap() - want).abs() < 1e-12);
+        assert!((stddev(&h).unwrap() - want.sqrt()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn variance_counts_the_zero_bucket_as_zero_and_negatives_as_negative() {
+        // Two zeros, one in (2, 4] (-> 2 sqrt 2), one in [-2, -1) (-> -sqrt 2); sum 0.
+        let h = exp_full(2, (1, &[1]), (0, &[1]), Some(0.0));
+        let want = (8.0 + 2.0) / 4.0;
+        assert!((variance(&h).unwrap() - want).abs() < 1e-12);
+        assert!((stddev(&h).unwrap() - want.sqrt()).abs() < 1e-12);
+        // A mean of 1 shifts every delta: (0-1)^2*2 + (2 sqrt 2 - 1)^2 + (-sqrt 2 - 1)^2.
+        let h = exp_full(2, (1, &[1]), (0, &[1]), Some(4.0));
+        let want = (2.0 + (2.0 * SQ2 - 1.0).powi(2) + (SQ2 + 1.0).powi(2)) / 4.0;
+        assert!((variance(&h).unwrap() - want).abs() < 1e-12);
+    }
+
+    #[test]
+    fn variance_edge_cases() {
+        assert!(variance(&ex(&[0, 0], 0.0)).unwrap().is_nan());
+        assert_eq!(variance(&exp_full(0, (0, &[2]), (0, &[]), None)), None);
+        // Explicit-bucket histograms carry no native-histogram sample.
+        assert_eq!(variance(&eb(&[1, 1, 0, 0], 3.0)), None);
+        assert_eq!(stddev(&eb(&[1, 1, 0, 0], 3.0)), None);
+        // One bucket's worth of identical observations at its representative: no spread.
+        let h = ex(&[0, 3], 3.0 * 2.0 * SQ2);
+        assert!(variance(&h).unwrap().abs() < 1e-12);
+    }
 
     const S: i64 = 1_000_000_000;
 

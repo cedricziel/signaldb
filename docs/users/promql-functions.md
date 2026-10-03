@@ -79,8 +79,11 @@ SignalDB stores metric names in their OTel dotted form (`signaldb.wal.entries_pe
 | `histogram_quantile(phi, sum by (…) (rate(metric[5m])))` | ✅ (each series differenced against itself, then merged per `by` group; `sum(metric)` merges the latest points)                                                                                                                                                     |
 | `histogram_count`, `histogram_sum`                       | ✅ (sum the stored `count`/`sum` columns, including summary and exponential_histogram rows)                                                                                                                                                                         |
 | `histogram_fraction(lower, upper, metric)`               | ✅ (estimated fraction of observations in `(lower, upper]`, interpolated within the buckets the bounds fall in; `-Inf`/`+Inf` bounds take in the open-ended buckets; the same operand shapes as `histogram_quantile`)                                                |
+| `histogram_avg`                                          | ✅ (`sum / count` of each series, or of the merged group; explicit or exponential histograms)                                                                                                                                                                        |
+| `histogram_stddev`, `histogram_stdvar`                   | ✅ (exponential histograms only: population deviation/variance estimated from the geometric bucket midpoints, as Prometheus does; explicit histograms yield no sample; same operand shapes as `histogram_quantile`)                                                  |
 
-`histogram_quantile` and `histogram_fraction` ignore gauge and sum rows, but a
+`histogram_quantile`, `histogram_fraction`, `histogram_stddev` and
+`histogram_stdvar` ignore gauge and sum rows, but a
 summary point in the queried range is a `400` (`<function> is not supported on
 summary metrics`), where Prometheus would drop the series with an annotation.
 It fails the whole query, so narrow the selector with `__name__` when a
@@ -127,7 +130,8 @@ These parse as PromQL but have no Query IR equivalent yet. Both
 - a subquery under anything but an `_over_time` function, and `time()`,
   `vector()` or scalar arithmetic inside a subquery at its own resolution
 - `absent_over_time()` over a subquery
-- `histogram_quantile`/`histogram_fraction` over `sum without (…)`, over a
+- `histogram_quantile`/`histogram_fraction`/`histogram_stddev`/`histogram_stdvar`
+  over `sum without (…)`, over a
   rated subquery, with `offset`/`@`, or per series over a selector matching
   several metric names; `histogram_fraction` with `lower > upper`
 - `topk`/`bottomk`/`quantile` with a non-literal parameter, and a quantile

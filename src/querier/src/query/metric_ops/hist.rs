@@ -14,7 +14,9 @@ use datafusion::logical_expr::{
 };
 use datafusion::scalar::ScalarValue;
 
-use super::hist_math::{HistPt, Mode, fraction, merge_across, quantile, series_value};
+use super::hist_math::{
+    HistPt, Mode, avg, fraction, merge_across, quantile, series_value, stddev, variance,
+};
 use super::hist_state::{ARGS, Row, column_types, decode, encode, list_of, parse_rows_for};
 use super::instants::{as_ns, invalid};
 use crate::query::error::QuerierError;
@@ -26,6 +28,9 @@ pub enum HistStat {
     Fraction(f64, f64),
     Count,
     Sum,
+    Avg,
+    Stddev,
+    Stdvar,
 }
 
 impl HistStat {
@@ -35,6 +40,9 @@ impl HistStat {
             HistStat::Fraction(a, b) => (1, a.to_bits(), b.to_bits()),
             HistStat::Count => (2, 0, 0),
             HistStat::Sum => (3, 0, 0),
+            HistStat::Avg => (4, 0, 0),
+            HistStat::Stddev => (5, 0, 0),
+            HistStat::Stdvar => (6, 0, 0),
         }
     }
 
@@ -45,6 +53,9 @@ impl HistStat {
             HistStat::Fraction(lo, hi) => format!("fraction_{lo}_{hi}"),
             HistStat::Count => "count".into(),
             HistStat::Sum => "sum".into(),
+            HistStat::Avg => "avg".into(),
+            HistStat::Stddev => "stddev".into(),
+            HistStat::Stdvar => "stdvar".into(),
         }
     }
 
@@ -55,6 +66,9 @@ impl HistStat {
             HistStat::Fraction(..) => "histogram_fraction",
             HistStat::Count => "histogram_count",
             HistStat::Sum => "histogram_sum",
+            HistStat::Avg => "histogram_avg",
+            HistStat::Stddev => "histogram_stddev",
+            HistStat::Stdvar => "histogram_stdvar",
         }
     }
 }
@@ -206,6 +220,9 @@ impl Accumulator for HistAcc {
             HistStat::Fraction(lo, hi) => Some(fraction(&h, lo, hi)),
             HistStat::Count => Some(h.count() as f64),
             HistStat::Sum => h.sum(),
+            HistStat::Avg => avg(&h),
+            HistStat::Stddev => stddev(&h),
+            HistStat::Stdvar => variance(&h),
         }))
     }
 

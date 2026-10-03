@@ -522,6 +522,9 @@ mod tests {
             "binop",
             "histogram_fraction",
             "match",
+            "histogram_avg",
+            "histogram_stddev",
+            "histogram_stdvar",
         ];
         expected.sort_unstable();
         assert_eq!(tags, expected);

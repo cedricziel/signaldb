@@ -39,6 +39,9 @@ pub(crate) fn output_step(
         Stage::OverTime(over) => own(&over.step),
         Stage::HistogramQuantile(hq) => parse_duration_ns(&hq.step).filter(|ns| *ns > 0),
         Stage::HistogramFraction(hf) => parse_duration_ns(&hf.step).filter(|ns| *ns > 0),
+        Stage::HistogramAvg(m) | Stage::HistogramStddev(m) | Stage::HistogramStdvar(m) => {
+            parse_duration_ns(&m.step).filter(|ns| *ns > 0)
+        }
         _ => input,
     }
 }
