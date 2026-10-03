@@ -51,6 +51,11 @@ profiles write-ahead log; a rejected export is safe to retry. Accepted
 requests are logged at `DEBUG` (`Handling OTLP profiles request`), like the
 other signals' per-request lines, so an idle-looking `INFO` log is normal.
 
+The acceptor's [attribute limits](sending-otlp.md#attribute-limits) also
+apply: a profile or sample keeps at most `max_attributes` attribute
+indices. Key and value sizes aren't checked for profiles, since their
+attributes are interned in the dictionary.
+
 Per-tenant ingest rate limits and storage quotas cover profiles like
 every other signal: gRPC exports over the limit fail with
 `RESOURCE_EXHAUSTED` (retryable — back off), HTTP exports with `429 Too

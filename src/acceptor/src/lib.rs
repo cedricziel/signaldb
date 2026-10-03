@@ -15,6 +15,7 @@
 //! this module builds their HTTP/2 server and the routers for the HTTP
 //! surface.
 
+pub mod attribute_limits;
 pub mod cli;
 pub mod handler;
 pub mod middleware;
@@ -69,6 +70,8 @@ pub struct AcceptorResources {
     pub processor_registry: Arc<common::processors::ProcessorRegistry>,
     /// Resend-dedup cache shared by every ingest handler on both servers
     pub retry_dedup: Arc<handler::RetryDedup>,
+    /// Per-record attribute guardrails from `[acceptor.attribute_limits]`
+    pub attribute_limits: Arc<common::config::AttributeLimits>,
     /// Read-only cache of each (tenant, dataset, signal)'s canonical
     /// attribute types, established by the writer. Used only to warn
     /// senders of off-type values via `partial_success`; the acceptor
@@ -86,6 +89,7 @@ pub async fn init_acceptor_resources(
     // configuration to open the Iceberg catalog.
     let full_config = config.clone();
     let processors_config = full_config.processors.clone();
+    let attribute_limits = Arc::new(full_config.acceptor.attribute_limits.clone());
     let retry_dedup = Arc::new(handler::RetryDedup::new(
         full_config.acceptor.retry_dedup_window,
     ));
@@ -226,6 +230,7 @@ pub async fn init_acceptor_resources(
         storage_usage,
         processor_registry,
         retry_dedup,
+        attribute_limits,
         type_snapshots,
     })
 }
@@ -258,6 +263,7 @@ pub async fn serve_otlp_grpc(
         storage_usage,
         processor_registry,
         retry_dedup,
+        attribute_limits,
         type_snapshots,
     } = config.resources;
 
@@ -271,7 +277,8 @@ pub async fn serve_otlp_grpc(
             wal_manager.clone(),
             processor_registry.clone(),
         )
-        .with_retry_dedup(retry_dedup.clone()),
+        .with_retry_dedup(retry_dedup.clone())
+        .with_attribute_limits(attribute_limits.clone()),
     );
     let log_service = LogAcceptorService::new(log_handler.clone())
         .with_rate_limiter(rate_limiter.clone())
@@ -291,6 +298,7 @@ pub async fn serve_otlp_grpc(
         processor_registry.clone(),
     )
     .with_retry_dedup(retry_dedup.clone())
+    .with_attribute_limits(attribute_limits.clone())
     .with_evaluation_logs(log_handler.clone());
     let trace_service = TraceAcceptorService::new(trace_handler)
         .with_rate_limiter(rate_limiter.clone())
@@ -306,7 +314,8 @@ pub async fn serve_otlp_grpc(
         wal_manager.clone(),
         processor_registry.clone(),
     )
-    .with_retry_dedup(retry_dedup.clone());
+    .with_retry_dedup(retry_dedup.clone())
+    .with_attribute_limits(attribute_limits.clone());
     let metrics_service = MetricsAcceptorService::new(metrics_handler)
         .with_rate_limiter(rate_limiter.clone())
         .with_storage_quota(storage_usage.clone())
@@ -317,7 +326,8 @@ pub async fn serve_otlp_grpc(
         .max_decoding_message_size(max_decoding_message_size);
 
     let profile_handler = ProfileHandler::new(flight_transport.clone(), wal_manager.clone())
-        .with_retry_dedup(retry_dedup.clone());
+        .with_retry_dedup(retry_dedup.clone())
+        .with_attribute_limits(attribute_limits.clone());
     let profile_service = ProfileAcceptorService::new(profile_handler)
         .with_rate_limiter(rate_limiter.clone())
         .with_storage_quota(storage_usage.clone())
@@ -978,6 +988,8 @@ pub struct HttpAcceptorConfig {
     pub processor_registry: Arc<common::processors::ProcessorRegistry>,
     /// Resend-dedup cache, shared with the gRPC server's handlers
     pub retry_dedup: Arc<handler::RetryDedup>,
+    /// Per-record attribute guardrails, shared with the gRPC server's handlers
+    pub attribute_limits: Arc<common::config::AttributeLimits>,
     /// Maximum decoded request body size, in bytes, for every OTLP/HTTP and
     /// Prometheus remote_write route. From `[acceptor].max_request_body_bytes`,
     /// shared with the gRPC side's `max_decoding_message_size`.
@@ -1029,7 +1041,8 @@ pub async fn serve_otlp_http(
     // Create profiles handler with shared resources
     let profile_handler = Arc::new(
         ProfileHandler::new(config.flight_transport.clone(), config.wal_manager.clone())
-            .with_retry_dedup(config.retry_dedup.clone()),
+            .with_retry_dedup(config.retry_dedup.clone())
+            .with_attribute_limits(config.attribute_limits.clone()),
     );
 
     // Create log handler with shared resources (same WAL + Flight path as gRPC)
@@ -1039,7 +1052,8 @@ pub async fn serve_otlp_http(
             config.wal_manager.clone(),
             config.processor_registry.clone(),
         )
-        .with_retry_dedup(config.retry_dedup.clone()),
+        .with_retry_dedup(config.retry_dedup.clone())
+        .with_attribute_limits(config.attribute_limits.clone()),
     );
 
     // Create trace handler with shared resources (same WAL + Flight path as
@@ -1053,6 +1067,7 @@ pub async fn serve_otlp_http(
             config.processor_registry.clone(),
         )
         .with_retry_dedup(config.retry_dedup.clone())
+        .with_attribute_limits(config.attribute_limits.clone())
         .with_evaluation_logs(log_handler.clone()),
     );
 
@@ -1063,7 +1078,8 @@ pub async fn serve_otlp_http(
             config.wal_manager.clone(),
             config.processor_registry.clone(),
         )
-        .with_retry_dedup(config.retry_dedup.clone()),
+        .with_retry_dedup(config.retry_dedup.clone())
+        .with_attribute_limits(config.attribute_limits.clone()),
     );
 
     // Build combined router with health, traces, logs, metrics, Prometheus,

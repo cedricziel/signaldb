@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use common::auth::TenantContext;
+use common::config::AttributeLimits;
 use common::flight::conversion::otlp_logs_to_arrow;
 use common::flight::transport::InMemoryFlightTransport;
 use common::processors::ProcessorRegistry;
@@ -20,6 +21,7 @@ use super::forward::{spawn_forward_and_mark, spawn_retire_resend};
 use super::ingest_error::IngestError;
 use super::processors_apply::apply_log_processors;
 use super::retry_dedup::{RetryDedup, stamp_batch_fingerprint};
+use crate::attribute_limits::{cap_logs, record_drops};
 
 pub struct LogHandler {
     /// Flight transport for forwarding telemetry
@@ -28,6 +30,8 @@ pub struct LogHandler {
     wal_manager: Arc<WalManager>,
     /// Recognizes a client's resend of a batch already made durable
     retry_dedup: Arc<RetryDedup>,
+    /// Per-record attribute guardrails (`[acceptor.attribute_limits]`)
+    attribute_limits: Arc<AttributeLimits>,
     /// Tenant OTTL processors (change: tenant-ottl-processors)
     processor_registry: Arc<ProcessorRegistry>,
 }
@@ -73,6 +77,7 @@ impl LogHandler {
             flight_transport,
             wal_manager,
             retry_dedup: Arc::new(RetryDedup::default()),
+            attribute_limits: Arc::new(AttributeLimits::default()),
             processor_registry,
         }
     }
@@ -82,6 +87,13 @@ impl LogHandler {
     /// the default window.
     pub fn with_retry_dedup(mut self, retry_dedup: Arc<RetryDedup>) -> Self {
         self.retry_dedup = retry_dedup;
+        self
+    }
+
+    /// Apply the acceptor's `[acceptor.attribute_limits]`; the default is
+    /// [`AttributeLimits::default`].
+    pub fn with_attribute_limits(mut self, attribute_limits: Arc<AttributeLimits>) -> Self {
+        self.attribute_limits = attribute_limits;
         self
     }
 
@@ -109,6 +121,9 @@ impl LogHandler {
         );
 
         apply_log_processors(&self.processor_registry, tenant_context, &mut request).await?;
+
+        let dropped = cap_logs(&mut request, &self.attribute_limits);
+        record_drops(&tenant_context.tenant_id, "logs", &dropped);
 
         // Get tenant/dataset-specific WAL
         let wal = self
@@ -297,5 +312,42 @@ mod wal_bytes_tests {
             only_wal_entry_bytes(&wal_manager, &tenant_context, "logs").await,
             expected_bytes
         );
+    }
+
+    #[tokio::test]
+    async fn log_records_over_the_attribute_limit_are_capped_before_the_wal() {
+        use crate::handler::test_support::{column_as, string_attrs};
+        use common::wal::bytes_to_record_batch;
+        use datafusion::arrow::array::{StringArray, UInt32Array};
+
+        let temp_dir = TempDir::new().unwrap();
+        let wal_manager = Arc::new(test_wal_manager(temp_dir.path()));
+        let (transport, processor_registry) = transport_without_writer().await;
+        let handler = LogHandler::new(transport, wal_manager.clone(), processor_registry)
+            .with_attribute_limits(Arc::new(AttributeLimits {
+                max_attributes: 2,
+                ..AttributeLimits::default()
+            }));
+        let tenant_context = test_tenant_context();
+        let mut request = sample_log_request();
+        let record = &mut request.resource_logs[0].scope_logs[0].log_records[0];
+        record.attributes = string_attrs(5);
+        record.dropped_attributes_count = 1;
+
+        handler
+            .handle_grpc_otlp_logs(&tenant_context, request)
+            .await
+            .unwrap();
+
+        let batch = bytes_to_record_batch(
+            &only_wal_entry_bytes(&wal_manager, &tenant_context, "logs").await,
+        )
+        .unwrap();
+        let attributes: serde_json::Value =
+            serde_json::from_str(column_as::<StringArray>(&batch, "attributes_json").value(0))
+                .unwrap();
+        assert_eq!(attributes.as_object().unwrap().len(), 2);
+        let dropped = column_as::<UInt32Array>(&batch, "dropped_attributes_count").value(0);
+        assert_eq!(dropped, 1 + 3);
     }
 }

@@ -78,6 +78,13 @@ async fn setup_traces_test() -> (axum::Router, Arc<WalManager>, TempDir) {
 async fn setup_traces_test_with_limits(
     limits: common::config::TenantLimits,
 ) -> (axum::Router, Arc<WalManager>, TempDir) {
+    setup_traces_test_with(limits, common::config::AttributeLimits::default()).await
+}
+
+async fn setup_traces_test_with(
+    limits: common::config::TenantLimits,
+    attribute_limits: common::config::AttributeLimits,
+) -> (axum::Router, Arc<WalManager>, TempDir) {
     let temp_dir = TempDir::new().unwrap();
 
     let catalog_db_path = temp_dir.path().join("catalog.db");
@@ -164,6 +171,7 @@ async fn setup_traces_test_with_limits(
     ));
     let trace_handler = Arc::new(
         TraceHandler::new(flight_transport, wal_manager.clone(), processor_registry)
+            .with_attribute_limits(Arc::new(attribute_limits))
             .with_evaluation_logs(log_handler),
     );
 
@@ -706,4 +714,69 @@ async fn evaluation_span_event_is_also_written_as_a_log_record() {
         .downcast_ref::<StringArray>()
         .unwrap();
     assert_eq!(event_names.value(0), common::evals::EVALUATION_RESULT_EVENT);
+}
+
+#[tokio::test]
+async fn otlp_http_traces_over_the_attribute_limit_are_capped_before_the_wal() {
+    use datafusion::arrow::array::{Int64Array, StringArray};
+
+    let (app, wal_manager, _temp_dir) = setup_traces_test_with(
+        common::config::TenantLimits::default(),
+        common::config::AttributeLimits {
+            max_attributes: 2,
+            ..Default::default()
+        },
+    )
+    .await;
+
+    let mut trace = sample_trace_request();
+    let span = &mut trace.resource_spans[0].scope_spans[0].spans[0];
+    span.attributes = (0..5)
+        .map(|i| KeyValue {
+            key: format!("k{i}"),
+            value: Some(AnyValue {
+                value: Some(any_value::Value::StringValue("v".to_string())),
+            }),
+            ..Default::default()
+        })
+        .collect();
+    span.dropped_attributes_count = 1;
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/traces")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header("Authorization", format!("Bearer {TEST_API_KEY}"))
+        .header("X-Tenant-ID", TEST_TENANT)
+        .body(Body::from(trace.encode_to_vec()))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let wal = wal_manager
+        .get_wal(TEST_TENANT, TEST_DATASET, "traces")
+        .await
+        .unwrap();
+    let entries = wal.get_entries().await.unwrap();
+    assert_eq!(entries.len(), 1);
+    let batch = bytes_to_record_batch(&wal.read_entry_data(&entries[0]).await.unwrap()).unwrap();
+    let attributes: serde_json::Value = serde_json::from_str(
+        batch
+            .column_by_name("attributes_json")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0),
+    )
+    .unwrap();
+    assert_eq!(attributes.as_object().unwrap().len(), 2);
+    let dropped = batch
+        .column_by_name("dropped_attributes_count")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap()
+        .value(0);
+    assert_eq!(dropped, 1 + 3);
 }
