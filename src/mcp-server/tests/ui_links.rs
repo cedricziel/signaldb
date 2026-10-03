@@ -336,6 +336,29 @@ async fn search_trace_groups_returns_groups_and_a_ui_link_when_ui_base_url_is_co
 }
 
 #[tokio::test]
+async fn list_services_merges_one_aggregate_per_signal() {
+    let mut session = McpSession::open(app_with_ui_base_url(None).await).await;
+
+    let reply = session
+        .call_tool(
+            "list_services",
+            serde_json::json!({ "tenant": "acme", "dataset": "production" }),
+        )
+        .await;
+    let result = tool_result_json(&reply);
+    assert_eq!(result["exact"], true);
+    // The mock answers every table query with the same trace-groups row
+    // (`rows` lands on its fourth cell), so the one service shows up on all
+    // four signals.
+    let service = &result["services"][0];
+    assert_eq!(service["name"], "GET /");
+    assert_eq!(service["rows"], 200_000_000);
+    for signal in ["traces", "logs", "metrics", "profiles"] {
+        assert_eq!(service["signals"][signal]["rows"], 50_000_000, "{signal}");
+    }
+}
+
+#[tokio::test]
 async fn no_links_key_when_ui_base_url_is_unset() {
     let mut session = McpSession::open(app_with_ui_base_url(None).await).await;
 
