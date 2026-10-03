@@ -32621,7 +32621,9 @@ pub mod builder {
             self
         }
         ///Sends a `GET` request to `/tempo/api/search`
-        pub async fn send(self) -> Result<ResponseValue<types::SearchResult>, Error<()>> {
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::SearchResult>, Error<types::ApiErrorBody>> {
             let Self {
                 client,
                 end,
@@ -32680,8 +32682,24 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
-                400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
-                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                501u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                503u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                504u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
