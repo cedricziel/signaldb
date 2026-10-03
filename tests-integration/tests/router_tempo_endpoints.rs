@@ -2062,11 +2062,28 @@ async fn test_search_filters_are_applied() {
         "TraceQL attribute search must return the trace"
     );
 
+    // Negation and regex matchers match the trace too.
+    for q in [
+        r#"q={ span.http.method != "POST" }"#,
+        r#"q={ span.http.method =~ "G.*" }"#,
+        r#"q={ span.http.method !~ "P.*" }"#,
+    ] {
+        let response = search(q.to_string()).await;
+        assert_eq!(response.status(), StatusCode::OK, "TraceQL search: {q}");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let result: tempo_api::SearchResult = serde_json::from_slice(&body).unwrap();
+        assert!(
+            result.traces.iter().any(|t| t.trace_id == trace_id),
+            "TraceQL search must return the trace: {q}"
+        );
+    }
+
     // Valid TraceQL we do not lower is an explicit 501, not silently
     // unfiltered.
     for q in [
         "q={ duration > 100ms }",
-        r#"q={ span.x != "y" }"#,
         r#"q={ span.a = "1" || span.b = "2" }"#,
     ] {
         let response = search(q.to_string()).await;
