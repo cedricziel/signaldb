@@ -412,6 +412,14 @@ re-read every footer on every query. The cache is sized by
 data files are immutable — DataFusion still revalidates each hit against the
 current object metadata.
 
+**Table resolution caching.** Before planning, each referenced table is
+loaded from the Iceberg catalog: a catalog query plus a metadata-JSON read
+from object store. The querier bypasses `datafusion_iceberg`'s `Mirror` cache
+so newly created tables are visible at once, and instead reuses a resolved
+table for `[querier].table_cache_ttl` (default `1s`, `0s` disables it), shared
+by every tenant catalog. A missing table is never cached, so a new table shows
+up on the next query; a newly committed snapshot shows up within the TTL.
+
 ### 5.2 Schema Design ✅ **Implemented**
 
 Flight schemas are defined in `src/common/src/flight/schema.rs` with conversions for:
@@ -459,7 +467,14 @@ batch commits, not individual requests.
 
 RecordBatch encoding goes through `common::flight::batches_to_compressed_flight_data`,
 which forwards any dictionary batches `IpcDataGenerator::encode` produces
-ahead of each data batch. Decoding on the receiving side goes through
+ahead of each data batch, or, for a result that streams, through
+`common::flight::encode_batch_stream`, which resends dictionaries rather than
+hydrating them. The querier's `do_get` uses the streaming form for every
+ticket: it encodes each batch as it is sent instead of building the whole
+encoded response first, and raw-SQL tickets also execute as a DataFusion
+stream, so their rows never sit in the querier in full. The ticket's query
+deadline and per-tenant concurrency permit cover the stream until it ends.
+Decoding on the receiving side goes through
 `common::flight::decode::IncrementalFlightDecoder`, which decodes one message
 at a time as it arrives (the router's HTTP query endpoints use it, so they
 never hold the encoded and decoded result at once), or its buffered form

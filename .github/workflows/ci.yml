@@ -345,8 +345,8 @@ jobs:
       # `--all-targets --all-features` also covers every `[[bench]]` target
       # behind the per-crate `benchmarks` feature (common, writer,
       # tests-integration), so this step doubles as the Criterion suites'
-      # compile guard on every core PR (plugin/UI-only PRs skip this job) —
-      # the benches cannot silently bit-rot. `--locked` fails a PR whose
+      # compile guard on every core PR (plugin/UI-only PRs skip this job);
+      # bench-smoke below runs them. `--locked` fails a PR whose
       # manifests changed without the matching Cargo.lock update.
       - name: Run clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
@@ -526,6 +526,45 @@ jobs:
         env:
           RUST_LOG: warn # Reduced log level for faster tests
           RUST_BACKTRACE: 1
+
+  # Runs each Criterion bench body once so a runtime panic fails the PR, not
+  # just the nightly: `cargo test` omits Criterion's `--bench` flag, which
+  # selects its test mode. `--bench '*'` (not `--benches`, which also reruns
+  # lib unit tests) picks only bench targets. Same profile and features as
+  # `test`, so it restores that job's cache. Not a required check.
+  bench-smoke:
+    name: Bench smoke (Criterion --test)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.core == 'true'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Init submodules
+        run: git submodule update --init --recursive
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          cache: false # Using Swatinem/rust-cache instead
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "test-stable"
+          save-if: false # the test job owns this cache entry
+
+      - name: Install system dependencies
+        uses: ./.github/actions/apt-install
+        with:
+          packages: protobuf-compiler mold clang
+
+      - name: Run every bench once
+        run: cargo test --profile ci-test --workspace --all-features --bench '*' --no-fail-fast
+        env:
+          # Keep Criterion's data out of target/, as benchmarks.yml does.
+          CRITERION_HOME: ${{ runner.temp }}/criterion
+          RUST_LOG: warn
 
   # The beta toolchain is an early-warning signal, not a merge gate: it runs
   # only on pushes to main and nothing downstream waits on it.

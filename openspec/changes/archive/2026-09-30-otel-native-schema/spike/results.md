@@ -4,6 +4,8 @@ Synthesis of the four spike documents, refreshed 2026-08-09. Detail lives in:
 `warm-index.md` (0.1), `coexistence.md` (0.2), `data-characterization.md` +
 `bench.md` (0.3). Code: `spikes/otel-native-spike/` (standalone crate; demo
 binaries `warm_index_demo`, `coexistence_demo`, `bench_demo`, `residue_probe`).
+The crate was removed after the change was archived; check out `e3c7cb1` to
+re-run it.
 
 ## Verdict: commit the typed layout — with two sequencing conditions
 

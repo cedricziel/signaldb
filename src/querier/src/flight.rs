@@ -7,7 +7,6 @@ use arrow_flight::{
 use bytes::Bytes;
 use common::CatalogManager;
 use common::config::QuerierConfig;
-use common::flight::batches_to_compressed_flight_data;
 use common::flight::schema::create_span_batch_schema;
 use common::flight::transport::InMemoryFlightTransport;
 use common::parquet_metadata_cache::CacheParquetMetadata;
@@ -19,11 +18,12 @@ use datafusion::execution::cache::cache_manager::CacheManagerConfig;
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::prelude::SessionConfig;
-use futures::StreamExt;
 use futures::stream::{self, BoxStream};
+use futures::{StreamExt, TryStreamExt};
 use object_store::ObjectStore;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tonic::{Request, Response, Status};
 use tracing::Instrument;
 
@@ -41,6 +41,135 @@ use crate::query::{
     TraceTagsParams,
 };
 
+/// Result batches of one Flight ticket, in the order they are sent.
+type BatchStream = BoxStream<'static, Result<RecordBatch, Status>>;
+
+/// A DataFusion result stream polled inside its `signaldb.query.execute`
+/// span, recording the row and batch counts on that span when it ends.
+struct RecordedStream {
+    inner: datafusion::execution::SendableRecordBatchStream,
+    span: tracing::Span,
+    rows: u64,
+    batches: u64,
+}
+
+impl RecordedStream {
+    fn new(inner: datafusion::execution::SendableRecordBatchStream, span: tracing::Span) -> Self {
+        Self {
+            inner,
+            span,
+            rows: 0,
+            batches: 0,
+        }
+    }
+}
+
+impl futures::Stream for RecordedStream {
+    type Item = datafusion::error::Result<RecordBatch>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = &mut *self;
+        let polled = this.span.in_scope(|| this.inner.poll_next_unpin(cx));
+        match &polled {
+            std::task::Poll::Ready(Some(Ok(batch))) => {
+                this.rows += batch.num_rows() as u64;
+                this.batches += 1;
+            }
+            std::task::Poll::Ready(None) => {
+                this.span.record("signaldb.query.rows", this.rows as i64);
+                this.span
+                    .record("signaldb.query.batches", this.batches as i64);
+            }
+            _ => {}
+        }
+        polled
+    }
+}
+
+/// One admitted `do_get` query: its wall-clock deadline, its concurrency
+/// permit, and the metrics recorded when it finishes.
+struct RunningQuery {
+    deadline: tokio::time::Instant,
+    timeout: std::time::Duration,
+    started: std::time::Instant,
+    query_type: &'static str,
+    /// The DoGet server span, kept open until the result stream ends so a
+    /// failure while streaming still lands on it.
+    span: tracing::Span,
+    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl RunningQuery {
+    fn timed_out(&self) -> Status {
+        Status::deadline_exceeded(format!(
+            "query exceeded the configured timeout of {:?}",
+            self.timeout
+        ))
+    }
+
+    fn record(&self, rows: u64, failed: bool) {
+        let app_metrics = common::self_monitoring::app_metrics();
+        let query_attrs = [opentelemetry::KeyValue::new("query_type", self.query_type)];
+        let elapsed = self.started.elapsed().as_secs_f64();
+        app_metrics.query_duration.record(elapsed, &query_attrs);
+        app_metrics.flight_request_duration.record(
+            elapsed,
+            &[opentelemetry::KeyValue::new("rpc.method", "do_get")],
+        );
+        if failed {
+            app_metrics.query_errors.add(1, &query_attrs);
+        } else {
+            app_metrics.query_rows_returned.record(rows, &query_attrs);
+        }
+    }
+
+    fn fail(&self, status: Status) -> Status {
+        self.record(0, true);
+        status
+    }
+
+    /// `do_get` has already returned `Ok` once streaming starts, so its
+    /// error boundary never sees this failure: record it on the span here.
+    fn fail_streaming(&self, status: Status) -> Status {
+        let status = self.fail(status);
+        self.span
+            .in_scope(|| common::self_monitoring::record_span_exception(&status));
+        common::self_monitoring::spans::record_rpc_result(
+            &self.span,
+            common::self_monitoring::spans::RpcBoundary::Server,
+            status.code(),
+        );
+        status
+    }
+
+    /// Yield `batches` until they end, fail, or the deadline passes, holding
+    /// the permit until then and recording the query's metrics once.
+    fn bound(self, batches: BatchStream) -> BatchStream {
+        stream::unfold(Some((batches, self, 0u64)), |state| async move {
+            let (mut batches, query, rows) = state?;
+            match tokio::time::timeout_at(query.deadline, batches.next()).await {
+                Ok(Some(Ok(batch))) => {
+                    let rows = rows + batch.num_rows() as u64;
+                    Some((Ok(batch), Some((batches, query, rows))))
+                }
+                Ok(Some(Err(status))) => Some((Err(query.fail_streaming(status)), None)),
+                Ok(None) => {
+                    query.record(rows, false);
+                    None
+                }
+                Err(_) => {
+                    let status = query.timed_out();
+                    Some((Err(query.fail_streaming(status)), None))
+                }
+            }
+        })
+        .boxed()
+    }
+}
+
 /// Translates `[querier.warm_index]` into the gate
 /// `crate::query::warm_index::WarmIndexTable::maybe_wrap` probes with.
 fn warm_index_gate(
@@ -54,12 +183,51 @@ fn warm_index_gate(
     }
 }
 
+type TableRef = Arc<dyn datafusion::datasource::TableProvider>;
+
+/// Resolved table providers, reused for `[querier].table_cache_ttl` so a
+/// burst of queries against one table pays the catalog round-trip and
+/// metadata read once rather than per query (#939). A missing table is never
+/// cached, so a newly created one is visible on the next query. Keyed by the
+/// full Iceberg identifier, which leads with the tenant slug, so one cache
+/// serves every tenant catalog.
+struct TableProviderCache {
+    ttl: Duration,
+    entries: dashmap::DashMap<String, (Instant, TableRef)>,
+}
+
+impl TableProviderCache {
+    fn new(ttl: Duration) -> Self {
+        Self {
+            ttl,
+            entries: dashmap::DashMap::new(),
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<TableRef> {
+        let removed = self
+            .entries
+            .remove_if(key, |_, (loaded_at, _)| loaded_at.elapsed() >= self.ttl);
+        if removed.is_some() {
+            return None;
+        }
+        self.entries.get(key).map(|entry| Arc::clone(&entry.1))
+    }
+
+    fn insert(&self, key: String, table: TableRef) {
+        if !self.ttl.is_zero() {
+            self.entries.insert(key, (Instant::now(), table));
+        }
+    }
+}
+
 /// Queries the Iceberg catalog directly, bypassing `datafusion_iceberg`'s
 /// stale `Mirror` cache so newly-created tables are immediately visible.
 struct LiveIcebergSchema {
     namespace: iceberg_rust::catalog::namespace::Namespace,
     catalog: Arc<dyn iceberg_rust::catalog::Catalog>,
     warm_index: common::config::WarmIndexQuerierConfig,
+    tables: Arc<TableProviderCache>,
 }
 
 impl std::fmt::Debug for LiveIcebergSchema {
@@ -89,6 +257,10 @@ impl SchemaProvider for LiveIcebergSchema {
             None,
         )
         .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+        let cache_key = ident.to_string();
+        if let Some(table) = self.tables.get(&cache_key) {
+            return Ok(Some(table));
+        }
 
         match self.catalog.clone().load_tabular(&ident).await {
             Ok(tabular) => {
@@ -123,6 +295,7 @@ impl SchemaProvider for LiveIcebergSchema {
                     ),
                     None => table,
                 };
+                self.tables.insert(cache_key, Arc::clone(&table));
                 Ok(Some(table))
             }
             Err(iceberg_rust::error::Error::CatalogNotFound) => Ok(None),
@@ -141,6 +314,7 @@ struct TenantCatalog {
     tenant_slug: String,
     catalog: Arc<dyn iceberg_rust::catalog::Catalog>,
     warm_index: common::config::WarmIndexQuerierConfig,
+    tables: Arc<TableProviderCache>,
 }
 
 impl std::fmt::Debug for TenantCatalog {
@@ -167,6 +341,7 @@ impl CatalogProvider for TenantCatalog {
             namespace,
             catalog: self.catalog.clone(),
             warm_index: self.warm_index.clone(),
+            tables: Arc::clone(&self.tables),
         }))
     }
 
@@ -414,6 +589,8 @@ pub struct QuerierFlightService {
     catalog_manager: Option<Arc<CatalogManager>>,
     /// Slugs whose DataFusion catalog is already registered in `session_ctx`.
     registered_tenants: dashmap::DashSet<String>,
+    /// Resolved Iceberg tables shared by every tenant catalog.
+    table_cache: Arc<TableProviderCache>,
     /// Per-tenant registration locks so concurrent first-queries for the *same*
     /// tenant register exactly once, while different tenants register
     /// concurrently (no single global lock on the query path).
@@ -476,8 +653,16 @@ pub fn session_context_with_limits(limits: &QuerierConfig) -> SessionContext {
         CacheManagerConfig::default()
             .with_metadata_cache_limit((limits.parquet_metadata_cache_mb as usize) * 1024 * 1024),
     );
-    match limits.memory_limit_mb {
-        Some(mb) if mb > 0 => {
+    let memory_limit_mb = limits
+        .effective_memory_limit_mb(common::self_monitoring::metrics::total_system_memory_bytes());
+    match memory_limit_mb {
+        0 => {
+            tracing::warn!(
+                "Querier memory is UNBOUNDED ([querier].memory_limit_mb = 0); \
+                 a single heavy query can exhaust process memory"
+            );
+        }
+        mb => {
             builder = builder.with_memory_pool(common::datafusion_runtime::bounded_memory_pool(
                 (mb as usize) * 1024 * 1024,
                 limits.memory_pool_fraction,
@@ -486,14 +671,6 @@ pub fn session_context_with_limits(limits: &QuerierConfig) -> SessionContext {
                 signaldb.querier.memory_limit_mb = mb as i64,
                 signaldb.querier.memory_pool_fraction = limits.memory_pool_fraction,
                 "Querier memory pool configured"
-            );
-        }
-        // `Some(0)` is an explicit unbounded opt-out, same as `None` — see
-        // the `memory_limit_mb` doc comment for the three cases.
-        Some(_) | None => {
-            tracing::warn!(
-                "Querier memory is UNBOUNDED ([querier].memory_limit_mb is unset or 0); \
-                 a single heavy query can exhaust process memory"
             );
         }
     }
@@ -580,6 +757,7 @@ impl QuerierFlightService {
         limits: QuerierConfig,
     ) -> Self {
         let session_ctx = Arc::new(session_context_with_limits(&limits));
+        let table_cache = Arc::new(TableProviderCache::new(limits.table_cache_ttl));
 
         // Register object store with DataFusion for querying Parquet files
         // This allows querying files like: SELECT * FROM 'batch/file.parquet'
@@ -615,6 +793,7 @@ impl QuerierFlightService {
             query_permits: dashmap::DashMap::new(),
             catalog_manager: None,
             registered_tenants: dashmap::DashSet::new(),
+            table_cache,
             tenant_reg_locks: dashmap::DashMap::new(),
             session_cache: dashmap::DashMap::new(),
         }
@@ -661,11 +840,13 @@ impl QuerierFlightService {
         let iceberg_catalog = catalog_manager.catalog();
 
         let registered_tenants: dashmap::DashSet<String> = dashmap::DashSet::new();
+        let table_cache = Arc::new(TableProviderCache::new(limits.table_cache_ttl));
         for tenant in &tenants {
             let tenant_catalog = TenantCatalog {
                 tenant_slug: tenant.slug.clone(),
                 catalog: iceberg_catalog.clone(),
                 warm_index: limits.warm_index.clone(),
+                tables: Arc::clone(&table_cache),
             };
 
             session_ctx.register_catalog(&tenant.slug, Arc::new(tenant_catalog));
@@ -715,6 +896,7 @@ impl QuerierFlightService {
             query_permits: dashmap::DashMap::new(),
             catalog_manager: Some(catalog_manager),
             registered_tenants,
+            table_cache,
             tenant_reg_locks: dashmap::DashMap::new(),
             session_cache: dashmap::DashMap::new(),
         })
@@ -781,6 +963,7 @@ impl QuerierFlightService {
             tenant_slug: tenant.slug.clone(),
             catalog: iceberg_catalog,
             warm_index: self.limits.warm_index.clone(),
+            tables: Arc::clone(&self.table_cache),
         };
         self.session_ctx
             .register_catalog(&tenant.slug, Arc::new(tenant_catalog));
@@ -795,15 +978,16 @@ impl QuerierFlightService {
 
     /// Reserve a concurrent-query slot for `tenant`, or reject with
     /// RESOURCE_EXHAUSTED when the tenant is already at its cap. Returns
-    /// `None` (no permit needed) when no cap is configured.
+    /// `None` (no permit needed) when the cap is `0` (unlimited).
     #[allow(clippy::result_large_err)]
     fn try_acquire_query_permit(
         &self,
         tenant: &str,
     ) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, Status> {
-        let Some(cap) = self.limits.max_concurrent_queries_per_tenant else {
+        let cap = self.limits.max_concurrent_queries_per_tenant;
+        if cap == 0 {
             return Ok(None);
-        };
+        }
         let semaphore = self
             .query_permits
             .entry(tenant.to_string())
@@ -1424,12 +1608,19 @@ impl QuerierFlightService {
         self.session_cache.entry(cache_key).or_insert(ctx).clone()
     }
 
-    /// Execute a SQL query and return results as RecordBatches
-    async fn execute_query(
+    /// Plan a raw SQL query and start executing it. Planning errors are
+    /// returned before any batch exists; execution errors arrive in the
+    /// stream, which yields batches as DataFusion produces them instead of
+    /// materializing the whole result first (#938).
+    async fn execute_query_stream(
         &self,
         ctx: &SessionContext,
         sql: &str,
-    ) -> Result<Vec<RecordBatch>, Box<dyn std::error::Error + Send + Sync>> {
+        failure: &'static str,
+    ) -> Result<BatchStream, Status> {
+        let to_status = move |e: datafusion::error::DataFusionError| {
+            Status::internal(format!("{failure}: {e}"))
+        };
         // Literals sanitized before the text reaches logs or spans — raw
         // SQL can carry PII in string/numeric literals.
         let sanitized = common::self_monitoring::sanitize::sanitize_query_text(sql);
@@ -1441,47 +1632,27 @@ impl QuerierFlightService {
                 "signaldb.query.plan",
                 signaldb.query.text = %sanitized,
             ))
-            .await?;
-        // Cap the number of rows a raw SQL query can materialize; the
-        // client controls the SQL, so an unbounded SELECT could otherwise
-        // buffer arbitrarily many rows in memory.
-        let df = df.limit(0, Some(self.limits.max_sql_rows))?;
+            .await
+            .map_err(to_status)?;
+        // Cap the number of rows a raw SQL query can return; the client
+        // controls the SQL, so an unbounded SELECT could otherwise run on
+        // arbitrarily many rows.
+        let df = df
+            .limit(0, Some(self.limits.max_sql_rows))
+            .map_err(to_status)?;
         let exec_span = tracing::info_span!(
             "signaldb.query.execute",
             signaldb.query.rows = tracing::field::Empty,
             signaldb.query.batches = tracing::field::Empty,
         );
-        let batches = df.collect().instrument(exec_span.clone()).await?;
-        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-        exec_span.record("signaldb.query.rows", rows as i64);
-        exec_span.record("signaldb.query.batches", batches.len() as i64);
-
-        Ok(batches)
-    }
-
-    /// Execute a query against the object store
-    async fn execute_distributed_query(
-        &self,
-        ctx: &SessionContext,
-        query: &str,
-    ) -> Result<Vec<RecordBatch>, Box<dyn std::error::Error + Send + Sync>> {
-        // Query only the object store - data at rest
-        // Writers are responsible for persisting data to object store
-        // Querier should not depend on or know about writers
-
-        match self.execute_query(ctx, query).await {
-            Ok(batches) => {
-                tracing::debug!(
-                    batch_count = batches.len(),
-                    "Retrieved batches from object store"
-                );
-                Ok(batches)
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "Error querying object store");
-                Err(e)
-            }
-        }
+        let stream = df
+            .execute_stream()
+            .instrument(exec_span.clone())
+            .await
+            .map_err(to_status)?;
+        Ok(RecordedStream::new(stream, exec_span)
+            .map_err(to_status)
+            .boxed())
     }
 
     /// Execute one parsed Flight ticket, returning the record batches it
@@ -1504,7 +1675,7 @@ impl QuerierFlightService {
         ticket_request: TicketRequest,
         caller_tenant: Option<&common::auth::TenantContext>,
         metadata: &tonic::metadata::MetadataMap,
-    ) -> Result<(Vec<RecordBatch>, common::flight::CorrelateReport), Status> {
+    ) -> Result<(BatchStream, common::flight::CorrelateReport), Status> {
         let mut correlate_report = common::flight::CorrelateReport::default();
         let batches = match ticket_request {
             TicketRequest::FindTrace {
@@ -1911,9 +2082,10 @@ impl QuerierFlightService {
                 // tenant/dataset so unqualified table names like
                 // `profiles` resolve inside the tenant's catalog.
                 let request_ctx = self.session_for_request(Some(&tenant_slug), Some(&dataset_slug));
-                self.execute_distributed_query(&request_ctx, &sql)
-                    .await
-                    .map_err(|e| Status::internal(format!("Profiles SQL query failed: {e}")))?
+                let batches = self
+                    .execute_query_stream(&request_ctx, &sql, "Profiles SQL query failed")
+                    .await?;
+                return Ok((batches, correlate_report));
             }
             TicketRequest::SqlQuery { sql } => {
                 // Tenant-scoped callers are pinned to their
@@ -1949,12 +2121,18 @@ impl QuerierFlightService {
                 let request_ctx =
                     self.session_for_request(tenant_slug.as_deref(), dataset_slug.as_deref());
 
-                self.execute_distributed_query(&request_ctx, &sql)
-                    .await
-                    .map_err(|e| Status::internal(format!("Query execution failed: {e}")))?
+                let batches = self
+                    .execute_query_stream(&request_ctx, &sql, "Query execution failed")
+                    .await?;
+                return Ok((batches, correlate_report));
             }
         };
-        Ok((batches, correlate_report))
+        // Only raw SQL streams from execution; the other tickets build
+        // their result in full and are encoded batch by batch from there.
+        Ok((
+            stream::iter(batches.into_iter().map(Ok)).boxed(),
+            correlate_report,
+        ))
     }
 }
 
@@ -2181,69 +2359,45 @@ impl FlightService for QuerierFlightService {
                             .as_ref()
                             .map(|ctx| ctx.tenant_id.clone())
                             .or_else(|| ticket_tenant_slug.clone());
-                        // Held until the query's batches are fully computed.
-                        let _query_permit = match &permit_tenant {
+                        // Held until the result stream ends.
+                        let query_permit = match &permit_tenant {
                             Some(tenant) => self.try_acquire_query_permit(tenant)?,
                             None => None,
                         };
-                        let query_start = std::time::Instant::now();
+                        let query = RunningQuery {
+                            deadline: tokio::time::Instant::now() + self.limits.query_timeout,
+                            timeout: self.limits.query_timeout,
+                            started: std::time::Instant::now(),
+                            query_type,
+                            span: tracing::Span::current(),
+                            _permit: query_permit,
+                        };
                         let query_future =
                             self.execute_ticket(ticket_request, caller_tenant.as_ref(), &metadata);
-                        // Bound every query's wall-clock time so a heavy scan cannot
-                        // occupy the querier indefinitely.
-                        let batches_result: Result<
-                            (Vec<_>, common::flight::CorrelateReport),
-                            Status,
-                        > = match tokio::time::timeout(self.limits.query_timeout, query_future)
-                            .await
-                        {
-                            Ok(result) => result,
-                            Err(_) => Err(Status::deadline_exceeded(format!(
-                                "query exceeded the configured timeout of {:?}",
-                                self.limits.query_timeout
-                            ))),
-                        };
+                        // Bound every query's wall-clock time, planning and
+                        // streaming alike, so a heavy scan cannot occupy the
+                        // querier indefinitely.
+                        let (batches, correlate_report) =
+                            match tokio::time::timeout_at(query.deadline, query_future).await {
+                                Ok(Ok(result)) => result,
+                                Ok(Err(status)) => return Err(query.fail(status)),
+                                Err(_) => return Err(query.fail(query.timed_out())),
+                            };
 
-                        let app_metrics = common::self_monitoring::app_metrics();
-                        let query_attrs = [opentelemetry::KeyValue::new("query_type", query_type)];
-                        app_metrics
-                            .query_duration
-                            .record(query_start.elapsed().as_secs_f64(), &query_attrs);
-                        app_metrics.flight_request_duration.record(
-                            query_start.elapsed().as_secs_f64(),
-                            &[opentelemetry::KeyValue::new("rpc.method", "do_get")],
-                        );
-                        let (batches, correlate_report) = match batches_result {
-                            Ok(result) => result,
-                            Err(status) => {
-                                app_metrics.query_errors.add(1, &query_attrs);
-                                return Err(status);
-                            }
-                        };
-                        let rows_returned: u64 = batches.iter().map(|b| b.num_rows() as u64).sum();
-                        app_metrics
-                            .query_rows_returned
-                            .record(rows_returned, &query_attrs);
-
-                        let trailer = common::flight::correlate_report_trailer(&correlate_report);
-                        if batches.is_empty() {
-                            let out = stream::iter(trailer.into_iter().map(Ok)).boxed();
-                            return Ok(Response::new(out));
-                        }
-
-                        // Convert results to Flight data
-                        let schema = batches[0].schema();
-                        let mut flight_data = batches_to_compressed_flight_data(&schema, batches)
-                            .map_err(|e| {
-                            Status::internal(format!("Failed to convert results: {e}"))
-                        })?;
+                        // Encode each batch as it arrives rather than holding
+                        // the whole result plus an encoded copy (#938).
+                        let flight_data = common::flight::encode_batch_stream(
+                            query.bound(batches).map_err(Into::into),
+                        )
+                        .map_err(Status::from);
                         // Trailing, data-free message: the correlate report is
-                        // only known once the query above has fully streamed, too
-                        // late for the schema message already sent above (see
+                        // only known once the query has run, too late for the
+                        // schema message (see
                         // `common::flight::correlate_report_trailer`).
-                        flight_data.extend(trailer);
-
-                        let out = stream::iter(flight_data.into_iter().map(Ok)).boxed();
+                        let trailer = common::flight::correlate_report_trailer(&correlate_report);
+                        let out = flight_data
+                            .chain(stream::iter(trailer.into_iter().map(Ok)))
+                            .boxed();
                         Ok(Response::new(out))
                     }
                     .await;
@@ -2403,6 +2557,37 @@ fn trace_error_to_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_table() -> Arc<dyn datafusion::datasource::TableProvider> {
+        Arc::new(datafusion::datasource::empty::EmptyTable::new(Arc::new(
+            datafusion::arrow::datatypes::Schema::empty(),
+        )))
+    }
+
+    #[test]
+    fn table_cache_reuses_a_table_within_its_ttl_only() {
+        let cache = TableProviderCache::new(Duration::from_millis(50));
+        assert!(cache.get("acme.prod.traces").is_none());
+
+        let table = empty_table();
+        cache.insert("acme.prod.traces".to_string(), Arc::clone(&table));
+        let hit = cache.get("acme.prod.traces").expect("fresh entry is a hit");
+        assert!(Arc::ptr_eq(&hit, &table));
+        assert!(cache.get("acme.prod.logs").is_none());
+
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        assert!(
+            cache.get("acme.prod.traces").is_none(),
+            "an expired entry must be reloaded so new snapshots become visible"
+        );
+    }
+
+    #[test]
+    fn table_cache_with_zero_ttl_never_caches() {
+        let cache = TableProviderCache::new(Duration::ZERO);
+        cache.insert("acme.prod.traces".to_string(), empty_table());
+        assert!(cache.get("acme.prod.traces").is_none());
+    }
 
     #[test]
     fn tenant_slug_names_the_ticket_tenant_and_is_none_for_raw_sql() {
@@ -2616,11 +2801,26 @@ mod tests {
         let flight_transport = Arc::new(InMemoryFlightTransport::new(bootstrap));
         let service = QuerierFlightService::new(object_store, flight_transport);
 
-        // Test basic query execution (will fail due to no data, but tests the path)
-        let result = service
-            .execute_query(&service.session_ctx, "SELECT 1 as test_col")
-            .await;
-        assert!(result.is_ok());
+        let batches = run_sql(&service, "SELECT 1 as test_col").await.unwrap();
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+    }
+
+    /// Run raw SQL through `do_get` and decode the whole response, the way
+    /// the router does; a failure before or during streaming is an `Err`.
+    async fn run_sql(
+        service: &QuerierFlightService,
+        sql: &str,
+    ) -> Result<Vec<RecordBatch>, Status> {
+        let ticket = Ticket {
+            ticket: Bytes::from(sql.to_string()),
+        };
+        let stream = service.do_get(Request::new(ticket)).await?.into_inner();
+        arrow_flight::decode::FlightRecordBatchStream::new_from_flight_data(
+            stream.map_err(arrow_flight::error::FlightError::from),
+        )
+        .try_collect()
+        .await
+        .map_err(Status::from)
     }
 
     async fn make_service_with_limits(limits: QuerierConfig) -> QuerierFlightService {
@@ -2656,15 +2856,79 @@ mod tests {
         })
         .await;
 
-        let batches = service
-            .execute_query(
-                &service.session_ctx,
-                "SELECT * FROM generate_series(1, 1000)",
-            )
+        let batches = run_sql(&service, "SELECT * FROM generate_series(1, 1000)")
             .await
             .unwrap();
         let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(rows, 10, "raw SQL results must be capped at max_sql_rows");
+    }
+
+    /// The result streams: `do_get` answers before the query has produced
+    /// its rows, and the tenant's concurrency slot stays taken until the
+    /// stream is drained, not merely until the response starts (#938).
+    #[tokio::test]
+    async fn raw_sql_streams_and_holds_its_permit_until_drained() {
+        let service = make_service_with_limits(QuerierConfig {
+            max_concurrent_queries_per_tenant: 1,
+            ..QuerierConfig::default()
+        })
+        .await;
+        let ticket = Ticket {
+            ticket: Bytes::from("sql_profiles:acme:prod:SELECT * FROM generate_series(1, 100000)"),
+        };
+        let stream = service
+            .do_get(Request::new(ticket))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(
+            service.try_acquire_query_permit("acme").is_err(),
+            "the permit must be held while the result is still streaming"
+        );
+        let batches: Vec<RecordBatch> =
+            arrow_flight::decode::FlightRecordBatchStream::new_from_flight_data(
+                stream.map_err(arrow_flight::error::FlightError::from),
+            )
+            .try_collect()
+            .await
+            .unwrap();
+        assert!(
+            batches.len() > 1,
+            "a large result arrives as several batches"
+        );
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 100_000);
+        assert!(service.try_acquire_query_permit("acme").unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn raw_sql_keeps_dictionary_columns_over_the_wire() {
+        let service = make_service().await;
+        let batches = run_sql(
+            &service,
+            "SELECT arrow_cast(v, 'Dictionary(Int32, Utf8)') AS d \
+             FROM (VALUES ('a'), ('b'), ('a')) t(v)",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            batches[0].schema().field(0).data_type(),
+            datafusion::arrow::datatypes::DataType::Dictionary(_, _)
+        ));
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 3);
+    }
+
+    #[tokio::test]
+    async fn raw_sql_planning_error_fails_before_streaming() {
+        let service = make_service().await;
+        let ticket = Ticket {
+            ticket: Bytes::from("SELECT no_such_column FROM generate_series(1, 3)"),
+        };
+        let status = match service.do_get(Request::new(ticket)).await {
+            Ok(_) => panic!("a query that cannot plan must fail up front"),
+            Err(status) => status,
+        };
+        assert_eq!(status.code(), tonic::Code::Internal);
     }
 
     /// Register `acme.prod.traces` with two parent/child span pairs
@@ -2909,7 +3173,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_query_cap_is_enforced_per_tenant() {
         let service = make_service_with_limits(QuerierConfig {
-            max_concurrent_queries_per_tenant: Some(1),
+            max_concurrent_queries_per_tenant: 1,
             ..QuerierConfig::default()
         })
         .await;
@@ -2935,8 +3199,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_cap_means_no_permits_needed() {
+    async fn default_config_caps_concurrent_queries_per_tenant() {
         let service = make_service_with_limits(QuerierConfig::default()).await;
+        let cap = QuerierConfig::default().max_concurrent_queries_per_tenant;
+        assert!(cap > 0, "the default must bound per-tenant concurrency");
+        let _held: Vec<_> = (0..cap)
+            .map(|_| service.try_acquire_query_permit("acme").unwrap())
+            .collect();
+        let status = service
+            .try_acquire_query_permit("acme")
+            .expect_err("a query past the default cap must be rejected");
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+    }
+
+    #[tokio::test]
+    async fn zero_cap_means_no_permits_needed() {
+        let service = make_service_with_limits(QuerierConfig {
+            max_concurrent_queries_per_tenant: 0,
+            ..QuerierConfig::default()
+        })
+        .await;
         for _ in 0..100 {
             assert!(service.try_acquire_query_permit("acme").unwrap().is_none());
         }
@@ -3037,12 +3319,16 @@ mod tests {
             "allocations beyond the configured limit must be refused"
         );
 
-        // Without a configured limit the pool is unbounded (legacy behavior).
+        // Without a configured limit the pool is still bounded (#941): the
+        // default caps at 4096 MiB, so a larger reservation is refused.
         let ctx = session_context_with_limits(&QuerierConfig::default());
         let reservation = MemoryConsumer::new("test").register(&ctx.runtime_env().memory_pool);
-        assert!(reservation.try_grow(10 * 1024 * 1024).is_ok());
+        assert!(
+            reservation.try_grow(5 * 1024 * 1024 * 1024).is_err(),
+            "an unset memory_limit_mb must resolve to a bounded pool"
+        );
 
-        // `Some(0)` is an explicit unbounded opt-out, same as `None`.
+        // `Some(0)` is the explicit unbounded opt-out.
         let ctx = session_context_with_limits(&QuerierConfig {
             memory_limit_mb: Some(0),
             memory_pool_fraction: 1.0,
@@ -3097,10 +3383,10 @@ mod tests {
                  CROSS JOIN generate_series(1, 100) t2(b)",
             ),
         };
-        let status = match service.do_get(Request::new(ticket)).await {
-            Ok(_) => panic!("query must be aborted by the timeout"),
-            Err(status) => status,
-        };
+        let sql = String::from_utf8(ticket.ticket.to_vec()).unwrap();
+        let status = run_sql(&service, &sql)
+            .await
+            .expect_err("query must be aborted by the timeout");
         assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
     }
 
@@ -3719,6 +4005,62 @@ mod tests {
             Some("INTERNAL")
         );
         assert!(matches!(span.status, OtelStatus::Error { .. }));
+    }
+
+    /// A query that times out while its result streams has already handed
+    /// `do_get` an `Ok` response, so the DoGet span must still end up
+    /// carrying the failure (#938).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mid_stream_timeout_marks_the_do_get_span_failed() {
+        use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tracing::instrument::WithSubscriber;
+        use tracing_subscriber::prelude::*;
+
+        let service = make_service_with_limits(QuerierConfig {
+            query_timeout: Duration::from_millis(50),
+            ..QuerierConfig::default()
+        })
+        .await;
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("test")));
+
+        async {
+            let status = run_sql(
+                &service,
+                "SELECT count(*) FROM generate_series(1, 100000000) t1(a) \
+                 CROSS JOIN generate_series(1, 100) t2(b)",
+            )
+            .await
+            .expect_err("query must be aborted by the timeout");
+            assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
+        }
+        .with_subscriber(subscriber)
+        .await;
+
+        provider.force_flush().unwrap();
+        let spans = exporter.get_finished_spans().unwrap();
+        let span = spans
+            .iter()
+            .find(|s| {
+                s.name
+                    .starts_with("arrow.flight.protocol.FlightService/DoGet")
+            })
+            .expect("no DoGet server span");
+        // The OK recorded when the response started is overwritten; the
+        // span keeps both writes, and the later one wins.
+        let status_code = span
+            .attributes
+            .iter()
+            .rfind(|kv| kv.key.as_str() == "rpc.response.status_code")
+            .map(|kv| kv.value.as_str().to_string());
+        assert_eq!(status_code.as_deref(), Some("DEADLINE_EXCEEDED"));
+        assert!(matches!(span.status, OtelStatus::Error { .. }));
+        assert!(span.events.iter().any(|e| e.name == "exception"));
     }
 
     /// Issue #972 companion: the shared status mapper used to label every

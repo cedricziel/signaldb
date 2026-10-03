@@ -200,6 +200,24 @@ pub fn flight_ipc_write_options() -> IpcWriteOptions {
         .unwrap_or_default()
 }
 
+/// Encode a stream of record batches as Flight data, one batch at a time,
+/// with the same lz4 compression as [`batches_to_compressed_flight_data`].
+///
+/// Dictionaries are resent rather than hydrated, so dictionary columns keep
+/// their type on the wire. An empty input encodes to no messages at all,
+/// not even a schema.
+pub fn encode_batch_stream<S>(batches: S) -> arrow_flight::encode::FlightDataEncoder
+where
+    S: futures::Stream<Item = Result<RecordBatch, arrow_flight::error::FlightError>>
+        + Send
+        + 'static,
+{
+    arrow_flight::encode::FlightDataEncoderBuilder::new()
+        .with_options(flight_ipc_write_options())
+        .with_dictionary_handling(arrow_flight::encode::DictionaryHandling::Resend)
+        .build(batches)
+}
+
 /// Encode record batches as Flight data with lz4 IPC buffer compression.
 ///
 /// Drop-in replacement for [`arrow_flight::utils::batches_to_flight_data`]
