@@ -8611,6 +8611,7 @@ mod tests {
             capped: false,
             query_hits: 0,
             promote_streak: 0,
+            analyzed_span: None,
             updated_at: "2026-01-01 00:00:00".to_string(),
         }];
 

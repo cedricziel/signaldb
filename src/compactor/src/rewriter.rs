@@ -217,6 +217,7 @@ impl ParquetRewriter {
                     &attr_stats,
                     &attr_level_presence,
                     rows_read,
+                    Self::partition_span(partition_hours),
                 )
                 .await;
                 promotion = self
@@ -1062,6 +1063,16 @@ impl ParquetRewriter {
         shape.apply(datafusion::prelude::SessionConfig::new())
     }
 
+    /// The event-time span of one hour partition, as the analyzer records it
+    /// (#2170). [`Self::partition_predicate`] selects exactly these rows.
+    fn partition_span(partition_hours: i64) -> common::catalog::AnalyzedSpan {
+        const NANOS_PER_HOUR: i64 = 3_600 * 1_000_000_000;
+        common::catalog::AnalyzedSpan {
+            start_ns: partition_hours * NANOS_PER_HOUR,
+            end_ns: (partition_hours + 1) * NANOS_PER_HOUR,
+        }
+    }
+
     /// Predicate selecting exactly the rows of one hour partition.
     ///
     /// The `timestamp_hour` partition transform is `Hour(timestamp)` and the
@@ -1074,9 +1085,8 @@ impl ParquetRewriter {
     /// predicate is also applied as a row filter, so correctness does not
     /// depend on pruning being exact.
     fn partition_predicate(partition_hours: i64) -> Expr {
-        const MICROS_PER_HOUR: i64 = 3_600 * 1_000_000;
-        let start = partition_hours * MICROS_PER_HOUR;
-        let end = start + MICROS_PER_HOUR;
+        let span = Self::partition_span(partition_hours);
+        let (start, end) = (span.start_ns / 1_000, span.end_ns / 1_000);
         col("timestamp")
             .gt_eq(lit(ScalarValue::TimestampMicrosecond(Some(start), None)))
             .and(col("timestamp").lt(lit(ScalarValue::TimestampMicrosecond(Some(end), None))))
