@@ -76,6 +76,8 @@ beforeEach(() => {
     metrics: [],
     isPending: false,
     isError: false,
+    associated: [],
+    unmatched: [],
   });
   fetchEntityMetricSeries.mockResolvedValue(new Map());
 });
@@ -104,6 +106,8 @@ describe("EntityMetricsPanel", () => {
       ],
       isPending: false,
       isError: false,
+      associated: [],
+      unmatched: [],
     });
     fetchEntityMetricSeries.mockResolvedValue(
       seriesFor(["system.cpu.utilization", "system.cpu.time"]),
@@ -133,6 +137,8 @@ describe("EntityMetricsPanel", () => {
       ],
       isPending: false,
       isError: false,
+      associated: [],
+      unmatched: [],
     });
     fetchEntityMetricSeries.mockResolvedValue(
       seriesFor([
@@ -161,6 +167,8 @@ describe("EntityMetricsPanel", () => {
       isPending: false,
       isError: true,
       error: new Error("lookup broke"),
+      associated: [],
+      unmatched: [],
     });
 
     render();
@@ -175,6 +183,8 @@ describe("EntityMetricsPanel", () => {
     metrics: [],
     isPending: false,
     isError: false,
+    associated: [],
+    unmatched: [],
   });
 
     render();
@@ -184,11 +194,60 @@ describe("EntityMetricsPanel", () => {
     expect(fetchEntityMetricSeries).not.toHaveBeenCalled();
   });
 
+  it("explains that names did not match instead of rendering nothing", () => {
+    useEntityMetrics.mockReturnValue({
+      metrics: [],
+      isPending: false,
+      isError: false,
+      associated: ["container.memory.usage", "container.cpu.time"],
+      unmatched: ["container.cpu.usage.total", "container.memory.usage.total"],
+    });
+
+    render();
+
+    const note = screen.getByRole("status");
+    expect(note).toHaveTextContent("Metric names did not match");
+    expect(note).toHaveTextContent("container.memory.usage");
+    expect(note).toHaveTextContent("container.cpu.usage.total");
+    expect(note).toHaveTextContent("aliases");
+    expect(fetchEntityMetricSeries).not.toHaveBeenCalled();
+  });
+
+  it("names the canonical metric on a tile charted through an alias", async () => {
+    useEntityMetrics.mockReturnValue({
+      metrics: [
+        {
+          ...metric("container.memory.usage.total", "gauge", "By"),
+          aliasOf: "container.memory.usage",
+        },
+      ],
+      isPending: false,
+      isError: false,
+      associated: [],
+      unmatched: [],
+    });
+    fetchEntityMetricSeries.mockResolvedValue(
+      seriesFor(["container.memory.usage.total"]),
+    );
+
+    render();
+
+    const tile = await screen.findByRole("figure");
+    expect(
+      within(tile).getByText("container.memory.usage.total"),
+    ).toBeVisible();
+    expect(
+      within(tile).getByText(/alias of container\.memory\.usage/),
+    ).toBeVisible();
+  });
+
   it("shows a skeleton while the metric lookup is still pending", () => {
     useEntityMetrics.mockReturnValue({
       metrics: [],
       isPending: true,
       isError: false,
+      associated: [],
+      unmatched: [],
     });
 
     render();
@@ -203,6 +262,8 @@ describe("EntityMetricsPanel", () => {
       metrics: [metric("system.cpu.utilization")],
       isPending: false,
       isError: false,
+      associated: [],
+      unmatched: [],
     });
     fetchEntityMetricSeries.mockResolvedValue(
       seriesFor(["system.cpu.utilization"]),
@@ -221,6 +282,8 @@ describe("EntityMetricsPanel", () => {
       metrics: [metric("system.cpu.utilization")],
       isPending: false,
       isError: false,
+      associated: [],
+      unmatched: [],
     });
     fetchEntityMetricSeries.mockResolvedValue(new Map());
 
@@ -243,6 +306,8 @@ describe("EntityMetricsPanel", () => {
       metrics: names.map((n) => metric(n)),
       isPending: false,
       isError: false,
+      associated: [],
+      unmatched: [],
     });
     fetchEntityMetricSeries.mockResolvedValue(seriesFor(names));
 
@@ -264,6 +329,8 @@ describe("EntityMetricsPanel", () => {
       metrics: [metric("system.cpu.utilization")],
       isPending: false,
       isError: false,
+      associated: [],
+      unmatched: [],
     });
 
     renderWithClient(
@@ -291,6 +358,8 @@ describe("EntityMetricsPanel", () => {
       metrics: [metric("system.cpu.utilization")],
       isPending: false,
       isError: false,
+      associated: [],
+      unmatched: [],
     });
     fetchEntityMetricSeries.mockResolvedValue(
       seriesFor(["system.cpu.utilization"]),

@@ -661,6 +661,15 @@ goes negative is compacted by magnitude and keeps its sign, and the axis
 gutter leaves room for it. Where an entity associates more metrics than fit,
 the panel says how many it is not showing rather than truncating silently.
 
+Emitters that do not follow semantic conventions write the same measurement
+under another name (the Docker Stats receiver's `container.memory.usage.total`
+for `container.memory.usage`). A registry metric definition can list such names
+as `aliases` (see [Schema registry](schema-registry.md)); an observed alias is
+charted under the name the emitter wrote, with a line naming the definition it
+is an alias of. When an entity has associated metrics and the window holds
+metrics in the same namespaces, but no name matches, the panel says the names
+did not match and lists what was observed, rather than rendering nothing.
+
 "Services" is scoped to server-kind spans specifically: a service's own
 resource attributes appear on every span it emits, including calls it makes
 to its dependencies, so without that scope its request rate/latency would

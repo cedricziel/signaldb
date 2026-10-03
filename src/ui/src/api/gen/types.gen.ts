@@ -2275,6 +2275,12 @@ export type MetricAttribute = {
  * A resolved metric definition.
  */
 export type MetricDef = {
+    /**
+     * Other names emitters report this metric under, for emitters that do
+     * not follow the canonical name (`container.memory.usage.total` for
+     * `container.memory.usage`).
+     */
+    aliases?: Array<string>;
     attributes: Array<MetricAttribute>;
     brief: string;
     deprecated?: null | DeprecatedInfo;

@@ -131,7 +131,7 @@ Deprecated keys carry their replacement (`"deprecated": {"reason": "renamed",
 "renamed_to": "http.response.status_code"}`). Entity lookups list identifying
 and descriptive attributes, the metrics associated with the entity, and any
 custom entities that extend it; metric lookups include instrument, unit, and
-`entity_associations`. An unknown name returns an empty result, not an error.
+`entity_associations` and `aliases`. An unknown name returns an empty result, not an error.
 
 AI agents are an entity too. `gen_ai.agent` (from the `signaldb` registry) is
 identified by `gen_ai.agent.id` — the provider-assigned, stable id of a hosted
@@ -270,7 +270,17 @@ groups:
     stability: development
     brief: End-to-end checkout latency per order.
     entity_associations: [acme.order]
+    aliases: [acme.checkout.duration]
 ```
+
+A metric may list `aliases`: other names emitters report it under. Use it when
+a receiver does not follow semconv (the Docker Stats receiver writes
+`container.memory.usage.total` where semconv says `container.memory.usage`).
+Aliases are plain metric names, listed once each, and never the metric's own
+name. Lookups return them on the metric, and resolving an alias returns the
+canonical metric, so `resolve_metric` (and the MCP tool of the same name) works
+with whichever name an emitter uses. The Catalog charts an entity's metric under
+whichever of its names the window holds.
 
 Weaver's newer `file_format: definition/2` layout works too: keep the manifest
 fields at the top and list definitions under `attributes`, `attribute_groups`,
@@ -341,7 +351,8 @@ resolves in your document or a dependency; known attribute types
 (`string`, `int`, `double`, `boolean`, arrays, `template[...]`, or an enum);
 entity attribute roles `identifying`/`descriptive`; metrics carry
 `metric_name`, `instrument`, `unit`; every `entity_associations` target is a
-known entity; and an entity that `extends` another may add descriptive
+known entity; each metric's `aliases` are non-empty, distinct, differ from
+the metric's own name and never equal another metric's name or alias; and an entity that `extends` another may add descriptive
 attributes but never new identifying ones. Errors name the offending path
 (`groups[2].attributes[0].ref: unresolved ref …`). Replace is all-or-nothing —
 an invalid document leaves the previous one served.

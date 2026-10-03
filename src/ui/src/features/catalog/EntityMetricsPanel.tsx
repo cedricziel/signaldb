@@ -16,7 +16,7 @@ import {
   stepForRange,
   type ResolvedRange,
 } from "../../lib/time";
-import type { MetricHit } from "../schema/api";
+import type { ObservedMetric } from "../../api/entityMetrics";
 import type { EntityTypeDef } from "./entityTypes";
 import { MetricsChart } from "../metrics/MetricsChart";
 import { SkeletonLines } from "../explore/Skeleton";
@@ -29,6 +29,9 @@ import "./catalog.css";
  * nothing reads as "this is everything", so the count is always stated.
  */
 export const METRIC_TILE_CAP = 12;
+
+/** Observed names listed in the "did not match" note before "and N more". */
+const UNMATCHED_NAMES_SHOWN = 6;
 
 /** Points per series. Enough shape to read a trend at tile size. */
 const TILE_POINTS = 60;
@@ -47,6 +50,8 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
     isPending: lookupPending,
     isError: lookupFailed,
     error: lookupError,
+    associated,
+    unmatched,
   } = useEntityMetrics(entity, range, rangeKey);
   const names = metrics.map((m) => m.name).join(",");
 
@@ -92,11 +97,16 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
   // Still asking: an empty list here is not yet an answer.
   if (lookupPending) return <SkeletonLines lines={4} />;
 
+  // The registry describes this entity by metrics, and the window holds
+  // metrics in the same namespaces, yet no name matches: the emitter is
+  // probably spelling them differently. Say so, rather than render nothing.
+  const namesMismatch = metrics.length === 0 && unmatched.length > 0;
+
   // Nothing the registry associates with this entity type — so there is no
   // panel to draw, rather than an empty one to explain.
-  if (metrics.length === 0) return null;
+  if (metrics.length === 0 && !namesMismatch) return null;
 
-  if (hasUnsetPin) {
+  if (hasUnsetPin && !namesMismatch) {
     return (
       <div className="view-note">
         Metrics are not shown for an unset identity dimension.
@@ -107,10 +117,18 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
   const observed = metrics.filter((m) => series.data?.has(m.name));
   const shown = observed.slice(0, METRIC_TILE_CAP);
 
-  // Four states, named rather than nested: failed, still asking, asked and
-  // this window holds nothing, and charts.
+  // Five states, named rather than nested: names did not match, failed, still
+  // asking, asked and this window holds nothing, and charts.
   let body;
-  if (series.isError) {
+  if (namesMismatch) {
+    body = (
+      <UnmatchedNote
+        entity={entity}
+        associated={associated}
+        unmatched={unmatched}
+      />
+    );
+  } else if (series.isError) {
     body = <QueryError what="metric series" error={series.error} />;
   } else if (observed.length === 0) {
     body = series.isPending ? (
@@ -153,11 +171,40 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
   );
 }
 
+function UnmatchedNote({
+  entity,
+  associated,
+  unmatched,
+}: {
+  entity: EntityTypeDef;
+  associated: readonly string[];
+  unmatched: readonly string[];
+}) {
+  return (
+    <div className="view-note" role="status">
+      <strong>Metric names did not match.</strong> The registry associates{" "}
+      {associated.length} metrics with this {entity.singular} (for example{" "}
+      <code>{associated[0]}</code>), and this range holds {unmatched.length} in
+      the same namespace, but none share a name:{" "}
+      {unmatched.slice(0, UNMATCHED_NAMES_SHOWN).map((n, i) => (
+        <span key={n}>
+          {i > 0 && ", "}
+          <code>{n}</code>
+        </span>
+      ))}
+      {unmatched.length > UNMATCHED_NAMES_SHOWN &&
+        ` and ${unmatched.length - UNMATCHED_NAMES_SHOWN} more`}
+      . If the emitter does not follow semantic conventions, list its names as{" "}
+      <code>aliases</code> on the metric definitions in a schema registry.
+    </div>
+  );
+}
+
 function MetricTile({
   metric,
   series,
 }: {
-  metric: MetricHit;
+  metric: ObservedMetric;
   series: Parameters<typeof irSeriesToPromSeries>[0];
 }) {
   return (
@@ -175,6 +222,11 @@ function MetricTile({
           {metric.instrument} · {metric.unit}
         </span>
       </figcaption>
+      {metric.aliasOf && (
+        <div className="metric-tile-alias" title={metric.aliasOf}>
+          alias of {metric.aliasOf}
+        </div>
+      )}
       <MetricsChart
         series={irSeriesToPromSeries(series)}
         height={120}

@@ -321,6 +321,17 @@
   color: var(--dim);
 }
 
+/* The registry name a tile's observed name is an alias of: the tile is
+   labelled with what the emitter wrote, this says what it means. */
+.metric-tile-alias {
+  margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--dim);
+}
+
 /* Sparkline column — a shape at cell size, deliberately without axes or
    legend; the entity's own page carries the readable chart. */
 .entity-sparkline-cell {

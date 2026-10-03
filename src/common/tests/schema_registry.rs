@@ -307,6 +307,7 @@ async fn resolve_metrics_batches_exact_names_precedence_first_wins_deduped() {
                 "acme.checkout.latency".to_string(),
                 "k8s.pod.cpu.time".to_string(),
                 "acme.checkout.latency".to_string(),
+                "acme.checkout.duration".to_string(),
                 "no.such.metric".to_string(),
             ],
         )
@@ -314,7 +315,7 @@ async fn resolve_metrics_batches_exact_names_precedence_first_wins_deduped() {
         .expect("resolve");
 
     // unknown names are absent, not an error
-    assert_eq!(out.len(), 2, "{out:?}");
+    assert_eq!(out.len(), 3, "{out:?}");
     assert!(!out.contains_key("no.such.metric"));
 
     let latency = out.get("acme.checkout.latency").expect("acme metric hit");
@@ -323,6 +324,16 @@ async fn resolve_metrics_batches_exact_names_precedence_first_wins_deduped() {
         latency.def.entity_associations,
         vec!["acme.order".to_string()]
     );
+
+    // aliases ride along on the definition, so the Catalog can match them
+    assert_eq!(
+        latency.def.aliases,
+        vec!["acme.checkout.duration".to_string()]
+    );
+
+    // an alias resolves to the canonical definition
+    let by_alias = out.get("acme.checkout.duration").expect("alias hit");
+    assert_eq!(by_alias.def, latency.def);
 
     // first visible registry that defines it wins: otel bundled here.
     let cpu = out.get("k8s.pod.cpu.time").expect("k8s metric hit");

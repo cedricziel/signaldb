@@ -4,7 +4,9 @@ import {
   discoverObservedMetricNames,
   fetchEntityMetricNames,
   fetchMetricDefinitions,
+  matchObservedMetrics,
   nameSegments,
+  unmatchedObservedNames,
 } from "./entityMetrics";
 import { runIrQuery } from "./queryIr";
 import { resolveEntity, searchMetrics } from "../features/schema/api";
@@ -191,5 +193,91 @@ describe("the registry's own metric list for an entity", () => {
     });
 
     expect(await fetchEntityMetricNames("telemetry.sdk")).toEqual([]);
+  });
+});
+
+describe("matching observed names to registry definitions", () => {
+  const memory = {
+    ...metric("container.memory.usage", ["container"]),
+    aliases: ["container.memory.usage.total"],
+  } as MetricHit;
+
+  it("keeps a definition whose canonical name was observed", () => {
+    const out = matchObservedMetrics([memory], ["container.memory.usage"]);
+
+    expect(out.map((m) => m.name)).toEqual(["container.memory.usage"]);
+    expect(out[0]!.aliasOf).toBeUndefined();
+  });
+
+  it("charts an observed alias under the name the emitter wrote", () => {
+    // The Docker Stats receiver writes `.total`; the tile must query and be
+    // labelled with that name, and remember which definition it came from.
+    const out = matchObservedMetrics(
+      [memory],
+      ["container.memory.usage.total"],
+    );
+
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      name: "container.memory.usage.total",
+      aliasOf: "container.memory.usage",
+      instrument: "gauge",
+      unit: "1",
+    });
+  });
+
+  it("charts both when the canonical name and its alias were observed", () => {
+    const out = matchObservedMetrics(
+      [memory],
+      ["container.memory.usage.total", "container.memory.usage"],
+    );
+
+    expect(out.map((m) => [m.name, m.aliasOf])).toEqual([
+      ["container.memory.usage", undefined],
+      ["container.memory.usage.total", "container.memory.usage"],
+    ]);
+  });
+
+  it("drops a definition none of whose names were observed", () => {
+    expect(matchObservedMetrics([memory], ["system.cpu.time"])).toEqual([]);
+  });
+
+  it("does not chart a name two definitions both claim twice", () => {
+    const other = {
+      ...metric("container.memory.working_set", ["container"]),
+      aliases: ["container.memory.usage.total"],
+    } as MetricHit;
+
+    const out = matchObservedMetrics(
+      [memory, other],
+      ["container.memory.usage.total"],
+    );
+
+    expect(out.map((m) => m.name)).toEqual(["container.memory.usage.total"]);
+  });
+});
+
+describe("observed names that share a namespace but match nothing", () => {
+  it("lists the observed names in the namespaces the entity is described by", () => {
+    expect(
+      unmatchedObservedNames(
+        ["container.memory.usage", "container.cpu.time"],
+        [
+          "container.memory.usage.total",
+          "container.cpu.usage.total",
+          "system.cpu.time",
+        ],
+      ),
+    ).toEqual(["container.cpu.usage.total", "container.memory.usage.total"]);
+  });
+
+  it("is empty when nothing observed shares a namespace", () => {
+    expect(
+      unmatchedObservedNames(["container.memory.usage"], ["system.cpu.time"]),
+    ).toEqual([]);
+  });
+
+  it("is empty when the entity has no associated metrics", () => {
+    expect(unmatchedObservedNames([], ["container.memory.usage"])).toEqual([]);
   });
 });

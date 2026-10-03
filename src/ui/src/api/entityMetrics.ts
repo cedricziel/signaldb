@@ -4,7 +4,9 @@
  * Two questions, asked of whoever can answer them, then intersected: the
  * registry says which metrics describe an entity (recorded on the entity, so
  * it is read rather than reconstructed), and the window says which metrics
- * exist. Only their intersection can be charted.
+ * exist. Only their intersection can be charted. A definition may declare
+ * other names emitters report it under (`aliases`), and an observed alias
+ * counts as observed: the tile is drawn under the name the emitter wrote.
  *
  * The definition lookup — instrument and unit, which the tiles need — is the
  * one step still shaped by an API limit: `/api/v1/schema/metrics` searches by
@@ -31,6 +33,14 @@ export const NON_SCALAR_METRIC_TYPES = [
   "exponential_histogram",
   "summary",
 ];
+
+/**
+ * A registry definition as observed in a window.
+ *
+ * `name` is the name the window holds — what the series are queried and
+ * labelled by — which is an alias when `aliasOf` names the definition's own.
+ */
+export type ObservedMetric = MetricHit & { aliasOf?: string };
 
 /** One response's series, as the IR envelope carries them. */
 export type IrSeries = NonNullable<QueryIrResponse["series"]>;
@@ -134,11 +144,12 @@ export async function fetchEntityMetricNames(
  * back to the observed names anyway.
  */
 export function nameSegments(names: string[]): string[] {
-  const seen = new Set<string>();
-  for (const name of names) {
-    seen.add(name.split(/[._]/)[0]!);
-  }
-  return [...seen];
+  return [...new Set(names.map(firstSegment))];
+}
+
+/** A metric name's namespace: everything before the first `.` or `_`. */
+function firstSegment(name: string): string {
+  return name.split(/[._]/)[0]!;
 }
 
 /**
@@ -158,4 +169,44 @@ export async function fetchMetricDefinitions(
     nameSegments(names).map((segment) => searchMetrics(segment)),
   );
   return bySegment.flat().filter((def) => wanted.has(def.name));
+}
+
+/**
+ * The definitions' names, and their aliases, that the window holds.
+ *
+ * A definition whose canonical name and alias were both observed yields both:
+ * they are two series of real data. A name claimed by several definitions is
+ * charted once, under the first.
+ */
+export function matchObservedMetrics(
+  definitions: MetricHit[],
+  observed: string[],
+): ObservedMetric[] {
+  const inWindow = new Set(observed);
+  const seen = new Set<string>();
+  const out: ObservedMetric[] = [];
+  for (const def of definitions) {
+    for (const name of [def.name, ...(def.aliases ?? [])]) {
+      if (!inWindow.has(name) || seen.has(name)) continue;
+      seen.add(name);
+      out.push(name === def.name ? def : { ...def, name, aliasOf: def.name });
+    }
+  }
+  return out;
+}
+
+/**
+ * Observed names in the namespaces the entity's metrics live in.
+ *
+ * Only meaningful when nothing matched: it is the evidence that the emitter
+ * is writing this entity's metrics under names the registry does not know,
+ * as opposed to not writing them at all. Namespaces are first name segments,
+ * split the same way `nameSegments` does.
+ */
+export function unmatchedObservedNames(
+  associated: string[],
+  observed: string[],
+): string[] {
+  const namespaces = new Set(nameSegments(associated));
+  return observed.filter((name) => namespaces.has(firstSegment(name))).sort();
 }

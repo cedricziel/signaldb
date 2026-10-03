@@ -67,6 +67,7 @@ metrics:
     brief: End-to-end checkout latency per order.
     instrument: histogram
     unit: "s"
+    aliases: [acme.checkout.duration]
     entity_associations:
       - acme.order
     attributes:

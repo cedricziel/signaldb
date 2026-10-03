@@ -10871,6 +10871,13 @@
           "entity_associations"
         ],
         "properties": {
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Other names emitters report this metric under, for emitters that do\nnot follow the canonical name (`container.memory.usage.total` for\n`container.memory.usage`)."
+          },
           "attributes": {
             "type": "array",
             "items": {
