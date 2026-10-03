@@ -7120,14 +7120,14 @@ mod tests {
         assert_eq!(diff["truncated"], true);
     }
 
-    const DESCRIBE_FIELDS_RESPONSE: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"fields","fields":[],"truncated":false,"cost":{"mode":"metadata","window_scoped":false,"sampled":false,"approximate":false}}}"#;
+    const DESCRIBE_FIELDS_RESPONSE: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"fields","fields":[],"truncated":false,"cost":{"mode":"metadata","window_scoped":false,"sampled":false,"approximate":false,"partial":false}}}"#;
 
     /// A `describe: fields` answer for `traces` as the server lists it: declared
     /// intrinsics carry no level, keys the type authority has typed are
     /// `authority` with a level, a key typed at two levels is listed with
     /// source-aware qualifiers, and an untyped key is observed with no level.
     const TRACE_FIELDS_RESPONSE: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"fields","truncated":false,
-        "cost":{"mode":"metadata","window_scoped":false,"sampled":false,"approximate":false},
+        "cost":{"mode":"metadata","window_scoped":false,"sampled":false,"approximate":false,"partial":false},
         "fields":[
           {"name":"trace_id","type":"string","filterable":true,"origin":"declared"},
           {"name":"duration","type":"duration_ns","filterable":true,"origin":"declared"},
@@ -9192,7 +9192,7 @@ mod tests {
 
     #[tokio::test]
     async fn completion_suggests_service_names_from_maintained_statistics() {
-        const VALUES: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"values","values":[{"value":"checkout","count":3,"origin":"statistics"},{"value":"checkout-worker","count":2,"origin":"statistics"},{"value":"payments","count":1,"origin":"statistics"}],"truncated":false,"cost":{"mode":"metadata","window_scoped":false,"sampled":false,"approximate":true}}}"#;
+        const VALUES: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"values","values":[{"value":"checkout","count":3,"origin":"statistics"},{"value":"checkout-worker","count":2,"origin":"statistics"},{"value":"payments","count":1,"origin":"statistics"}],"truncated":false,"cost":{"mode":"metadata","window_scoped":false,"sampled":false,"approximate":true,"partial":false}}}"#;
 
         let (values, document) =
             complete_against_ir("find_recent_errors", "service", "checkout", VALUES).await;
@@ -9208,8 +9208,8 @@ mod tests {
 
     #[tokio::test]
     async fn completion_samples_service_names_when_no_statistics_cover_them() {
-        const UNCOVERED: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"values","truncated":false,"hint":"sample","cost":{"mode":"none","window_scoped":false,"sampled":false,"approximate":false}}}"#;
-        const SAMPLED: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"values","values":[{"value":"checkout","count":3,"origin":"sampled"}],"truncated":false,"cost":{"mode":"sampled_scan","window_scoped":true,"sampled":true,"approximate":true}}}"#;
+        const UNCOVERED: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"values","truncated":false,"hint":"sample","cost":{"mode":"none","window_scoped":false,"sampled":false,"approximate":false,"partial":false}}}"#;
+        const SAMPLED: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"values","values":[{"value":"checkout","count":3,"origin":"sampled"}],"truncated":false,"cost":{"mode":"sampled_scan","window_scoped":true,"sampled":true,"approximate":true,"partial":false}}}"#;
         let (base_url, router) = mock_json_router_sequence(vec![
             ("POST /api/v1/query", UNCOVERED),
             ("POST /api/v1/query", SAMPLED),
@@ -9243,7 +9243,7 @@ mod tests {
 
     #[tokio::test]
     async fn completion_suggests_matching_metric_names() {
-        const VALUES: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"values","values":[{"value":"http_requests_total","count":9,"origin":"sampled"},{"value":"http_request_duration_seconds","count":4,"origin":"sampled"},{"value":"process_cpu_seconds_total","count":1,"origin":"sampled"}],"truncated":false,"cost":{"mode":"sampled_scan","window_scoped":true,"sampled":true,"approximate":true}}}"#;
+        const VALUES: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"values","values":[{"value":"http_requests_total","count":9,"origin":"sampled"},{"value":"http_request_duration_seconds","count":4,"origin":"sampled"},{"value":"process_cpu_seconds_total","count":1,"origin":"sampled"}],"truncated":false,"cost":{"mode":"sampled_scan","window_scoped":true,"sampled":true,"approximate":true,"partial":false}}}"#;
 
         let (values, document) =
             complete_against_ir("build_promql_query", "metric", "http_request", VALUES).await;

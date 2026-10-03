@@ -531,7 +531,7 @@ mod tests {
             "window": { "start_ns": 0, "end_ns": 1 },
             "metadata": {
                 "kind": "fields", "truncated": false,
-                "cost": { "mode": "metadata", "window_scoped": false, "sampled": false, "approximate": false },
+                "cost": { "mode": "metadata", "window_scoped": false, "sampled": false, "approximate": false, "partial": false },
                 "fields": [
                     { "name": "trace_id", "type": "string", "filterable": true, "origin": "declared" },
                     { "name": "duration", "type": "duration_ns", "filterable": true, "origin": "declared" },
@@ -585,7 +585,7 @@ mod tests {
         assert_eq!(TagScope::Intrinsic.qualify("duration"), None);
     }
 
-    const DESCRIBE_EMPTY: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"fields","fields":[],"truncated":false,"cost":{"mode":"metadata","window_scoped":false,"sampled":false,"approximate":false}}}"#;
+    const DESCRIBE_EMPTY: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"fields","fields":[],"truncated":false,"cost":{"mode":"metadata","window_scoped":false,"sampled":false,"approximate":false,"partial":false}}}"#;
 
     /// A mock of the Query IR endpoint that only matches a version-4 `describe`
     /// document with the given source, range and stage, sent with the tenant
