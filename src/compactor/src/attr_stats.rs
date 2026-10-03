@@ -259,6 +259,7 @@ pub fn log_promotion_candidates(
 /// `attribute_level_stats` (change: otel-native-schema layer 6, D4/D5).
 /// Failures are logged and swallowed — the stats are advisory and must never
 /// fail a compaction.
+#[allow(clippy::too_many_arguments)]
 pub async fn persist_stats(
     catalog: &common::catalog::Catalog,
     tenant_id: &str,
@@ -267,6 +268,7 @@ pub async fn persist_stats(
     stats: &BTreeMap<String, AttrFieldStats>,
     level_presence: &AttrLevelPresence,
     total_rows: u64,
+    analyzed_span: common::catalog::AnalyzedSpan,
 ) {
     let signal = common::catalog::attribute_stats_signal(table_name);
     for (key, s) in stats {
@@ -280,6 +282,7 @@ pub async fn persist_stats(
                 total_rows as i64,
                 s.distinct as i64,
                 s.capped,
+                Some(analyzed_span),
             )
             .await
         {
@@ -542,6 +545,10 @@ mod tests {
             &stats,
             &level_presence,
             100,
+            common::catalog::AnalyzedSpan {
+                start_ns: 0,
+                end_ns: 3_600_000_000_000,
+            },
         )
         .await;
 
@@ -555,6 +562,13 @@ mod tests {
         assert_eq!(rows[0].total_rows, 100);
         assert_eq!(rows[0].distinct_estimate, 5);
         assert!(!rows[0].capped);
+        assert_eq!(
+            rows[0].analyzed_span,
+            Some(common::catalog::AnalyzedSpan {
+                start_ns: 0,
+                end_ns: 3_600_000_000_000,
+            })
+        );
 
         let level_rows = catalog
             .list_attribute_level_stats("t", "d", "metrics")

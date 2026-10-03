@@ -733,6 +733,7 @@ export type DiscoveredValue = {
  * What a discovery answer cost and how far it can be trusted.
  */
 export type DiscoveryCost = {
+    analyzed?: null | StatisticsCoverage;
     /**
      * Whether the answer is approximate — a bounded sketch of the most
      * frequent values rather than the exact set. A declared value set is
@@ -746,6 +747,14 @@ export type DiscoveryCost = {
      */
     as_of?: string | null;
     mode: CostMode;
+    /**
+     * Whether the statistics behind the answer cover less than the
+     * requested window. The analyzer observes one compacted partition at a
+     * time, so a statistics answer over a longer window can miss values and
+     * fields that only occur elsewhere, and its cardinalities are lower
+     * bounds. Pass `sample: true` to read the window instead.
+     */
+    partial: boolean;
     /**
      * Whether the answer is sampled, and therefore possibly incomplete.
      */
@@ -2998,6 +3007,26 @@ export type StatementError = {
     column?: number | null;
     message: string;
     statement: number;
+};
+
+/**
+ * What a statistics-derived answer was built from: the rows the analyzer
+ * last read and the event-time span they came from.
+ */
+export type StatisticsCoverage = {
+    /**
+     * End (exclusive) of that span, in Unix nanoseconds.
+     */
+    end_ns?: number | null;
+    /**
+     * Rows the analyzer read for the most recent observation.
+     */
+    rows_analyzed: number;
+    /**
+     * Start of the event-time span those rows came from, in Unix
+     * nanoseconds. Absent for statistics written before spans were recorded.
+     */
+    start_ns?: number | null;
 };
 
 /**

@@ -2334,12 +2334,18 @@ Values are answered in tiers:
    recorded by the compactor's analyzer while it was already reading the data
    for compaction. Still free (no data is read to answer you), but bounded and
    therefore `approximate: true`, with `cost.as_of` giving its age. Values come
-   back with `origin: "statistics"`.
+   back with `origin: "statistics"`. The analyzer observes one compacted
+   partition (an hour of data) at a time, so the sketch can miss values that
+   only occur elsewhere in your range: `cost.analyzed` names the rows and time
+   span it was built from, and `cost.partial: true` says that span does not
+   cover your `range`. A partial answer also carries the `hint` that reads the
+   whole range.
 3. **Nothing covers it.** The response returns no values, `cost.mode: "none"`,
    and a `hint` naming the query that _would_ compute the answer by reading
    data. It does not scan behind your back.
-4. **You asked for the data-derived answer** with `"sample": true`. SignalDB
-   then runs exactly the aggregation the hint names — bounded by your window
+4. **You asked for the data-derived answer** with `"sample": true`. Unless a
+   declared value set covers the field, SignalDB skips the sketch and runs
+   exactly the aggregation the hint names — bounded by your window
    and `limit` — and reports `cost.mode: "sampled_scan"` with
    `window_scoped: true` and `sampled: true`. Values come back with counts and
    `origin: "sampled"`.
@@ -2362,6 +2368,8 @@ its trustworthiness are part of the answer:
 | `sampled`       | whether the answer is sampled and therefore possibly incomplete                                                                                                       |
 | `approximate`   | whether the answer is a bounded sketch of the most frequent values rather than the exact set. A declared value set is exact; a statistics- or scan-derived one is not |
 | `as_of`         | how recent the statistics behind it are. `null` means none exist yet — on a tenant whose compactor has not run, `describe: fields` returns the declared fields only   |
+| `analyzed`      | what the statistics were built from: `rows_analyzed` and the event-time span `start_ns`/`end_ns` of those rows (absent for statistics older than span tracking)      |
+| `partial`       | whether the statistics cover less than your `range`. Fields seen only elsewhere can be missing, and every `cardinality` is then `at_least: true`                       |
 
 **`mode` and `approximate` are independent, and the combination that matters is
 `mode: "metadata"` with `approximate: true`.** That is a sketch answer: it cost
@@ -2372,7 +2380,7 @@ the two fields together:
 | `mode`         | `approximate` | what you have                                                                  |
 | -------------- | ------------- | ------------------------------------------------------------------------------ |
 | `metadata`     | `false`       | a declared value set — free and complete                                       |
-| `metadata`     | `true`        | a maintained sketch — free, bounded, and dated; suggest it, do not count on it |
+| `metadata`     | `true`        | a maintained sketch — free, bounded, dated, and `partial` when it saw less than your range |
 | `sampled_scan` | `true`        | a bounded read of your window, run because you asked                           |
 | `none`         | `false`       | no answer, with a `hint` naming the query that would produce one               |
 

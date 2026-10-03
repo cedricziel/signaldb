@@ -244,7 +244,7 @@ fn ok_body(path: &str, big: bool) -> Response {
             "window": {"start_ns": 0, "end_ns": 1},
             "metadata": {
                 "kind": "values", "values": [], "truncated": false,
-                "cost": {"mode": "none", "window_scoped": false, "sampled": false, "approximate": false}
+                "cost": {"mode": "none", "window_scoped": false, "sampled": false, "approximate": false, "partial": false}
             }
         })
     } else if big {
