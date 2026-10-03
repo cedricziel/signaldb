@@ -47,20 +47,23 @@ Criterion targets) so they never enter a normal build. CI's clippy step on core 
 (`--all-targets --all-features`) compiles them, so a bench that stops
 building fails CI.
 
-| Crate               | Bench target                  | Measures                                                                                                                                          |
-| ------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `common`            | `ingest_and_wal`              | Acceptor CPU per OTLP trace request: protobuf decode + OTLP→Arrow; WAL `record_batch_to_bytes`/`bytes_to_record_batch` round-trip                 |
-| `common`            | `signal_decode`               | Same decode + convert for logs and metrics requests                                                                                               |
-| `writer`            | `schema_transform_benchmarks` | `transform_trace_v1_to_v2` — the wire→storage materialization plan                                                                                |
-| `writer`            | `iceberg_benchmarks`          | `IcebergTableWriter::append_batches_with_marker` across batch sizes, multi-batch commits, and concurrent tenants; writer creation cost separately; `ingest_sort` isolates the per-commit-group sort by the declared key on in-order and shuffled input |
+| Crate               | Bench target                  | Measures                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `common`            | `ingest_and_wal`              | Acceptor CPU per OTLP trace request: protobuf decode + OTLP→Arrow; WAL `record_batch_to_bytes`/`bytes_to_record_batch` round-trip                                                                                                                                                                                                                                                                           |
+| `common`            | `signal_decode`               | Same decode + convert for logs and metrics requests                                                                                                                                                                                                                                                                                                                                                         |
+| `writer`            | `schema_transform_benchmarks` | `transform_trace_v1_to_v2` — the wire→storage materialization plan                                                                                                                                                                                                                                                                                                                                          |
+| `writer`            | `iceberg_benchmarks`          | `IcebergTableWriter::append_batches_with_marker` across batch sizes, multi-batch commits, and concurrent tenants; writer creation cost separately; `ingest_sort` isolates the per-commit-group sort by the declared key on in-order and shuffled input                                                                                                                                                      |
 | `tests-integration` | `querier_read_paths`          | Trace lookup by id (unbounded, time-windowed, via a point index, and with/without the Parquet footer cache) and the trace-groups listing over a seeded Iceberg table; `recent_first_topk` times `ORDER BY timestamp DESC LIMIT n` over sequential files in every attestation state and prints what each scan opened and pruned (see [Declared sort orders](#declared-sort-orders-what-the-benchmark-shows)) |
-| `tests-integration` | `querier_service_read_paths` | The real querier (`QuerierFlightService::do_get` with router ticket formats): bloom-pruned `find_trace` with and without a time hint, `search_traces`, a PromQL range query (lowered to the Query IR) and a LogQL line filter through the actual engines |
-| `tests-integration` | `compaction`                  | `CompactionExecutor::execute_candidate` rewriting a set of small files                                                                            |
-| `tests-integration` | `trace_index_scaling`         | Point lookup against a prefix-sharded, bloom-filtered Parquet index at 10k → 1M traces                                                            |
+| `tests-integration` | `querier_service_read_paths`  | The real querier (`QuerierFlightService::do_get` with router ticket formats): bloom-pruned `find_trace` with and without a time hint, `search_traces`, a PromQL range query (lowered to the Query IR) and a LogQL line filter through the actual engines                                                                                                                                                    |
+| `tests-integration` | `compaction`                  | `CompactionExecutor::execute_candidate` rewriting a set of small files                                                                                                                                                                                                                                                                                                                                      |
+| `tests-integration` | `trace_index_scaling`         | Point lookup against a prefix-sharded, bloom-filtered Parquet index at 10k → 1M traces                                                                                                                                                                                                                                                                                                                      |
 
 The inputs come from shared fixtures: `common::testing::sample_trace_request`
 and friends for OTLP payloads, and `tests_integration::generators` for seeded
 Iceberg tables. Reuse those rather than hand-building data in a new bench.
+Signal tables use the typed attribute layout, so a writer that seeds one needs
+a `TypeAuthority`: use `tests_integration::test_support::writer_with_type_authority`
+rather than a bare `IcebergTableWriter::new`.
 
 ## Running locally
 
@@ -145,7 +148,7 @@ metrics, because wall-clock alone cannot tell an elided sort from a quiet
 machine. These are the numbers from the run that closed #1317 (in-memory
 object store, warm footer cache, 4 vCPUs):
 
-| Shape                                      | Files               | Reached | Pruned | Read | Bytes   | Sort   | Time    |
+| Shape                                      | Files               | Reached | Pruned | Read |   Bytes | Sort   |    Time |
 | ------------------------------------------ | ------------------- | ------: | -----: | ---: | ------: | ------ | ------: |
 | `ORDER BY timestamp DESC LIMIT 20`         | attested            |      60 |     56 |    4 |  23,641 | kept   | 13.3 ms |
 |                                            | attested, split off |      60 |     58 |    2 |  11,820 | kept   | 13.2 ms |
@@ -193,7 +196,7 @@ group by the table's key, on the same `metrics` batches
 `single_batch_writes` appends. Ingest's usual input arrives close to time
 order, which is the cheap case; a shuffled group is the expensive one.
 
-| Rows    | Append (`single_batch_writes`) | Sort, in order | Sort, shuffled |
+|    Rows | Append (`single_batch_writes`) | Sort, in order | Sort, shuffled |
 | ------: | -----------------------------: | -------------: | -------------: |
 |   1,000 |                         4.6 ms |          75 µs |         111 µs |
 |  10,000 |                        15.3 ms |         748 µs |        1.45 ms |
