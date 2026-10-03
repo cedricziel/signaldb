@@ -72,6 +72,9 @@ cargo test --profile ci-test --workspace --all-features --bench '*' --no-fail-fa
 The inputs come from shared fixtures: `common::testing::sample_trace_request`
 and friends for OTLP payloads, and `tests_integration::generators` for seeded
 Iceberg tables. Reuse those rather than hand-building data in a new bench.
+Signal tables use the typed attribute layout, so a writer that seeds one needs
+a `TypeAuthority`: use `tests_integration::test_support::writer_with_type_authority`
+rather than a bare `IcebergTableWriter::new`.
 
 ## Running locally
 
