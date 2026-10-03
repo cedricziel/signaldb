@@ -23,8 +23,8 @@ use compactor::planner::{CompactionCandidate, CompactionPlanner, PlannerConfig};
 use criterion::{Criterion, criterion_group, criterion_main};
 use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity};
 use tests_integration::generators;
+use tests_integration::test_support;
 use tokio::runtime::Runtime;
-use writer::IcebergTableWriter;
 
 const TENANT: &str = "compact-tenant";
 const DATASET: &str = "compact-dataset";
@@ -41,7 +41,7 @@ async fn seed_and_plan() -> (CompactionExecutor, CompactionCandidate) {
         .build();
     let catalog_manager = Arc::new(CatalogManager::new(config).await.expect("catalog manager"));
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = test_support::writer_with_type_authority(
         &catalog_manager,
         TENANT.to_string(),
         DATASET.to_string(),

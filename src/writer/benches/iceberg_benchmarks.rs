@@ -22,12 +22,16 @@
 //! throughput.
 
 use std::hint::black_box;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::CatalogManager;
+use common::catalog::Catalog;
 use common::config::{Configuration, SchemaConfig, StorageConfig};
 use common::flight::conversion::otlp_metrics_to_arrow;
 use common::iceberg::sort::{canonical_sort_columns, sort_batch_by};
+use common::schema::type_authority::TypeAuthority;
+use common::schema_registry::SchemaResolver;
 use common::testing::sample_metrics_request;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use datafusion::arrow::array::{RecordBatch, UInt32Array};
@@ -59,7 +63,10 @@ fn create_benchmark_config() -> Configuration {
 
 /// A fresh catalog + `metrics` (wide layout) writer under a unique tenant,
 /// so no two iterations share table state.
-async fn create_writer(config: &Configuration) -> IcebergTableWriter {
+async fn create_writer(
+    config: &Configuration,
+    authority: &Arc<TypeAuthority>,
+) -> IcebergTableWriter {
     let catalog_manager = CatalogManager::new(config.clone())
         .await
         .expect("Failed to create catalog manager");
@@ -71,6 +78,20 @@ async fn create_writer(config: &Configuration) -> IcebergTableWriter {
     )
     .await
     .expect("Failed to create writer")
+    .with_type_authority(authority.clone())
+}
+
+/// Typed-layout tables need a `TypeAuthority` to append; built once per bench.
+async fn bench_type_authority() -> Arc<TypeAuthority> {
+    let catalog = Catalog::new_in_memory()
+        .await
+        .expect("Failed to create type authority catalog");
+    let resolver = SchemaResolver::new(catalog.clone());
+    Arc::new(TypeAuthority::new(
+        catalog,
+        resolver,
+        Arc::new(Configuration::default()),
+    ))
 }
 
 /// A `metrics` batch already in the wide STORED schema (so no wire->wide
@@ -89,12 +110,13 @@ fn create_benchmark_data(num_rows: usize) -> RecordBatch {
 fn time_appends(
     rt: &Runtime,
     config: &Configuration,
+    authority: &Arc<TypeAuthority>,
     batches: &[RecordBatch],
     iters: u64,
 ) -> Duration {
     let mut total = Duration::ZERO;
     for _ in 0..iters {
-        let mut writer = rt.block_on(create_writer(config));
+        let mut writer = rt.block_on(create_writer(config, authority));
         let entries: Vec<_> = batches
             .iter()
             .cloned()
@@ -115,6 +137,7 @@ fn time_appends(
 fn time_concurrent_appends(
     rt: &Runtime,
     config: &Configuration,
+    authority: &Arc<TypeAuthority>,
     batch: &RecordBatch,
     num_writers: usize,
     iters: u64,
@@ -122,7 +145,7 @@ fn time_concurrent_appends(
     let mut total = Duration::ZERO;
     for _ in 0..iters {
         let writers: Vec<IcebergTableWriter> = (0..num_writers)
-            .map(|_| rt.block_on(create_writer(config)))
+            .map(|_| rt.block_on(create_writer(config, authority)))
             .collect();
 
         let start = Instant::now();
@@ -155,6 +178,7 @@ fn time_concurrent_appends(
 fn bench_single_batch_writes(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let config = create_benchmark_config();
+    let authority = rt.block_on(bench_type_authority());
 
     let mut group = c.benchmark_group("single_batch_writes");
     group.sample_size(SAMPLE_SIZE);
@@ -170,7 +194,7 @@ fn bench_single_batch_writes(c: &mut Criterion) {
             &batch,
             |b, batch| {
                 b.iter_custom(|iters| {
-                    time_appends(&rt, &config, std::slice::from_ref(batch), iters)
+                    time_appends(&rt, &config, &authority, std::slice::from_ref(batch), iters)
                 });
             },
         );
@@ -182,6 +206,7 @@ fn bench_single_batch_writes(c: &mut Criterion) {
 fn bench_multi_batch_writes(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let config = create_benchmark_config();
+    let authority = rt.block_on(bench_type_authority());
 
     let mut group = c.benchmark_group("multi_batch_writes");
     group.sample_size(SAMPLE_SIZE);
@@ -198,7 +223,7 @@ fn bench_multi_batch_writes(c: &mut Criterion) {
             BenchmarkId::from_parameter(format!("{num_batches}_batches_{total_rows}_rows")),
             &batches,
             |b, batches| {
-                b.iter_custom(|iters| time_appends(&rt, &config, batches, iters));
+                b.iter_custom(|iters| time_appends(&rt, &config, &authority, batches, iters));
             },
         );
     }
@@ -210,13 +235,14 @@ fn bench_multi_batch_writes(c: &mut Criterion) {
 fn bench_writer_creation(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let config = create_benchmark_config();
+    let authority = rt.block_on(bench_type_authority());
 
     let mut group = c.benchmark_group("writer");
     group.sample_size(SAMPLE_SIZE);
     group.warm_up_time(WARM_UP);
     group.bench_function("creation", |b| {
         b.to_async(&rt)
-            .iter(|| async { black_box(create_writer(&config).await) });
+            .iter(|| async { black_box(create_writer(&config, &authority).await) });
     });
     group.finish();
 }
@@ -227,6 +253,7 @@ fn bench_writer_creation(c: &mut Criterion) {
 fn bench_concurrent_writes(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let config = create_benchmark_config();
+    let authority = rt.block_on(bench_type_authority());
 
     let mut group = c.benchmark_group("concurrent_writes");
     group.sample_size(SAMPLE_SIZE);
@@ -243,7 +270,7 @@ fn bench_concurrent_writes(c: &mut Criterion) {
             &num_writers,
             |b, &num_writers| {
                 b.iter_custom(|iters| {
-                    time_concurrent_appends(&rt, &config, &batch, num_writers, iters)
+                    time_concurrent_appends(&rt, &config, &authority, &batch, num_writers, iters)
                 });
             },
         );

@@ -5,8 +5,8 @@ name: Benchmarks
 # which renders a per-benchmark trend chart there; docs.yml folds that page
 # and a "latest results" table into the published docs site.
 #
-# The compile guard for these benches is ci.yml's clippy step
-# (`--all-targets --all-features`); this workflow only *runs* them. Numbers
+# ci.yml compiles these benches (clippy) and runs each once (bench-smoke) on
+# every core PR; this workflow measures them. Numbers
 # are single-runner, in-memory measurements: a relative regression signal,
 # not production latency.
 
