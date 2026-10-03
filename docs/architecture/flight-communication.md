@@ -459,7 +459,13 @@ batch commits, not individual requests.
 
 RecordBatch encoding goes through `common::flight::batches_to_compressed_flight_data`,
 which forwards any dictionary batches `IpcDataGenerator::encode` produces
-ahead of each data batch. Decoding on the receiving side goes through
+ahead of each data batch, or, for a result that streams, through
+`common::flight::encode_batch_stream`, which resends dictionaries rather than
+hydrating them. The querier's `do_get` uses the streaming form for every
+ticket: it encodes each batch as it is sent instead of building the whole
+encoded response first, and raw-SQL tickets also execute as a DataFusion
+stream, so their rows never sit in the querier in full. The ticket's query
+deadline and per-tenant concurrency permit cover the stream until it ends. Decoding on the receiving side goes through
 `common::flight::decode::flight_data_vec_to_batches` — a wrapper around
 `arrow_flight::decode::FlightRecordBatchStream` for call sites that buffer a
 `Vec<FlightData>` before decoding — rather than

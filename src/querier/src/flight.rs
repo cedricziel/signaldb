@@ -7,7 +7,6 @@ use arrow_flight::{
 use bytes::Bytes;
 use common::CatalogManager;
 use common::config::QuerierConfig;
-use common::flight::batches_to_compressed_flight_data;
 use common::flight::schema::create_span_batch_schema;
 use common::flight::transport::InMemoryFlightTransport;
 use common::parquet_metadata_cache::CacheParquetMetadata;
@@ -19,8 +18,8 @@ use datafusion::execution::cache::cache_manager::CacheManagerConfig;
 use datafusion::execution::context::SessionContext;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::prelude::SessionConfig;
-use futures::StreamExt;
 use futures::stream::{self, BoxStream};
+use futures::{StreamExt, TryStreamExt};
 use object_store::ObjectStore;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -40,6 +39,118 @@ use crate::query::{
     MetricQueryParams, MetricSeriesParams, SearchQueryParams, TraceTagValuesParams,
     TraceTagsParams,
 };
+
+/// Result batches of one Flight ticket, in the order they are sent.
+type BatchStream = BoxStream<'static, Result<RecordBatch, Status>>;
+
+/// A DataFusion result stream polled inside its `signaldb.query.execute`
+/// span, recording the row and batch counts on that span when it ends.
+struct RecordedStream {
+    inner: datafusion::execution::SendableRecordBatchStream,
+    span: tracing::Span,
+    rows: u64,
+    batches: u64,
+}
+
+impl RecordedStream {
+    fn new(inner: datafusion::execution::SendableRecordBatchStream, span: tracing::Span) -> Self {
+        Self {
+            inner,
+            span,
+            rows: 0,
+            batches: 0,
+        }
+    }
+}
+
+impl futures::Stream for RecordedStream {
+    type Item = datafusion::error::Result<RecordBatch>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = &mut *self;
+        let polled = this.span.in_scope(|| this.inner.poll_next_unpin(cx));
+        match &polled {
+            std::task::Poll::Ready(Some(Ok(batch))) => {
+                this.rows += batch.num_rows() as u64;
+                this.batches += 1;
+            }
+            std::task::Poll::Ready(None) => {
+                this.span.record("signaldb.query.rows", this.rows as i64);
+                this.span
+                    .record("signaldb.query.batches", this.batches as i64);
+            }
+            _ => {}
+        }
+        polled
+    }
+}
+
+/// One admitted `do_get` query: its wall-clock deadline, its concurrency
+/// permit, and the metrics recorded when it finishes.
+struct RunningQuery {
+    deadline: tokio::time::Instant,
+    timeout: std::time::Duration,
+    started: std::time::Instant,
+    query_type: &'static str,
+    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl RunningQuery {
+    fn timed_out(&self) -> Status {
+        Status::deadline_exceeded(format!(
+            "query exceeded the configured timeout of {:?}",
+            self.timeout
+        ))
+    }
+
+    fn record(&self, rows: u64, failed: bool) {
+        let app_metrics = common::self_monitoring::app_metrics();
+        let query_attrs = [opentelemetry::KeyValue::new("query_type", self.query_type)];
+        let elapsed = self.started.elapsed().as_secs_f64();
+        app_metrics.query_duration.record(elapsed, &query_attrs);
+        app_metrics.flight_request_duration.record(
+            elapsed,
+            &[opentelemetry::KeyValue::new("rpc.method", "do_get")],
+        );
+        if failed {
+            app_metrics.query_errors.add(1, &query_attrs);
+        } else {
+            app_metrics.query_rows_returned.record(rows, &query_attrs);
+        }
+    }
+
+    fn fail(&self, status: Status) -> Status {
+        self.record(0, true);
+        status
+    }
+
+    /// Yield `batches` until they end, fail, or the deadline passes, holding
+    /// the permit until then and recording the query's metrics once.
+    fn bound(self, batches: BatchStream) -> BatchStream {
+        stream::unfold(Some((batches, self, 0u64)), |state| async move {
+            let (mut batches, query, rows) = state?;
+            match tokio::time::timeout_at(query.deadline, batches.next()).await {
+                Ok(Some(Ok(batch))) => {
+                    let rows = rows + batch.num_rows() as u64;
+                    Some((Ok(batch), Some((batches, query, rows))))
+                }
+                Ok(Some(Err(status))) => Some((Err(query.fail(status)), None)),
+                Ok(None) => {
+                    query.record(rows, false);
+                    None
+                }
+                Err(_) => {
+                    let status = query.timed_out();
+                    Some((Err(query.fail(status)), None))
+                }
+            }
+        })
+        .boxed()
+    }
+}
 
 /// Translates `[querier.warm_index]` into the gate
 /// `crate::query::warm_index::WarmIndexTable::maybe_wrap` probes with.
@@ -1424,12 +1535,19 @@ impl QuerierFlightService {
         self.session_cache.entry(cache_key).or_insert(ctx).clone()
     }
 
-    /// Execute a SQL query and return results as RecordBatches
-    async fn execute_query(
+    /// Plan a raw SQL query and start executing it. Planning errors are
+    /// returned before any batch exists; execution errors arrive in the
+    /// stream, which yields batches as DataFusion produces them instead of
+    /// materializing the whole result first (#938).
+    async fn execute_query_stream(
         &self,
         ctx: &SessionContext,
         sql: &str,
-    ) -> Result<Vec<RecordBatch>, Box<dyn std::error::Error + Send + Sync>> {
+        failure: &'static str,
+    ) -> Result<BatchStream, Status> {
+        let to_status = move |e: datafusion::error::DataFusionError| {
+            Status::internal(format!("{failure}: {e}"))
+        };
         // Literals sanitized before the text reaches logs or spans — raw
         // SQL can carry PII in string/numeric literals.
         let sanitized = common::self_monitoring::sanitize::sanitize_query_text(sql);
@@ -1441,47 +1559,27 @@ impl QuerierFlightService {
                 "signaldb.query.plan",
                 signaldb.query.text = %sanitized,
             ))
-            .await?;
-        // Cap the number of rows a raw SQL query can materialize; the
-        // client controls the SQL, so an unbounded SELECT could otherwise
-        // buffer arbitrarily many rows in memory.
-        let df = df.limit(0, Some(self.limits.max_sql_rows))?;
+            .await
+            .map_err(to_status)?;
+        // Cap the number of rows a raw SQL query can return; the client
+        // controls the SQL, so an unbounded SELECT could otherwise run on
+        // arbitrarily many rows.
+        let df = df
+            .limit(0, Some(self.limits.max_sql_rows))
+            .map_err(to_status)?;
         let exec_span = tracing::info_span!(
             "signaldb.query.execute",
             signaldb.query.rows = tracing::field::Empty,
             signaldb.query.batches = tracing::field::Empty,
         );
-        let batches = df.collect().instrument(exec_span.clone()).await?;
-        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-        exec_span.record("signaldb.query.rows", rows as i64);
-        exec_span.record("signaldb.query.batches", batches.len() as i64);
-
-        Ok(batches)
-    }
-
-    /// Execute a query against the object store
-    async fn execute_distributed_query(
-        &self,
-        ctx: &SessionContext,
-        query: &str,
-    ) -> Result<Vec<RecordBatch>, Box<dyn std::error::Error + Send + Sync>> {
-        // Query only the object store - data at rest
-        // Writers are responsible for persisting data to object store
-        // Querier should not depend on or know about writers
-
-        match self.execute_query(ctx, query).await {
-            Ok(batches) => {
-                tracing::debug!(
-                    batch_count = batches.len(),
-                    "Retrieved batches from object store"
-                );
-                Ok(batches)
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "Error querying object store");
-                Err(e)
-            }
-        }
+        let stream = df
+            .execute_stream()
+            .instrument(exec_span.clone())
+            .await
+            .map_err(to_status)?;
+        Ok(RecordedStream::new(stream, exec_span)
+            .map_err(to_status)
+            .boxed())
     }
 
     /// Execute one parsed Flight ticket, returning the record batches it
@@ -1504,7 +1602,7 @@ impl QuerierFlightService {
         ticket_request: TicketRequest,
         caller_tenant: Option<&common::auth::TenantContext>,
         metadata: &tonic::metadata::MetadataMap,
-    ) -> Result<(Vec<RecordBatch>, common::flight::CorrelateReport), Status> {
+    ) -> Result<(BatchStream, common::flight::CorrelateReport), Status> {
         let mut correlate_report = common::flight::CorrelateReport::default();
         let batches = match ticket_request {
             TicketRequest::FindTrace {
@@ -1911,9 +2009,10 @@ impl QuerierFlightService {
                 // tenant/dataset so unqualified table names like
                 // `profiles` resolve inside the tenant's catalog.
                 let request_ctx = self.session_for_request(Some(&tenant_slug), Some(&dataset_slug));
-                self.execute_distributed_query(&request_ctx, &sql)
-                    .await
-                    .map_err(|e| Status::internal(format!("Profiles SQL query failed: {e}")))?
+                let batches = self
+                    .execute_query_stream(&request_ctx, &sql, "Profiles SQL query failed")
+                    .await?;
+                return Ok((batches, correlate_report));
             }
             TicketRequest::SqlQuery { sql } => {
                 // Tenant-scoped callers are pinned to their
@@ -1949,12 +2048,18 @@ impl QuerierFlightService {
                 let request_ctx =
                     self.session_for_request(tenant_slug.as_deref(), dataset_slug.as_deref());
 
-                self.execute_distributed_query(&request_ctx, &sql)
-                    .await
-                    .map_err(|e| Status::internal(format!("Query execution failed: {e}")))?
+                let batches = self
+                    .execute_query_stream(&request_ctx, &sql, "Query execution failed")
+                    .await?;
+                return Ok((batches, correlate_report));
             }
         };
-        Ok((batches, correlate_report))
+        // Only raw SQL streams from execution; the other tickets build
+        // their result in full and are encoded batch by batch from there.
+        Ok((
+            stream::iter(batches.into_iter().map(Ok)).boxed(),
+            correlate_report,
+        ))
     }
 }
 
@@ -2181,69 +2286,44 @@ impl FlightService for QuerierFlightService {
                             .as_ref()
                             .map(|ctx| ctx.tenant_id.clone())
                             .or_else(|| ticket_tenant_slug.clone());
-                        // Held until the query's batches are fully computed.
-                        let _query_permit = match &permit_tenant {
+                        // Held until the result stream ends.
+                        let query_permit = match &permit_tenant {
                             Some(tenant) => self.try_acquire_query_permit(tenant)?,
                             None => None,
                         };
-                        let query_start = std::time::Instant::now();
+                        let query = RunningQuery {
+                            deadline: tokio::time::Instant::now() + self.limits.query_timeout,
+                            timeout: self.limits.query_timeout,
+                            started: std::time::Instant::now(),
+                            query_type,
+                            _permit: query_permit,
+                        };
                         let query_future =
                             self.execute_ticket(ticket_request, caller_tenant.as_ref(), &metadata);
-                        // Bound every query's wall-clock time so a heavy scan cannot
-                        // occupy the querier indefinitely.
-                        let batches_result: Result<
-                            (Vec<_>, common::flight::CorrelateReport),
-                            Status,
-                        > = match tokio::time::timeout(self.limits.query_timeout, query_future)
-                            .await
-                        {
-                            Ok(result) => result,
-                            Err(_) => Err(Status::deadline_exceeded(format!(
-                                "query exceeded the configured timeout of {:?}",
-                                self.limits.query_timeout
-                            ))),
-                        };
+                        // Bound every query's wall-clock time, planning and
+                        // streaming alike, so a heavy scan cannot occupy the
+                        // querier indefinitely.
+                        let (batches, correlate_report) =
+                            match tokio::time::timeout_at(query.deadline, query_future).await {
+                                Ok(Ok(result)) => result,
+                                Ok(Err(status)) => return Err(query.fail(status)),
+                                Err(_) => return Err(query.fail(query.timed_out())),
+                            };
 
-                        let app_metrics = common::self_monitoring::app_metrics();
-                        let query_attrs = [opentelemetry::KeyValue::new("query_type", query_type)];
-                        app_metrics
-                            .query_duration
-                            .record(query_start.elapsed().as_secs_f64(), &query_attrs);
-                        app_metrics.flight_request_duration.record(
-                            query_start.elapsed().as_secs_f64(),
-                            &[opentelemetry::KeyValue::new("rpc.method", "do_get")],
-                        );
-                        let (batches, correlate_report) = match batches_result {
-                            Ok(result) => result,
-                            Err(status) => {
-                                app_metrics.query_errors.add(1, &query_attrs);
-                                return Err(status);
-                            }
-                        };
-                        let rows_returned: u64 = batches.iter().map(|b| b.num_rows() as u64).sum();
-                        app_metrics
-                            .query_rows_returned
-                            .record(rows_returned, &query_attrs);
-
-                        let trailer = common::flight::correlate_report_trailer(&correlate_report);
-                        if batches.is_empty() {
-                            let out = stream::iter(trailer.into_iter().map(Ok)).boxed();
-                            return Ok(Response::new(out));
-                        }
-
-                        // Convert results to Flight data
-                        let schema = batches[0].schema();
-                        let mut flight_data = batches_to_compressed_flight_data(&schema, batches)
-                            .map_err(|e| {
-                            Status::internal(format!("Failed to convert results: {e}"))
-                        })?;
+                        // Encode each batch as it arrives rather than holding
+                        // the whole result plus an encoded copy (#938).
+                        let flight_data = common::flight::encode_batch_stream(
+                            query.bound(batches).map_err(Into::into),
+                        )
+                        .map_err(Status::from);
                         // Trailing, data-free message: the correlate report is
-                        // only known once the query above has fully streamed, too
-                        // late for the schema message already sent above (see
+                        // only known once the query has run, too late for the
+                        // schema message (see
                         // `common::flight::correlate_report_trailer`).
-                        flight_data.extend(trailer);
-
-                        let out = stream::iter(flight_data.into_iter().map(Ok)).boxed();
+                        let trailer = common::flight::correlate_report_trailer(&correlate_report);
+                        let out = flight_data
+                            .chain(stream::iter(trailer.into_iter().map(Ok)))
+                            .boxed();
                         Ok(Response::new(out))
                     }
                     .await;
@@ -2616,11 +2696,26 @@ mod tests {
         let flight_transport = Arc::new(InMemoryFlightTransport::new(bootstrap));
         let service = QuerierFlightService::new(object_store, flight_transport);
 
-        // Test basic query execution (will fail due to no data, but tests the path)
-        let result = service
-            .execute_query(&service.session_ctx, "SELECT 1 as test_col")
-            .await;
-        assert!(result.is_ok());
+        let batches = run_sql(&service, "SELECT 1 as test_col").await.unwrap();
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+    }
+
+    /// Run raw SQL through `do_get` and decode the whole response, the way
+    /// the router does; a failure before or during streaming is an `Err`.
+    async fn run_sql(
+        service: &QuerierFlightService,
+        sql: &str,
+    ) -> Result<Vec<RecordBatch>, Status> {
+        let ticket = Ticket {
+            ticket: Bytes::from(sql.to_string()),
+        };
+        let stream = service.do_get(Request::new(ticket)).await?.into_inner();
+        arrow_flight::decode::FlightRecordBatchStream::new_from_flight_data(
+            stream.map_err(arrow_flight::error::FlightError::from),
+        )
+        .try_collect()
+        .await
+        .map_err(Status::from)
     }
 
     async fn make_service_with_limits(limits: QuerierConfig) -> QuerierFlightService {
@@ -2656,15 +2751,79 @@ mod tests {
         })
         .await;
 
-        let batches = service
-            .execute_query(
-                &service.session_ctx,
-                "SELECT * FROM generate_series(1, 1000)",
-            )
+        let batches = run_sql(&service, "SELECT * FROM generate_series(1, 1000)")
             .await
             .unwrap();
         let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(rows, 10, "raw SQL results must be capped at max_sql_rows");
+    }
+
+    /// The result streams: `do_get` answers before the query has produced
+    /// its rows, and the tenant's concurrency slot stays taken until the
+    /// stream is drained, not merely until the response starts (#938).
+    #[tokio::test]
+    async fn raw_sql_streams_and_holds_its_permit_until_drained() {
+        let service = make_service_with_limits(QuerierConfig {
+            max_concurrent_queries_per_tenant: Some(1),
+            ..QuerierConfig::default()
+        })
+        .await;
+        let ticket = Ticket {
+            ticket: Bytes::from("sql_profiles:acme:prod:SELECT * FROM generate_series(1, 100000)"),
+        };
+        let stream = service
+            .do_get(Request::new(ticket))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(
+            service.try_acquire_query_permit("acme").is_err(),
+            "the permit must be held while the result is still streaming"
+        );
+        let batches: Vec<RecordBatch> =
+            arrow_flight::decode::FlightRecordBatchStream::new_from_flight_data(
+                stream.map_err(arrow_flight::error::FlightError::from),
+            )
+            .try_collect()
+            .await
+            .unwrap();
+        assert!(
+            batches.len() > 1,
+            "a large result arrives as several batches"
+        );
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 100_000);
+        assert!(service.try_acquire_query_permit("acme").unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn raw_sql_keeps_dictionary_columns_over_the_wire() {
+        let service = make_service().await;
+        let batches = run_sql(
+            &service,
+            "SELECT arrow_cast(v, 'Dictionary(Int32, Utf8)') AS d \
+             FROM (VALUES ('a'), ('b'), ('a')) t(v)",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            batches[0].schema().field(0).data_type(),
+            datafusion::arrow::datatypes::DataType::Dictionary(_, _)
+        ));
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 3);
+    }
+
+    #[tokio::test]
+    async fn raw_sql_planning_error_fails_before_streaming() {
+        let service = make_service().await;
+        let ticket = Ticket {
+            ticket: Bytes::from("SELECT no_such_column FROM generate_series(1, 3)"),
+        };
+        let status = match service.do_get(Request::new(ticket)).await {
+            Ok(_) => panic!("a query that cannot plan must fail up front"),
+            Err(status) => status,
+        };
+        assert_eq!(status.code(), tonic::Code::Internal);
     }
 
     /// Register `acme.prod.traces` with two parent/child span pairs
@@ -3097,10 +3256,10 @@ mod tests {
                  CROSS JOIN generate_series(1, 100) t2(b)",
             ),
         };
-        let status = match service.do_get(Request::new(ticket)).await {
-            Ok(_) => panic!("query must be aborted by the timeout"),
-            Err(status) => status,
-        };
+        let sql = String::from_utf8(ticket.ticket.to_vec()).unwrap();
+        let status = run_sql(&service, &sql)
+            .await
+            .expect_err("query must be aborted by the timeout");
         assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
     }
 
