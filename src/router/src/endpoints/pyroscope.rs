@@ -229,14 +229,11 @@ async fn execute_ticket(
         .map_err(|e| rpc_span.in_scope(|| flight_status_to_http(&e)))?
         .into_inner();
 
-    let mut data = Vec::new();
+    let mut decoded = super::flight_decode::DecodedBatches::new("profiles");
     while let Some(flight_data) = stream.next().await {
-        data.push(flight_data.map_err(|e| flight_status_to_http(&e))?);
+        decoded.push(flight_data.map_err(|e| flight_status_to_http(&e))?)?;
     }
-
-    super::flight_decode::decode_flight_batches(data, "profiles")
-        .await
-        .map_err(ApiError::from)
+    Ok(decoded.finish())
 }
 
 /// Map the querier's Flight status onto an HTTP error carrying the

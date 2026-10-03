@@ -28,32 +28,68 @@ use arrow_flight::FlightData;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use datafusion::arrow::record_batch::RecordBatch;
-use futures::{StreamExt, stream};
+use futures::channel::mpsc;
+use futures::{FutureExt, StreamExt};
+
+/// Decodes Flight messages one at a time as a caller receives them, so the
+/// caller never holds the whole encoded response alongside the decoded
+/// batches (#938).
+///
+/// For call sites that read a querier stream message by message because
+/// they inspect each one on the way in (a trailer, a byte budget, a
+/// terminal status) and so cannot hand the stream to
+/// [`FlightRecordBatchStream`] directly. Dictionary batches are tracked
+/// the same way, since this feeds that decoder.
+pub struct IncrementalFlightDecoder {
+    frames: mpsc::UnboundedSender<Result<FlightData, FlightError>>,
+    batches: FlightRecordBatchStream,
+}
+
+impl IncrementalFlightDecoder {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        // Unbounded, but `push` drains after every send, so at most one
+        // frame is ever queued.
+        let (frames, rx) = mpsc::unbounded();
+        Self {
+            frames,
+            batches: FlightRecordBatchStream::new_from_flight_data(rx),
+        }
+    }
+
+    /// Decode one message, returning the record batches it completes:
+    /// none for a schema or dictionary message, one for a data message.
+    pub fn push(&mut self, frame: FlightData) -> Result<Vec<RecordBatch>, FlightError> {
+        self.frames
+            .unbounded_send(Ok(frame))
+            .map_err(|e| FlightError::ProtocolError(format!("decoder closed: {e}")))?;
+        let mut decoded = Vec::new();
+        // Everything pushed so far is already queued, so the decoder never
+        // waits on I/O here; it reports pending once the queue is drained.
+        // It never ends, since `self` holds the sender.
+        while let Some(Some(batch)) = self.batches.next().now_or_never() {
+            decoded.push(batch?);
+        }
+        Ok(decoded)
+    }
+}
 
 /// Decode a complete `Vec<FlightData>` into `RecordBatch`es, honoring any
 /// dictionary batches present in the sequence.
 ///
 /// Dictionary-safe drop-in replacement for
 /// `arrow_flight::utils::flight_data_to_batches` for call sites that have
-/// already buffered the full `FlightData` sequence rather than decoding
-/// incrementally from a stream. Feeds the vector through
-/// [`FlightRecordBatchStream`], which maintains the same per-field
-/// dictionary state a streaming client would.
-///
-/// An empty `flight_data` decodes to an empty `Vec` rather than erroring
-/// (unlike `arrow_flight::utils::flight_data_to_batches`, which requires at
-/// least a schema message) — callers that need a schema message to be
-/// present should check `flight_data.is_empty()` themselves, as all current
-/// call sites already do before decoding.
+/// already buffered the full `FlightData` sequence. An empty `flight_data`
+/// decodes to an empty `Vec` rather than erroring (unlike
+/// `arrow_flight::utils::flight_data_to_batches`, which requires at least a
+/// schema message).
 pub async fn flight_data_vec_to_batches(
     flight_data: Vec<FlightData>,
 ) -> Result<Vec<RecordBatch>, FlightError> {
-    let stream = stream::iter(flight_data.into_iter().map(Ok::<_, FlightError>));
-    let mut record_batch_stream = FlightRecordBatchStream::new_from_flight_data(stream);
-
+    let mut decoder = IncrementalFlightDecoder::new();
     let mut batches = Vec::new();
-    while let Some(batch) = record_batch_stream.next().await {
-        batches.push(batch?);
+    for frame in flight_data {
+        batches.extend(decoder.push(frame)?);
     }
     Ok(batches)
 }
@@ -129,6 +165,36 @@ mod tests {
             .expect("decode plain batch");
 
         assert_eq!(decoded, vec![batch]);
+    }
+
+    #[test]
+    fn incremental_decoder_yields_each_batch_as_its_message_arrives() {
+        let batch = dictionary_batch();
+        let schema = batch.schema();
+        let frames = crate::flight::batches_to_compressed_flight_data(
+            &schema,
+            vec![batch.clone(), batch.clone()],
+        )
+        .expect("encode");
+
+        let mut decoder = IncrementalFlightDecoder::new();
+        let per_frame: Vec<usize> = frames
+            .into_iter()
+            .map(|frame| decoder.push(frame).expect("decode").len())
+            .collect();
+        // schema, dictionary, batch, then the second batch reusing the
+        // already-sent dictionary.
+        assert_eq!(per_frame, vec![0, 0, 1, 1]);
+    }
+
+    #[test]
+    fn incremental_decoder_rejects_garbage() {
+        let mut decoder = IncrementalFlightDecoder::new();
+        let bogus = FlightData {
+            data_body: vec![1, 2, 3].into(),
+            ..Default::default()
+        };
+        assert!(decoder.push(bogus).is_err());
     }
 
     #[tokio::test]

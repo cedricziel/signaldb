@@ -460,9 +460,11 @@ batch commits, not individual requests.
 RecordBatch encoding goes through `common::flight::batches_to_compressed_flight_data`,
 which forwards any dictionary batches `IpcDataGenerator::encode` produces
 ahead of each data batch. Decoding on the receiving side goes through
-`common::flight::decode::flight_data_vec_to_batches` — a wrapper around
-`arrow_flight::decode::FlightRecordBatchStream` for call sites that buffer a
-`Vec<FlightData>` before decoding — rather than
+`common::flight::decode::IncrementalFlightDecoder`, which decodes one message
+at a time as it arrives (the router's HTTP query endpoints use it, so they
+never hold the encoded and decoded result at once), or its buffered form
+`flight_data_vec_to_batches`. Both wrap
+`arrow_flight::decode::FlightRecordBatchStream` rather than
 `arrow_flight::utils::flight_data_to_batches`, whose `dictionaries_by_id` map
 is always empty and so cannot decode a stream containing dictionary batches.
 No column in SignalDB's own schemas is dictionary-encoded yet; this only
