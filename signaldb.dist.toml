@@ -128,6 +128,14 @@ default_dataset = "production"  # Used when X-Dataset-ID header is not provided
 # max_api_keys = 20
 # max_datasets = 50
 # max_storage_bytes = 1073741824000     # 1 TiB
+#
+# Ingest attribute caps for this tenant. Replaces [acceptor.attribute_limits]
+# (and [auth.default_limits.attribute_limits]) wholesale; fields left out take
+# the built-in defaults (512 / 256 / 4096), not the acceptor's values.
+# [auth.tenants.limits.attribute_limits]
+# max_attributes = 128
+# max_key_bytes = 128
+# max_value_bytes = 1024
 
 # API keys for the Acme tenant
 # Each key can have a descriptive name for auditing
@@ -591,7 +599,9 @@ retry_dedup_window = "5m"
 # both OTLP transports. Overflowing attributes are dropped and added to the
 # message's dropped_attributes_count; signaldb.ingest.attributes_dropped
 # counts them. Values count bytes for strings/bytes, encoded size for
-# arrays and kvlists.
+# arrays and kvlists. A tenant overrides these under
+# [auth.tenants.limits.attribute_limits], or every tenant without its own
+# override via [auth.default_limits.attribute_limits].
 max_attributes = 512
 max_key_bytes = 256
 max_value_bytes = 4096

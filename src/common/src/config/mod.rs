@@ -1113,7 +1113,7 @@ pub struct DatasetConfig {
 }
 
 /// Tenant configuration for multi-tenancy authentication
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct TenantConfig {
     /// Unique tenant identifier
     pub id: String,
@@ -1165,6 +1165,11 @@ pub struct TenantLimits {
     pub max_storage_bytes: Option<u64>,
     /// Burst allowance in seconds of budget (minimum 1.0).
     pub burst_seconds: f64,
+    /// Ingest attribute caps for this tenant, replacing
+    /// `[acceptor.attribute_limits]` wholesale. Fields left out of the table
+    /// take the [`AttributeLimits`] defaults, not the acceptor's values.
+    /// TOML section: `[auth.tenants.limits.attribute_limits]`.
+    pub attribute_limits: Option<AttributeLimits>,
 }
 
 impl Default for TenantLimits {
@@ -1177,6 +1182,7 @@ impl Default for TenantLimits {
             max_datasets: None,
             max_storage_bytes: None,
             burst_seconds: 10.0,
+            attribute_limits: None,
         }
     }
 }
@@ -3899,6 +3905,38 @@ mod tests {
 
             Ok(())
         });
+    }
+
+    #[test]
+    fn test_tenant_attribute_limits_parse() {
+        let auth: AuthConfig = toml::from_str(
+            r#"
+            [default_limits.attribute_limits]
+            max_attributes = 100
+
+            [[tenants]]
+            id = "acme"
+            slug = "acme"
+            name = "Acme"
+
+            [tenants.limits.attribute_limits]
+            max_value_bytes = 64
+            "#,
+        )
+        .expect("tenant attribute_limits must parse");
+        let default = auth.default_limits.attribute_limits.as_ref().unwrap();
+        assert_eq!(default.max_attributes, 100);
+        assert_eq!(default.max_key_bytes, 256);
+        let tenant = auth.tenants[0]
+            .limits
+            .as_ref()
+            .and_then(|l| l.attribute_limits.as_ref())
+            .unwrap();
+        assert_eq!(tenant.max_value_bytes, 64);
+        assert_eq!(tenant.max_attributes, 512);
+
+        let absent: AuthConfig = toml::from_str("").expect("empty auth block");
+        assert_eq!(absent.default_limits.attribute_limits, None);
     }
 
     #[test]

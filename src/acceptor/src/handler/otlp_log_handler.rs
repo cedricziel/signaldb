@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use common::auth::TenantContext;
-use common::config::AttributeLimits;
 use common::flight::conversion::otlp_logs_to_arrow;
 use common::flight::transport::InMemoryFlightTransport;
 use common::processors::ProcessorRegistry;
@@ -21,7 +20,7 @@ use super::forward::{spawn_forward_and_mark, spawn_retire_resend};
 use super::ingest_error::IngestError;
 use super::processors_apply::apply_log_processors;
 use super::retry_dedup::{RetryDedup, stamp_batch_fingerprint};
-use crate::attribute_limits::{cap_logs, record_drops};
+use crate::attribute_limits::{TenantAttributeLimits, cap_logs, record_drops};
 
 pub struct LogHandler {
     /// Flight transport for forwarding telemetry
@@ -30,8 +29,8 @@ pub struct LogHandler {
     wal_manager: Arc<WalManager>,
     /// Recognizes a client's resend of a batch already made durable
     retry_dedup: Arc<RetryDedup>,
-    /// Per-record attribute guardrails (`[acceptor.attribute_limits]`)
-    attribute_limits: Arc<AttributeLimits>,
+    /// Per-record attribute guardrails (`[acceptor.attribute_limits]` plus tenant overrides)
+    attribute_limits: Arc<TenantAttributeLimits>,
     /// Tenant OTTL processors (change: tenant-ottl-processors)
     processor_registry: Arc<ProcessorRegistry>,
 }
@@ -77,7 +76,7 @@ impl LogHandler {
             flight_transport,
             wal_manager,
             retry_dedup: Arc::new(RetryDedup::default()),
-            attribute_limits: Arc::new(AttributeLimits::default()),
+            attribute_limits: Arc::new(TenantAttributeLimits::default()),
             processor_registry,
         }
     }
@@ -90,9 +89,9 @@ impl LogHandler {
         self
     }
 
-    /// Apply the acceptor's `[acceptor.attribute_limits]`; the default is
-    /// [`AttributeLimits::default`].
-    pub fn with_attribute_limits(mut self, attribute_limits: Arc<AttributeLimits>) -> Self {
+    /// Per-tenant `[acceptor.attribute_limits]`; the default applies the
+    /// built-in limits to every tenant.
+    pub fn with_attribute_limits(mut self, attribute_limits: Arc<TenantAttributeLimits>) -> Self {
         self.attribute_limits = attribute_limits;
         self
     }
@@ -122,7 +121,10 @@ impl LogHandler {
 
         apply_log_processors(&self.processor_registry, tenant_context, &mut request).await?;
 
-        let dropped = cap_logs(&mut request, &self.attribute_limits);
+        let dropped = cap_logs(
+            &mut request,
+            self.attribute_limits.for_tenant(&tenant_context.tenant_id),
+        );
         record_drops(&tenant_context.tenant_id, "logs", &dropped);
 
         // Get tenant/dataset-specific WAL
@@ -324,10 +326,12 @@ mod wal_bytes_tests {
         let wal_manager = Arc::new(test_wal_manager(temp_dir.path()));
         let (transport, processor_registry) = transport_without_writer().await;
         let handler = LogHandler::new(transport, wal_manager.clone(), processor_registry)
-            .with_attribute_limits(Arc::new(AttributeLimits {
-                max_attributes: 2,
-                ..AttributeLimits::default()
-            }));
+            .with_attribute_limits(Arc::new(TenantAttributeLimits::uniform(
+                common::config::AttributeLimits {
+                    max_attributes: 2,
+                    ..Default::default()
+                },
+            )));
         let tenant_context = test_tenant_context();
         let mut request = sample_log_request();
         let record = &mut request.resource_logs[0].scope_logs[0].log_records[0];

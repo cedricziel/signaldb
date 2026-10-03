@@ -13,7 +13,6 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use common::auth::TenantContext;
-use common::config::AttributeLimits;
 use common::flight::conversion::otlp_metrics_to_arrow;
 use common::flight::transport::InMemoryFlightTransport;
 use common::processors::ProcessorRegistry;
@@ -26,7 +25,7 @@ use super::ingest_error::IngestError;
 use super::metrics_partition;
 use super::processors_apply::apply_metric_processors;
 use super::retry_dedup::{RetryDedup, stamp_batch_fingerprint};
-use crate::attribute_limits::{cap_metrics, record_drops};
+use crate::attribute_limits::{TenantAttributeLimits, cap_metrics, record_drops};
 
 pub struct MetricsHandler {
     /// Flight transport for forwarding telemetry
@@ -35,8 +34,8 @@ pub struct MetricsHandler {
     wal_manager: Arc<WalManager>,
     /// Recognizes a client's resend of a batch already made durable
     retry_dedup: Arc<RetryDedup>,
-    /// Per-record attribute guardrails (`[acceptor.attribute_limits]`)
-    attribute_limits: Arc<AttributeLimits>,
+    /// Per-record attribute guardrails (`[acceptor.attribute_limits]` plus tenant overrides)
+    attribute_limits: Arc<TenantAttributeLimits>,
     /// Tenant OTTL processors (change: tenant-ottl-processors)
     processor_registry: Arc<ProcessorRegistry>,
 }
@@ -85,7 +84,7 @@ impl MetricsHandler {
             flight_transport,
             wal_manager,
             retry_dedup: Arc::new(RetryDedup::default()),
-            attribute_limits: Arc::new(AttributeLimits::default()),
+            attribute_limits: Arc::new(TenantAttributeLimits::default()),
             processor_registry,
         }
     }
@@ -98,9 +97,9 @@ impl MetricsHandler {
         self
     }
 
-    /// Apply the acceptor's `[acceptor.attribute_limits]`; the default is
-    /// [`AttributeLimits::default`].
-    pub fn with_attribute_limits(mut self, attribute_limits: Arc<AttributeLimits>) -> Self {
+    /// Per-tenant `[acceptor.attribute_limits]`; the default applies the
+    /// built-in limits to every tenant.
+    pub fn with_attribute_limits(mut self, attribute_limits: Arc<TenantAttributeLimits>) -> Self {
         self.attribute_limits = attribute_limits;
         self
     }
@@ -135,7 +134,10 @@ impl MetricsHandler {
 
         apply_metric_processors(&self.processor_registry, tenant_context, &mut request).await?;
 
-        let dropped = cap_metrics(&mut request, &self.attribute_limits);
+        let dropped = cap_metrics(
+            &mut request,
+            self.attribute_limits.for_tenant(&tenant_context.tenant_id),
+        );
         record_drops(&tenant_context.tenant_id, "metrics", &dropped);
 
         // Get tenant/dataset-specific WAL
