@@ -13,6 +13,25 @@ export interface SpanEventView {
   attributes: Record<string, AttrValue>;
 }
 
+/** An outgoing span link: the (possibly other-trace) span this one points at. */
+export interface SpanLinkView {
+  traceId: string;
+  spanId: string;
+  attributes: Record<string, AttrValue>;
+}
+
+/** A span in another trace whose link points into the viewed trace. */
+export interface LinkedFromView {
+  /** The linking span's trace and span. */
+  traceId: string;
+  spanId: string;
+  name: string;
+  serviceName: string;
+  startNs: string;
+  /** The span of the viewed trace the link targets (`links.span_id`). */
+  targetSpanId: string;
+}
+
 export interface TempoSpan {
   spanId: string;
   parentSpanId: string | null;
@@ -29,6 +48,8 @@ export interface TempoSpan {
   attributes: Record<string, AttrValue>;
   /** Span events; exceptions are the event named "exception". */
   events: SpanEventView[];
+  /** Outgoing links (`span_links`); absent or empty when the span has none. */
+  links?: SpanLinkView[];
 }
 
 export interface TraceSummary {

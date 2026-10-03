@@ -3,13 +3,14 @@ import { type CSSProperties, useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import {
   type AttrValue,
+  type LinkedFromView,
   type ProfileSummaryView,
   type SpanEventView,
   type TempoSpan,
 } from "../../api/traceTypes";
 import { fields as describeFields } from "../../api/ir/discovery";
 import { ApiError } from "../../api/http";
-import { fetchTraceDetail } from "../../api/traceDetail";
+import { fetchLinkedFrom, fetchTraceDetail } from "../../api/traceDetail";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import { SourceSnippet } from "../../components/SourceSnippet";
@@ -980,6 +981,29 @@ function TraceDetail({ state, update }: Props) {
     queryFn: () =>
       fetchTraceDetail(state.trace, resolveRange(state.range, Date.now())),
   });
+  // Spans of other traces that link into this one (a job's consumer span
+  // pointing back at the request that enqueued it). Best effort: a failure
+  // only drops the "Linked from" markers, never the trace itself.
+  const linkedFromQuery = useQuery({
+    queryKey: ["trace-linked-from", state.trace, trace.data?.startNs],
+    queryFn: () => fetchLinkedFrom(state.trace, trace.data!.startNs),
+    enabled: trace.data != null,
+  });
+  const linkedFrom = useMemo(() => {
+    const bySpan = new Map<string, LinkedFromView[]>();
+    const spans = trace.data?.spans ?? [];
+    if (spans.length === 0) return bySpan;
+    const ids = new Set(spans.map((s) => s.spanId));
+    // A link whose target span isn't in the trace (or names none) lands on
+    // the root span rather than vanishing.
+    const root = (spans.find((s) => s.parentSpanId === null) ?? spans[0]!)
+      .spanId;
+    for (const entry of linkedFromQuery.data ?? []) {
+      const key = ids.has(entry.targetSpanId) ? entry.targetSpanId : root;
+      bySpan.set(key, [...(bySpan.get(key) ?? []), entry]);
+    }
+    return bySpan;
+  }, [trace.data, linkedFromQuery.data]);
   const spanKinds = useMemo(() => {
     const kinds: Record<string, string> = {};
     for (const s of trace.data?.spans ?? []) {
@@ -1210,6 +1234,10 @@ function TraceDetail({ state, update }: Props) {
                 >
                   <span className="span-svc">{row.span.serviceName}</span>
                   <span className="span-name">{row.span.name}</span>
+                  <LinkMarks
+                    outgoing={row.span.links?.length ?? 0}
+                    incoming={linkedFrom.get(row.span.spanId)?.length ?? 0}
+                  />
                 </span>
                 <span className="span-track">
                   <span
@@ -1249,6 +1277,7 @@ function TraceDetail({ state, update }: Props) {
                   update={update}
                   traceFilters={state.traceFilters}
                   tenant={state.tenant}
+                  linkedFrom={linkedFrom.get(selectedRow.span.spanId) ?? []}
                 />
               </MobileSidebarDrawer>
             </>
@@ -1310,6 +1339,7 @@ function SpanDetail({
   update,
   traceFilters,
   tenant,
+  linkedFrom,
 }: {
   span: TempoSpan;
   traceId: string;
@@ -1320,6 +1350,8 @@ function SpanDetail({
   /** The URL's raw trace filters, for the "+ filter" row action. */
   traceFilters: TraceFilter[];
   tenant: string;
+  /** Spans of other traces linking to this span. */
+  linkedFrom: LinkedFromView[];
 }) {
   const groups = useMemo(
     () => groupSpanAttributes(span.attributes),
@@ -1482,6 +1514,72 @@ function SpanDetail({
           </ul>
         </>
       )}
+      {span.links && span.links.length > 0 && (
+        <>
+          <AttributeSection title="Links" count={span.links.length} />
+          <ul className="span-links" aria-label="Links">
+            {span.links.map((link, i) => (
+              <li key={i} className="span-link">
+                <button
+                  type="button"
+                  className="span-link-open"
+                  aria-label={`Open linked trace ${link.traceId}`}
+                  onClick={() =>
+                    update({ trace: link.traceId }, { push: true })
+                  }
+                >
+                  <span className="span-link-trace">
+                    {link.traceId.slice(0, 8)}
+                  </span>
+                  <span className="span-link-span">
+                    span {link.spanId.slice(0, 8)}
+                  </span>
+                  <span aria-hidden="true">→</span>
+                </button>
+                {Object.entries(link.attributes).map(([k, v]) => (
+                  <div className="span-event-attr" key={k}>
+                    <span>{k}</span>
+                    <AttributeValue
+                      value={String(v)}
+                      label={`value for ${k}`}
+                    />
+                  </div>
+                ))}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {linkedFrom.length > 0 && (
+        <>
+          <AttributeSection title="Linked from" count={linkedFrom.length} />
+          <ul className="span-links" aria-label="Linked from">
+            {linkedFrom.map((entry) => (
+              <li
+                key={`${entry.traceId}/${entry.spanId}`}
+                className="span-link"
+              >
+                <button
+                  type="button"
+                  className="span-link-open"
+                  aria-label={`Open linking trace ${entry.traceId}`}
+                  onClick={() =>
+                    update({ trace: entry.traceId }, { push: true })
+                  }
+                >
+                  <span className="span-link-trace">
+                    {entry.serviceName} {entry.name}
+                  </span>
+                  <span className="span-link-span">
+                    {entry.traceId.slice(0, 8)}
+                  </span>
+                  <span aria-hidden="true">→</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
       <AttributeSection title="Span">
         <DescriptionsToggle
           checked={showDescriptions}
@@ -1608,6 +1706,35 @@ function EventTime({
 
 /** One span event. Exceptions (name === "exception") get an error treatment
  * with message/type promoted and the stacktrace shown as preformatted text. */
+/** Waterfall row marker for span links: an outgoing arrow when the span
+ * links elsewhere, an incoming one when another trace links to it. */
+function LinkMarks({
+  outgoing,
+  incoming,
+}: {
+  outgoing: number;
+  incoming: number;
+}) {
+  if (outgoing === 0 && incoming === 0) return null;
+  const label = [
+    outgoing > 0 ? pluralCount(outgoing, "outgoing link") : null,
+    incoming > 0 ? pluralCount(incoming, "incoming link") : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  return (
+    <span
+      className="span-link-mark"
+      title={label}
+      role="img"
+      aria-label={label}
+    >
+      {outgoing > 0 && "↗"}
+      {incoming > 0 && "↙"}
+    </span>
+  );
+}
+
 function SpanEventItem({
   event,
   spanStartNs,

@@ -2421,3 +2421,148 @@ describe("TracesView facet filtering", () => {
     expect(JSON.stringify(volume?.pipeline?.[0])).toContain("gateway");
   });
 });
+
+describe("TracesView span links", () => {
+  const SPAN_COLUMNS = [
+    "trace_id",
+    "span_id",
+    "parent_span_id",
+    "span_name",
+    "service_name",
+    "status_code",
+    "status_message",
+    "start_time_unix_nano",
+    "duration_nanos",
+    "span_kind",
+    "span_attributes",
+    "scope_attributes",
+    "resource_attributes",
+    "span_events",
+    "span_links",
+  ].map((name) => ({ name, type: "string" }));
+
+  const spanRow = (
+    traceId: string,
+    spanId: string,
+    name: string,
+    service: string,
+    kind: string,
+    links: unknown[] | null,
+  ) => [
+    traceId,
+    spanId,
+    null,
+    name,
+    service,
+    "OK",
+    null,
+    1_700_000_000_000_000_000,
+    5_000_000,
+    kind,
+    {},
+    {},
+    {},
+    null,
+    links ? JSON.stringify(links) : null,
+  ];
+
+  const rowsBody = (rows: unknown[][]) => ({
+    result: "rows",
+    window: { start_ns: 0, end_ns: 0 },
+    columns: SPAN_COLUMNS,
+    rows,
+  });
+
+  const pipelineHas = (needle: string) => (b: unknown) => {
+    const body = b as { from?: string; pipeline?: unknown };
+    return (
+      body?.from === "traces" && JSON.stringify(body.pipeline).includes(needle)
+    );
+  };
+  const isTrace = (id: string) =>
+    pipelineHas(`"field":"trace_id","op":"eq","value":"${id}"`);
+  const isLinkedFrom = (id: string) =>
+    pipelineHas(`"field":"links.trace_id","op":"eq","value":"${id}"`);
+
+  const emptyProfiles = {
+    result: "rows",
+    window: { start_ns: 0, end_ns: 0 },
+    columns: [],
+    rows: [],
+  };
+
+  const jobRoute = {
+    match: "/api/v1/query",
+    bodyMatch: isTrace("job1"),
+    body: rowsBody([
+      spanRow("job1", "consume", "process EmailJob", "worker", "CONSUMER", [
+        {
+          trace_id: "web1",
+          span_id: "enqueue",
+          attributes: { "messaging.system": "sidekiq" },
+        },
+      ]),
+    ]),
+  };
+  const webRoute = {
+    match: "/api/v1/query",
+    bodyMatch: isTrace("web1"),
+    body: rowsBody([
+      spanRow("web1", "enqueue", "enqueue EmailJob", "web", "PRODUCER", null),
+    ]),
+  };
+  const webLinkedFromRoute = {
+    match: "/api/v1/query",
+    bodyMatch: isLinkedFrom("web1"),
+    body: rowsBody([
+      spanRow("job1", "consume", "process EmailJob", "worker", "CONSUMER", [
+        { trace_id: "web1", span_id: "enqueue", attributes: {} },
+      ]),
+    ]),
+  };
+  const profilesRoute = {
+    match: "/api/v1/query",
+    bodyMatch: (b: unknown) => (b as { from?: string })?.from === "profiles",
+    body: emptyProfiles,
+  };
+
+  it("opens the enqueuing trace from a job span's Links", async () => {
+    stubFetchRoutes([jobRoute, webRoute, webLinkedFromRoute, profilesRoute]);
+    const update = renderView({ trace: "job1" });
+    const links = await screen.findByRole("list", { name: "Links" });
+    expect(within(links).getByText("messaging.system")).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", { name: "1 outgoing link" }),
+    ).toBeInTheDocument();
+    await userEvent.click(
+      within(links).getByRole("button", { name: "Open linked trace web1" }),
+    );
+    expect(update).toHaveBeenCalledWith({ trace: "web1" }, { push: true });
+  });
+
+  it("lists the consuming job under Linked from and opens it", async () => {
+    stubFetchRoutes([jobRoute, webRoute, webLinkedFromRoute, profilesRoute]);
+    const update = renderView({ trace: "web1" });
+    const from = await screen.findByRole("list", { name: "Linked from" });
+    expect(from).toHaveTextContent("worker process EmailJob");
+    expect(
+      screen.getByRole("img", { name: "1 incoming link" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("list", { name: "Links" }),
+    ).not.toBeInTheDocument();
+    await userEvent.click(
+      within(from).getByRole("button", { name: "Open linking trace job1" }),
+    );
+    expect(update).toHaveBeenCalledWith({ trace: "job1" }, { push: true });
+  });
+
+  it("shows no link sections for a span without links", async () => {
+    // The linked-from query 404s (no stub): the trace still renders.
+    stubFetchRoutes([webRoute, profilesRoute]);
+    renderView({ trace: "web1" });
+    await screen.findByRole("button", { name: "Logs for this trace →" });
+    expect(screen.queryByRole("list", { name: "Links" })).toBeNull();
+    expect(screen.queryByRole("list", { name: "Linked from" })).toBeNull();
+  });
+});

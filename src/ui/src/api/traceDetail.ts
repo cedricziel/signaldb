@@ -9,7 +9,9 @@ import { ROOT_SPAN_SENTINEL } from "./traceGroups";
 import type {
   AttrValue,
   ProfileSummaryView,
+  LinkedFromView,
   SpanEventView,
+  SpanLinkView,
   TempoSpan,
   TempoTrace,
 } from "./traceTypes";
@@ -52,7 +54,15 @@ const SPAN_FIELDS = [
   "scope.attributes",
   "resource.attributes",
   "span_events",
+  "span_links",
 ] as const;
+
+/** How far past the trace's start a linking span may begin: a consumer runs
+ * after the producer that enqueued it, usually soon but possibly delayed. */
+export const LINKED_FROM_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** Cap on linking spans fetched for one trace. */
+const LINKED_FROM_LIMIT = 200;
 
 /** Every span of one trace, or of several (`in`) at once. */
 export function buildTraceSpansDoc(
@@ -87,6 +97,36 @@ export function buildTraceProfilesDoc(
     range: irRange(range),
     result: "rows",
     pipeline: [whereTrace(traceId, "trace.id")],
+  };
+}
+
+/** Spans in other traces that link to `traceId` (`links.trace_id eq`), from
+ * the trace's start to +24h. `span_links` is projected so each entry can be
+ * matched to the targeted span by the link's `span_id`. */
+export function buildLinkedFromDoc(
+  traceId: string,
+  traceStartMs: number,
+): QueryIrRequest {
+  return {
+    irVersion: 1,
+    from: "traces",
+    range: irRange({
+      fromMs: traceStartMs,
+      toMs: traceStartMs + LINKED_FROM_WINDOW_MS,
+    }),
+    result: "rows",
+    fields: [
+      "trace_id",
+      "span_id",
+      "span.name",
+      "service.name",
+      "start_time_unix_nano",
+      "span_links",
+    ],
+    pipeline: [
+      { where: { field: "links.trace_id", op: "eq", value: traceId } },
+      { limit: LINKED_FROM_LIMIT },
+    ],
   };
 }
 
@@ -139,6 +179,29 @@ function events(v: unknown): SpanEventView[] {
   });
 }
 
+/** The `span_links` cell: `[{trace_id, span_id, attributes}]`, as a JSON
+ * string or an already-parsed array; null or anything else is no links. */
+function links(v: unknown): SpanLinkView[] {
+  let parsed: unknown = v;
+  if (typeof v === "string") {
+    if (v === "") return [];
+    try {
+      parsed = JSON.parse(v);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(parsed)) return [];
+  return parsed.map((l) => {
+    const link = (l ?? {}) as Record<string, unknown>;
+    return {
+      traceId: str(link.trace_id),
+      spanId: str(link.span_id),
+      attributes: container(link.attributes),
+    };
+  });
+}
+
 /** Flatten the three containers into the span panel's one bag: span
  * attributes as-is, scope and resource attributes under their prefix. */
 function flattenAttributes(row: Row): Record<string, AttrValue> {
@@ -174,6 +237,7 @@ function toSpan(row: Row): TempoSpan {
     durNs: str(row.duration_nanos ?? row.duration),
     attributes: flattenAttributes(row),
     events: events(row.span_events),
+    links: links(row.span_links),
   };
 }
 
@@ -253,4 +317,40 @@ export async function fetchTraceDetail(
   const profilesRes = await runIrQuery(buildTraceProfilesDoc(traceId, window));
   // `null`, not `undefined`: react-query rejects undefined query data.
   return traceFromIrResponses(traceId, spansRes, profilesRes) ?? null;
+}
+
+/** Decode the linked-from response: one entry per link that points into
+ * `traceId`, so a span linking to several spans of it yields several. */
+export function linkedFromFromResponse(
+  traceId: string,
+  res: QueryIrResponse,
+): LinkedFromView[] {
+  const out: LinkedFromView[] = [];
+  for (const row of namedRows(res)) {
+    const from = str(row.trace_id);
+    // A span linking within its own trace already shows under "Links".
+    if (from === traceId) continue;
+    for (const link of links(row.span_links)) {
+      if (link.traceId !== traceId) continue;
+      out.push({
+        traceId: from,
+        spanId: str(row.span_id),
+        name: str(row.span_name),
+        serviceName: str(row.service_name),
+        startNs: str(row.start_time_unix_nano),
+        targetSpanId: link.spanId,
+      });
+    }
+  }
+  return out;
+}
+
+/** Spans of other traces that link into this one. */
+export async function fetchLinkedFrom(
+  traceId: string,
+  traceStartNs: string,
+): Promise<LinkedFromView[]> {
+  const startMs = Number(BigInt(traceStartNs || "0") / 1_000_000n);
+  const res = await runIrQuery(buildLinkedFromDoc(traceId, startMs));
+  return linkedFromFromResponse(traceId, res);
 }
