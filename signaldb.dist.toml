@@ -327,13 +327,8 @@ max_instances = 256
 #
 # Maximum memory for query execution, in MiB. Three cases:
 #   - a positive value: bounded to that many MiB.
-#   - 0: explicitly UNBOUNDED (an opt-out), in either deployment mode.
-#   - unset: the standalone querier binary stays UNBOUNDED (a startup
-#     warning is logged), same as 0. The monolith (`signaldb` with no
-#     subcommand) instead resolves an unset value to a bounded default
-#     (min(50% of host RAM, 4096) MiB) before starting the querier, because
-#     an unbounded query pool there can OOM ingest running in the same
-#     process, not just itself.
+#   - 0: explicitly UNBOUNDED (an opt-out; a startup warning is logged).
+#   - unset: min(50% of host RAM, 4096) MiB, floored at 256 MiB.
 # memory_limit_mb = 4096
 #
 # Fraction of memory_limit_mb usable by query operators before they
@@ -358,8 +353,8 @@ max_sql_rows = 1000000
 max_search_limit = 1000
 #
 # Maximum queries a single tenant may run concurrently; excess queries
-# are rejected with RESOURCE_EXHAUSTED (retryable). Unset = unlimited.
-# max_concurrent_queries_per_tenant = 8
+# are rejected with RESOURCE_EXHAUSTED (retryable). 0 = unlimited.
+max_concurrent_queries_per_tenant = 8
 #
 # Row cap on a Query IR `correlate` stage's joined output (the
 # span-to-parent join, irVersion 8). A span has at most one parent, so

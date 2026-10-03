@@ -126,6 +126,7 @@ pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()> {
     // Create Flight query service with CatalogManager for per-tenant catalog support
     tracing::info!(
         memory_limit_mb = ?config.querier.memory_limit_mb,
+        max_concurrent_queries_per_tenant = config.querier.max_concurrent_queries_per_tenant,
         query_timeout = ?config.querier.query_timeout,
         max_sql_rows = config.querier.max_sql_rows,
         max_search_limit = config.querier.max_search_limit,

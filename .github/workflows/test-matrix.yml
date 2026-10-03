@@ -4,8 +4,9 @@ name: Database & Deployment Testing Matrix
 # deployment scenarios, and `#[ignore]`d load tests. Run manually when needed
 # for thorough testing before major releases or significant changes.
 #
-# Criterion benchmarks are NOT run here: they are compile-checked on every
-# core PR by ci.yml's clippy step and executed nightly by benchmarks.yml.
+# Criterion benchmarks are NOT run here: ci.yml compiles them (clippy) and
+# runs each once in test mode (bench-smoke) on every core PR, and
+# benchmarks.yml measures them nightly.
 
 on:
   workflow_dispatch:

@@ -46,9 +46,7 @@ use querier::flight::QuerierFlightService;
 use tempfile::TempDir;
 use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity};
 use tests_integration::generators::{self, BLOOM_TARGET_TRACE_ID};
-use tests_integration::test_support::{
-    catalog_manager_with_tenant_source, writer_with_type_authority_and_catalog,
-};
+use tests_integration::test_support;
 use tokio::runtime::Runtime;
 use tonic::Request;
 
@@ -84,10 +82,10 @@ async fn seed() -> Env {
         .with_storage_dsn(&storage_dsn)
         .with_tenant(TENANT, DATASET)
         .build();
-    // One SQL catalog behind both the writers' type authority and the
-    // catalog manager's tenant source, so the querier's IR path resolves the
+    // One SQL catalog behind the writers' type authority and the catalog
+    // manager's tenant source, so the querier's IR path resolves the
     // canonical attribute types the writers commit.
-    let (catalog_manager, type_catalog) = catalog_manager_with_tenant_source(
+    let (catalog_manager, type_catalog) = test_support::catalog_manager_with_tenant_source(
         config.clone(),
         Catalog::new_in_memory().await.expect("type catalog"),
     )
@@ -104,7 +102,7 @@ async fn seed() -> Env {
     };
 
     // Traces: bulk volume + bloom-only-prunable files holding the target.
-    let mut traces = writer_with_type_authority_and_catalog(
+    let mut traces = test_support::writer_with_type_authority_and_catalog(
         &catalog_manager,
         TENANT.to_string(),
         DATASET.to_string(),
@@ -125,7 +123,7 @@ async fn seed() -> Env {
     .await
     .expect("seed bloom-prunable traces");
 
-    let mut logs = writer_with_type_authority_and_catalog(
+    let mut logs = test_support::writer_with_type_authority_and_catalog(
         &catalog_manager,
         TENANT.to_string(),
         DATASET.to_string(),
@@ -138,7 +136,7 @@ async fn seed() -> Env {
         .await
         .expect("seed logs");
 
-    let mut metrics = writer_with_type_authority_and_catalog(
+    let mut metrics = test_support::writer_with_type_authority_and_catalog(
         &catalog_manager,
         TENANT.to_string(),
         DATASET.to_string(),
