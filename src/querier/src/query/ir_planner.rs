@@ -765,6 +765,12 @@ impl FieldResolver for SchemaResolver {
                 events_column: "events".to_string(),
             });
         }
+        if self.source == "traces" && field == "span_links" && self.physical_names.contains("links")
+        {
+            return Some(Resolved::SpanLinks {
+                links_column: "links".to_string(),
+            });
+        }
         if self.source == "traces"
             && let Some(f) = SpanListField::parse(field)
             && self.physical_names.contains(f.column())
@@ -3170,6 +3176,7 @@ impl<'a> Lowering<'a> {
                     Resolved::JsonPath { .. }
                     | Resolved::EventAttribute { .. }
                     | Resolved::SpanEvents { .. }
+                    | Resolved::SpanLinks { .. }
                     | Resolved::SpanList(_)
                     | Resolved::AttributeBag { .. }
                     | Resolved::TypedAttribute { .. },
@@ -3636,6 +3643,7 @@ impl<'a> Lowering<'a> {
                 ..
             }) => Ok(self.event_attr_expr(&events_column, &event_name, &key)),
             Some(Resolved::SpanEvents { events_column }) => Ok(span_events_expr(&events_column)),
+            Some(Resolved::SpanLinks { links_column }) => Ok(span_links_expr(&links_column)),
             Some(Resolved::SpanList(_)) => Err(span_list_filter_only(logical)),
             Some(Resolved::PromotedColumn { name, key, .. }) => {
                 Ok(self.promoted_column_expr(&name, &key))
@@ -3933,6 +3941,7 @@ impl<'a> Lowering<'a> {
                     ..
                 } => self.event_attr_expr(events_column, event_name, key),
                 Resolved::SpanEvents { events_column } => span_events_expr(events_column),
+                Resolved::SpanLinks { links_column } => span_links_expr(links_column),
                 Resolved::SpanList(f) => return self.lower_span_list_leaf(leaf, f),
                 Resolved::PromotedColumn { name, key, .. } => self.promoted_column_expr(name, key),
                 Resolved::TypedAttribute {
@@ -4286,6 +4295,9 @@ impl<'a> Lowering<'a> {
                                 .alias(safe_ident(f)),
                             Some(Resolved::SpanEvents { events_column }) => {
                                 span_events_expr(&events_column).alias(safe_ident(f))
+                            }
+                            Some(Resolved::SpanLinks { links_column }) => {
+                                span_links_expr(&links_column).alias(safe_ident(f))
                             }
                             Some(Resolved::SpanList(_)) => {
                                 return Err(span_list_filter_only(f));
@@ -4928,32 +4940,61 @@ impl ScalarUDFImpl for SpanListMatchUdf {
 }
 
 /// The `span_events` logical field: the events column through the
-/// `ir_span_events` UDF (see [`SpanEventsUdf`]).
+/// `ir_span_events` UDF (see [`SpanListJsonUdf`]).
 fn span_events_expr(events_column: &str) -> Expr {
-    ScalarUDF::from(SpanEventsUdf::new()).call(vec![col(events_column)])
+    ScalarUDF::from(SpanListJsonUdf::new(
+        "ir_span_events",
+        normalize_span_events,
+    ))
+    .call(vec![col(events_column)])
 }
 
-/// A scalar UDF, `ir_span_events(events) -> Utf8`, that normalizes the stored
-/// per-span events JSON (`[{name, timestamp_unix_nano, attributes_json}]`,
-/// attributes double-encoded as a string by the writer) into the client
-/// shape `[{name, timestamp_unix_nano, attributes: {...}}]`. NULL stays NULL;
-/// malformed input yields `[]`, matching `parse_span_events`' tolerance.
-#[derive(Debug, PartialEq, Eq, Hash)]
-struct SpanEventsUdf {
+/// The `span_links` logical field: the links column through the
+/// `ir_span_links` UDF (see [`SpanListJsonUdf`]).
+fn span_links_expr(links_column: &str) -> Expr {
+    ScalarUDF::from(SpanListJsonUdf::new("ir_span_links", normalize_span_links))
+        .call(vec![col(links_column)])
+}
+
+/// A scalar UDF, `<name>(list) -> Utf8`, that normalizes a stored per-span
+/// events or links JSON array (each element's attributes double-encoded as
+/// an `attributes_json` string by the writer) into the client shape, with
+/// each element's attributes as an object. NULL stays NULL; the normalizer
+/// decides what an empty or malformed list becomes.
+#[derive(Debug)]
+struct SpanListJsonUdf {
+    name: &'static str,
+    normalize: fn(&str) -> Option<String>,
     signature: Signature,
 }
 
-impl SpanEventsUdf {
-    fn new() -> Self {
-        SpanEventsUdf {
+// Identity is the UDF name: each name is built with exactly one normalizer,
+// and function pointers have no meaningful equality.
+impl PartialEq for SpanListJsonUdf {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+impl Eq for SpanListJsonUdf {}
+impl std::hash::Hash for SpanListJsonUdf {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+    }
+}
+
+impl SpanListJsonUdf {
+    fn new(name: &'static str, normalize: fn(&str) -> Option<String>) -> Self {
+        SpanListJsonUdf {
+            name,
+            normalize,
             signature: Signature::exact(vec![DataType::Utf8], Volatility::Immutable),
         }
     }
 }
 
-impl ScalarUDFImpl for SpanEventsUdf {
+impl ScalarUDFImpl for SpanListJsonUdf {
     fn name(&self) -> &str {
-        "ir_span_events"
+        self.name
     }
     fn signature(&self) -> &Signature {
         &self.signature
@@ -4966,18 +5007,18 @@ impl ScalarUDFImpl for SpanEventsUdf {
         args: ScalarFunctionArgs,
     ) -> datafusion::error::Result<ColumnarValue> {
         let num_rows = args.number_rows;
-        let events = StrArg::try_from(&args.args[0])?;
+        let list = StrArg::try_from(&args.args[0])?;
         let mut builder = StringBuilder::with_capacity(num_rows, num_rows * 64);
         for i in 0..num_rows {
-            builder.append_option(events.value_at(i).map(normalize_span_events));
+            builder.append_option(list.value_at(i).and_then(self.normalize));
         }
         Ok(ColumnarValue::Array(Arc::new(builder.finish())))
     }
 }
 
-/// Re-encode the stored events JSON with each event's attributes as an
-/// object (see [`SpanEventsUdf`]).
-fn normalize_span_events(events_json: &str) -> String {
+/// `[{name, timestamp_unix_nano, attributes}]`; malformed input yields `[]`,
+/// matching `parse_span_events`' tolerance.
+fn normalize_span_events(events_json: &str) -> Option<String> {
     let events: Vec<serde_json::Value> = common::model::span::parse_span_events(events_json)
         .into_iter()
         .map(|e| {
@@ -4988,7 +5029,32 @@ fn normalize_span_events(events_json: &str) -> String {
             })
         })
         .collect();
-    serde_json::to_string(&events).unwrap_or_else(|_| "[]".to_string())
+    Some(serde_json::to_string(&events).unwrap_or_else(|_| "[]".to_string()))
+}
+
+/// `[{trace_id, span_id, attributes}]`; an empty or malformed list yields
+/// NULL, so "has links" is a plain not-null check.
+fn normalize_span_links(links_json: &str) -> Option<String> {
+    let links: Vec<SpanListElement<'_>> = serde_json::from_str(links_json).ok()?;
+    if links.is_empty() {
+        return None;
+    }
+    let links: Vec<serde_json::Value> = links
+        .into_iter()
+        .map(|link| {
+            let attributes = link
+                .attributes_json
+                .and_then(|a| serde_json::from_str::<serde_json::Value>(&a).ok())
+                .filter(serde_json::Value::is_object)
+                .unwrap_or_else(|| serde_json::json!({}));
+            serde_json::json!({
+                "trace_id": link.trace_id,
+                "span_id": link.span_id,
+                "attributes": attributes,
+            })
+        })
+        .collect();
+    serde_json::to_string(&links).ok()
 }
 
 /// Whether a value type compares numerically.
@@ -13469,6 +13535,66 @@ mod tests {
             .iter()
             .flat_map(|b| strings_of(b, "span_id"))
             .collect()
+    }
+
+    /// `span_links` is the whole links list of a span (#1802), normalized
+    /// like `span_events` so each link's attributes are a JSON object. A span
+    /// with no links, or unreadable links, yields NULL.
+    #[tokio::test]
+    async fn span_links_returns_the_normalized_links_list() {
+        let svc = IrService::new(traces_lists_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["span_id", "span_links"]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let mut by_span: HashMap<String, Option<serde_json::Value>> = HashMap::new();
+        for batch in df.collect().await.unwrap() {
+            let ids = strings_of(&batch, "span_id");
+            let links = batch
+                .column_by_name("span_links")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            for (i, id) in ids.into_iter().enumerate() {
+                by_span.insert(
+                    id,
+                    (!links.is_null(i)).then(|| serde_json::from_str(links.value(i)).unwrap()),
+                );
+            }
+        }
+        assert_eq!(
+            by_span.get("s2"),
+            Some(&Some(serde_json::json!([
+                { "trace_id": "aaaa", "span_id": "bbbb", "attributes": { "kind": "follows" } },
+                { "trace_id": "cccc", "span_id": "dddd", "attributes": {} }
+            ])))
+        );
+        for span in ["s0", "s4", "s5"] {
+            assert_eq!(by_span.get(span), Some(&None), "{span} has no links");
+        }
+    }
+
+    #[tokio::test]
+    async fn span_links_is_retrieval_only() {
+        let svc = IrService::new(traces_lists_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["span_id"],
+            "pipeline": [{ "where": { "field": "span_links", "op": "exists" } }]
+        }));
+        let err = svc.plan(&d, "t", "d", 0).await.expect_err("rejected");
+        assert!(
+            format!("{err}").contains("span_links"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]

@@ -325,6 +325,11 @@ impl LogicalSchema {
             // are addressed via `exception.*`, not by filtering on the list.
             LogicalField::record_metadata("traces", "span_events", LogicalType::AnyValue)
                 .retrieval_only(),
+            // The span's links (trace_id, span_id, attributes per link), as a
+            // JSON array. Retrieval-only: filter with `links.trace_id`,
+            // `links.span_id` and `links.attributes.*` instead.
+            LogicalField::record_metadata("traces", "span_links", LogicalType::AnyValue)
+                .retrieval_only(),
             LogicalField::record_metadata("traces", "span.name", LogicalType::String),
             LogicalField::record_metadata("traces", "duration", LogicalType::DurationNs),
             LogicalField::record_metadata("traces", "duration_nano", LogicalType::DurationNs),
@@ -458,7 +463,7 @@ impl LogicalSchema {
     /// `logical_schema_version` in `schemas.toml` together whenever
     /// `core()`'s field set changes; `tests::FIELD_SET_FINGERPRINT` fails
     /// until you do.
-    pub const VERSION: &'static str = "otel-2026-09";
+    pub const VERSION: &'static str = "otel-2026-10";
 }
 
 #[cfg(test)]
@@ -739,7 +744,7 @@ mod tests {
     }
 
     const FIELD_SET_FINGERPRINT: &str =
-        "d8f33448a100d57db9cdff82e1e3fa6e3b4bb3b5840b48385bb7fe440f446e3f";
+        "d0553a79f01a2be14888ad04899f083f3cf368af992f2f129b2b00bfcfddef16";
 
     fn fingerprint() -> String {
         use sha2::{Digest, Sha256};

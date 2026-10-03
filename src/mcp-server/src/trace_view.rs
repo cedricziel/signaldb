@@ -27,6 +27,7 @@ const TRACE_SPAN_FIELDS: &[&str] = &[
     "scope.attributes",
     "resource.attributes",
     "span_events",
+    "span_links",
 ];
 
 /// Build the Query IR document `get_trace` submits: every span of one trace,
@@ -64,6 +65,15 @@ pub(crate) struct EventPayload {
 }
 
 #[derive(Serialize)]
+pub(crate) struct LinkPayload {
+    #[serde(rename = "traceID")]
+    trace_id: String,
+    #[serde(rename = "spanID")]
+    span_id: String,
+    attributes: Map<String, Value>,
+}
+
+#[derive(Serialize)]
 pub(crate) struct SpanPayload {
     #[serde(rename = "spanID")]
     span_id: String,
@@ -86,6 +96,8 @@ pub(crate) struct SpanPayload {
     attributes: Map<String, Value>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     events: Vec<EventPayload>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    links: Vec<LinkPayload>,
 }
 
 #[derive(Serialize)]
@@ -184,6 +196,28 @@ fn decode_events(v: Value) -> Vec<EventPayload> {
         .collect()
 }
 
+/// The `span_links` cell: `[{trace_id, span_id, attributes}]`, NULL when the
+/// span has no links.
+fn decode_links(v: Value) -> Vec<LinkPayload> {
+    let Value::Array(items) = parse_json_cell(v) else {
+        return Vec::new();
+    };
+    items
+        .into_iter()
+        .filter_map(|item| match item {
+            Value::Object(mut obj) => Some(LinkPayload {
+                trace_id: obj.remove("trace_id").and_then(as_string)?,
+                span_id: obj
+                    .remove("span_id")
+                    .and_then(as_string)
+                    .unwrap_or_default(),
+                attributes: obj.remove("attributes").map(container).unwrap_or_default(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 fn decode_span(mut row: Vec<Value>, index: &HashMap<String, usize>) -> SpanPayload {
     let mut take = |name: &str| {
         index
@@ -214,6 +248,7 @@ fn decode_span(mut row: Vec<Value>, index: &HashMap<String, usize>) -> SpanPaylo
         kind: as_string(take("span_kind")),
         attributes,
         events: decode_events(take("span_events")),
+        links: decode_links(take("span_links")),
     }
 }
 
@@ -428,6 +463,7 @@ mod tests {
             "scope_attributes",
             "resource_attributes",
             "span_events",
+            "span_links",
         ]
     }
 
@@ -458,6 +494,7 @@ mod tests {
             serde_json::json!("{}"),
             serde_json::json!("{}"),
             serde_json::json!("{}"),
+            serde_json::Value::Null,
             serde_json::Value::Null,
         ]
     }
@@ -572,6 +609,25 @@ mod tests {
     }
 
     #[test]
+    fn links_decode_from_the_json_string_cell() {
+        let mut row = span_row("1", serde_json::Value::Null, 0, "worker");
+        row[col("span_links")] = serde_json::json!(
+            r#"[{"trace_id":"4c20","span_id":"cdf6","attributes":{"kind":"enqueue"}}]"#
+        );
+
+        let trace =
+            trace_from_response("abc123", response(columns(), vec![row])).expect("trace decodes");
+        let span = &trace.span_sets[0].spans[0];
+        assert_eq!(span.links.len(), 1);
+        assert_eq!(span.links[0].trace_id, "4c20");
+        assert_eq!(span.links[0].span_id, "cdf6");
+        assert_eq!(
+            span.links[0].attributes["kind"],
+            serde_json::json!("enqueue")
+        );
+    }
+
+    #[test]
     fn status_lowercases_and_defaults_unset() {
         let mut row = span_row("1", serde_json::Value::Null, 0, "frontend");
         let status_idx = col("status_code");
@@ -627,6 +683,7 @@ mod tests {
             duration_ns,
             attributes: serde_json::Map::new(),
             events: Vec::new(),
+            links: Vec::new(),
         }
     }
 
