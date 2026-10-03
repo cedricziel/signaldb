@@ -95,6 +95,9 @@ struct RunningQuery {
     timeout: std::time::Duration,
     started: std::time::Instant,
     query_type: &'static str,
+    /// The DoGet server span, kept open until the result stream ends so a
+    /// failure while streaming still lands on it.
+    span: tracing::Span,
     _permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
@@ -127,6 +130,20 @@ impl RunningQuery {
         status
     }
 
+    /// `do_get` has already returned `Ok` once streaming starts, so its
+    /// error boundary never sees this failure: record it on the span here.
+    fn fail_streaming(&self, status: Status) -> Status {
+        let status = self.fail(status);
+        self.span
+            .in_scope(|| common::self_monitoring::record_span_exception(&status));
+        common::self_monitoring::spans::record_rpc_result(
+            &self.span,
+            common::self_monitoring::spans::RpcBoundary::Server,
+            status.code(),
+        );
+        status
+    }
+
     /// Yield `batches` until they end, fail, or the deadline passes, holding
     /// the permit until then and recording the query's metrics once.
     fn bound(self, batches: BatchStream) -> BatchStream {
@@ -137,14 +154,14 @@ impl RunningQuery {
                     let rows = rows + batch.num_rows() as u64;
                     Some((Ok(batch), Some((batches, query, rows))))
                 }
-                Ok(Some(Err(status))) => Some((Err(query.fail(status)), None)),
+                Ok(Some(Err(status))) => Some((Err(query.fail_streaming(status)), None)),
                 Ok(None) => {
                     query.record(rows, false);
                     None
                 }
                 Err(_) => {
                     let status = query.timed_out();
-                    Some((Err(query.fail(status)), None))
+                    Some((Err(query.fail_streaming(status)), None))
                 }
             }
         })
@@ -2296,6 +2313,7 @@ impl FlightService for QuerierFlightService {
                             timeout: self.limits.query_timeout,
                             started: std::time::Instant::now(),
                             query_type,
+                            span: tracing::Span::current(),
                             _permit: query_permit,
                         };
                         let query_future =
@@ -3878,6 +3896,62 @@ mod tests {
             Some("INTERNAL")
         );
         assert!(matches!(span.status, OtelStatus::Error { .. }));
+    }
+
+    /// A query that times out while its result streams has already handed
+    /// `do_get` an `Ok` response, so the DoGet span must still end up
+    /// carrying the failure (#938).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mid_stream_timeout_marks_the_do_get_span_failed() {
+        use opentelemetry::trace::{Status as OtelStatus, TracerProvider as _};
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tracing::instrument::WithSubscriber;
+        use tracing_subscriber::prelude::*;
+
+        let service = make_service_with_limits(QuerierConfig {
+            query_timeout: Duration::from_millis(50),
+            ..QuerierConfig::default()
+        })
+        .await;
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("test")));
+
+        async {
+            let status = run_sql(
+                &service,
+                "SELECT count(*) FROM generate_series(1, 100000000) t1(a) \
+                 CROSS JOIN generate_series(1, 100) t2(b)",
+            )
+            .await
+            .expect_err("query must be aborted by the timeout");
+            assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
+        }
+        .with_subscriber(subscriber)
+        .await;
+
+        provider.force_flush().unwrap();
+        let spans = exporter.get_finished_spans().unwrap();
+        let span = spans
+            .iter()
+            .find(|s| {
+                s.name
+                    .starts_with("arrow.flight.protocol.FlightService/DoGet")
+            })
+            .expect("no DoGet server span");
+        // The OK recorded when the response started is overwritten; the
+        // span keeps both writes, and the later one wins.
+        let status_code = span
+            .attributes
+            .iter()
+            .rfind(|kv| kv.key.as_str() == "rpc.response.status_code")
+            .map(|kv| kv.value.as_str().to_string());
+        assert_eq!(status_code.as_deref(), Some("DEADLINE_EXCEEDED"));
+        assert!(matches!(span.status, OtelStatus::Error { .. }));
+        assert!(span.events.iter().any(|e| e.name == "exception"));
     }
 
     /// Issue #972 companion: the shared status mapper used to label every
