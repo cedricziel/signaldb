@@ -10,7 +10,7 @@
 //! Alongside line queries this service backs the Loki metadata endpoints:
 //! label names, label values, and series discovery.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -487,9 +487,8 @@ impl LogsService {
                 if let Some(column) = column_for_label(label) {
                     return Ok(column.to_string());
                 }
-                let name = common::schema::materialized_column_name(label);
-                if common::schema::is_materialized_and_unambiguous(&name, &materialized) {
-                    return Ok(name);
+                if let Some(name) = materialized.column_for(label) {
+                    return Ok(name.to_string());
                 }
                 Err(QuerierError::Unsupported(format!(
                     "grouping by attribute label '{label}'"
@@ -583,6 +582,32 @@ impl LogsService {
             let mut proj = vec![col("bucket")];
             proj.extend(current_group_cols.iter().map(|c| ident(c.as_str())));
             proj.push(scalar_op_expr(col("value"), scalar_op).alias("value"));
+            df = df.select(proj).map_err(QuerierError::QueryFailed)?;
+        }
+
+        // A colliding key's column carries a suffix (`label_http_method_2`)
+        // that is not the label the query grouped by; name the output
+        // column after the requested label so the series reads back as it.
+        let renames: HashMap<&str, String> = plan
+            .group_labels
+            .iter()
+            .zip(&out_group_cols)
+            .filter_map(|(label, column)| {
+                let wanted = format!("label_{label}");
+                (column.starts_with("label_") && *column != wanted)
+                    .then_some((column.as_str(), wanted))
+            })
+            .collect();
+        if !renames.is_empty() {
+            let proj: Vec<Expr> = df
+                .schema()
+                .fields()
+                .iter()
+                .map(|f| match renames.get(f.name().as_str()) {
+                    Some(alias) => ident(f.name().as_str()).alias(alias.as_str()),
+                    None => ident(f.name().as_str()),
+                })
+                .collect();
             df = df.select(proj).map_err(QuerierError::QueryFailed)?;
         }
 
@@ -928,12 +953,7 @@ pub fn shape_log_query(
 /// filter lowering can route those labels to their columns. Shared with the
 /// metrics path, which resolves grouping labels the same way.
 pub(super) fn materialized_columns_of(df: &DataFrame) -> MaterializedColumns {
-    df.schema()
-        .fields()
-        .iter()
-        .map(|f| f.name().to_string())
-        .filter(|n| n.starts_with("label_"))
-        .collect()
+    MaterializedColumns::from_fields(df.schema().inner().fields())
 }
 
 /// The attribute-matching context for a logs table: its materialized
@@ -1861,6 +1881,83 @@ mod tests {
             "should group the two StatusCode values: {out:?}"
         );
         assert!(out.iter().all(|(v, _, _)| *v == 1.0));
+    }
+
+    /// #1533: grouping by a key whose column carries a collision suffix
+    /// (`http_method` documented on `label_http_method_2`) names the output
+    /// column after the requested label, so the router presents the series
+    /// as `http_method`, not `http_method_2`.
+    #[tokio::test]
+    async fn execute_plan_names_a_suffixed_group_column_after_its_label() {
+        let origin = |key: &str| {
+            HashMap::from([(
+                common::schema::LABEL_ORIGIN_KEY_METADATA.to_string(),
+                key.to_string(),
+            )])
+        };
+        let mut fields = logs_base_fields();
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![100, 200])),
+            str_col(&["a", "b"]),
+            str_col(&["api", "api"]),
+            str_col(&["info", "info"]),
+            str_col(&["t1", "t2"]),
+            str_col(&["s1", "s2"]),
+        ];
+        push_typed_log_attrs(&mut fields, &mut columns, &empty_log_rows(2));
+        fields.push(
+            Field::new("label_http_method", DataType::Utf8, true)
+                .with_metadata(origin("http.method")),
+        );
+        fields.push(
+            Field::new("label_http_method_2", DataType::Utf8, true)
+                .with_metadata(origin("http_method")),
+        );
+        columns.push(str_col(&["GET", "GET"]));
+        columns.push(str_col(&["post", "put"]));
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let schema_provider = Arc::new(MemorySchemaProvider::new());
+        schema_provider
+            .register_table("logs".to_string(), Arc::new(table))
+            .unwrap();
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        catalog.register_schema("d", schema_provider).unwrap();
+        ctx.register_catalog("t", catalog);
+        let service = LogsService::new(ctx);
+
+        let query = r#"sum by (http_method) (count_over_time({service_name="api"}[1000ns]))"#;
+        let LogqlExpr::Metric(metric) = parse(query).expect("parse") else {
+            panic!("not a metric query");
+        };
+        let plan = plan_metric_query(&metric).expect("plan");
+        let batches = service
+            .execute_plan(&plan, &metric_params(query, 1000), "t", "d")
+            .await
+            .expect("execute_plan");
+        let mut methods: Vec<String> = batches
+            .iter()
+            .flat_map(|b| {
+                let c = string_column(b, "label_http_method").expect("renamed group column");
+                (0..b.num_rows())
+                    .map(|i| c.value(i).to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        methods.sort();
+        assert_eq!(
+            methods,
+            vec!["post", "put"],
+            "grouped by http_method's own column"
+        );
+        assert!(
+            batches
+                .iter()
+                .all(|b| b.column_by_name("label_http_method_2").is_none()),
+            "the suffixed storage name must not leak out as a label"
+        );
     }
 
     #[tokio::test]

@@ -33,10 +33,7 @@
 //!
 //! Line filters (`|=`, `!=`, `|~`, `!~`) match the `body` column.
 
-use std::collections::HashSet;
-
 use common::attrs::expr::compat_attr_expr;
-use common::schema::materialized_column_name;
 use datafusion::arrow::datatypes::{DataType, SchemaRef};
 use datafusion::functions::regex::expr_fn::regexp_like;
 use datafusion::functions::string::expr_fn::contains;
@@ -68,7 +65,7 @@ pub(super) fn unlowerable(what: &str, construct: &impl std::fmt::Debug) -> Queri
 /// queried. A label in this set routes to its dedicated column (exact,
 /// regex, and ordered comparisons); anything else falls back to the
 /// attribute-JSON substring match.
-pub type MaterializedColumns = HashSet<String>;
+pub type MaterializedColumns = common::schema::MaterializedLabels;
 
 /// What the target table offers for attribute matching: which materialized
 /// `label_<key>` columns exist, whether the attribute columns are typed
@@ -206,9 +203,8 @@ fn label_expr(
     if let Some(column) = column_for_label(name) {
         return column_expr(column, op, value);
     }
-    let materialized = materialized_column_name(name);
-    if common::schema::is_materialized_and_unambiguous(&materialized, &ctx.materialized) {
-        return materialized_label_expr(&materialized, op, value);
+    if let Some(column) = ctx.materialized.column_for(name) {
+        return materialized_label_expr(column, op, value);
     }
     if ctx.map_attrs {
         map_attribute_expr(name, op, value, ctx.schema.as_deref())
@@ -433,7 +429,7 @@ mod tests {
     fn sql_with(query: &str, columns: &[&str]) -> String {
         let q = parse_query(query).expect("parse");
         let ctx = AttrContext {
-            materialized: columns.iter().map(|c| c.to_string()).collect(),
+            materialized: MaterializedColumns::from_names(columns.iter().copied()),
             ..Default::default()
         };
         let expr = log_query_filter_with_columns(&q, &ctx)
@@ -442,11 +438,43 @@ mod tests {
         format!("{expr}")
     }
 
+    #[test]
+    fn documented_colliding_columns_route_each_label_to_its_own_column() {
+        use datafusion::arrow::datatypes::{DataType, Field, Fields};
+        let origin = |key: &str| {
+            std::collections::HashMap::from([(
+                common::schema::LABEL_ORIGIN_KEY_METADATA.to_string(),
+                key.to_string(),
+            )])
+        };
+        // `http.method` holds the base name; the LogQL-spellable
+        // `http_method` got the suffixed column.
+        let fields = Fields::from(vec![
+            Field::new("label_http_method", DataType::Utf8, true)
+                .with_metadata(origin("http.method")),
+            Field::new("label_http_method_2", DataType::Utf8, true)
+                .with_metadata(origin("http_method")),
+        ]);
+        let ctx = AttrContext {
+            materialized: MaterializedColumns::from_fields(&fields),
+            ..Default::default()
+        };
+        let expr = log_query_filter_with_columns(
+            &parse_query(r#"{http_method="GET"}"#).expect("parse"),
+            &ctx,
+        )
+        .expect("lower")
+        .expect("some filter");
+        let sql = format!("{expr}");
+        assert!(sql.contains("label_http_method_2"), "{sql}");
+        assert!(!sql.contains("label_http_method ="), "{sql}");
+    }
+
     /// Lower against a map-typed attribute table.
     fn sql_map(query: &str) -> String {
         let q = parse_query(query).expect("parse");
         let ctx = AttrContext {
-            materialized: MaterializedColumns::new(),
+            materialized: MaterializedColumns::default(),
             map_attrs: true,
             ..Default::default()
         };

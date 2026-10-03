@@ -149,16 +149,87 @@ pub fn has_colliding_materialized_variant<'a>(
     })
 }
 
-/// Convenience wrapper around [`has_colliding_materialized_variant`] for the
-/// common case: `columns` is the full set of materialized column names
-/// found on the scanned table, and the caller only needs a yes/no "is
-/// `base` present and safe to use" answer.
-pub fn is_materialized_and_unambiguous(
-    base: &str,
-    columns: &std::collections::HashSet<String>,
-) -> bool {
-    columns.contains(base)
-        && !has_colliding_materialized_variant(base, columns.iter().map(String::as_str))
+/// Arrow field metadata key carrying the attribute key a materialized
+/// `label_<key>` column was built from. The writer stamps it on WAL batches
+/// and the querier copies it from the committed Iceberg column's `doc`
+/// (`common::iceberg::evolution::origin_key_of`) onto the schema it scans,
+/// because iceberg-rust's Iceberg-to-Arrow conversion drops `doc`.
+pub const LABEL_ORIGIN_KEY_METADATA: &str = "signaldb.origin_key";
+
+/// The materialized `label_<key>` columns of a scanned table, resolving an
+/// attribute key to the column that holds it.
+///
+/// Columns documented with their origin key (#1533) resolve exactly, so two
+/// keys that sanitize to the same [`materialized_column_name`] each reach
+/// their own column. Columns without that metadata predate it and resolve
+/// by recomputing the name, guarded by [`has_colliding_materialized_variant`].
+#[derive(Debug, Default, Clone)]
+pub struct MaterializedLabels {
+    /// Every `label_*` column name.
+    columns: std::collections::HashSet<String>,
+    /// Origin key -> column, for documented columns.
+    by_key: HashMap<String, String>,
+    /// Columns that carry an origin key (whichever key it is).
+    documented: std::collections::HashSet<String>,
+    /// Columns with a `<column>_<n>` sibling, which a recomputed name
+    /// cannot tell apart.
+    ambiguous: std::collections::HashSet<String>,
+}
+
+impl MaterializedLabels {
+    /// Collects the `label_*` columns of `fields`, reading each column's
+    /// [`LABEL_ORIGIN_KEY_METADATA`] when present.
+    pub fn from_fields(fields: &datafusion::arrow::datatypes::Fields) -> Self {
+        let mut out = Self::default();
+        for field in fields.iter().filter(|f| f.name().starts_with("label_")) {
+            out.columns.insert(field.name().clone());
+            if let Some(key) = field.metadata().get(LABEL_ORIGIN_KEY_METADATA) {
+                out.by_key.insert(key.clone(), field.name().clone());
+                out.documented.insert(field.name().clone());
+            }
+        }
+        out.with_ambiguous()
+    }
+
+    /// Builds from bare column names, none documented (legacy resolution).
+    pub fn from_names<I, S>(names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            columns: names.into_iter().map(Into::into).collect(),
+            ..Self::default()
+        }
+        .with_ambiguous()
+    }
+
+    fn with_ambiguous(mut self) -> Self {
+        self.ambiguous = self
+            .columns
+            .iter()
+            .filter(|c| {
+                has_colliding_materialized_variant(c, self.columns.iter().map(String::as_str))
+            })
+            .cloned()
+            .collect();
+        self
+    }
+
+    /// The column materializing `key`, or `None` when the caller must fall
+    /// back to attribute extraction.
+    pub fn column_for(&self, key: &str) -> Option<&str> {
+        if let Some(column) = self.by_key.get(key) {
+            return Some(column.as_str());
+        }
+        let candidate = materialized_column_name(key);
+        let column = self.columns.get(&candidate)?;
+        // Documented to another key: it is not this key's column.
+        if self.documented.contains(column) || self.ambiguous.contains(column) {
+            return None;
+        }
+        Some(column.as_str())
+    }
 }
 
 /// Table property recording the warm index's token-encoding version, so a
@@ -934,6 +1005,77 @@ mod tests {
             "label_http_method",
             columns
         ));
+    }
+
+    #[test]
+    fn materialized_labels_resolve_documented_columns_exactly() {
+        let labels = labels_of(&[
+            ("label_http_method", Some("http.method")),
+            ("label_http_method_2", Some("http_method")),
+        ]);
+        assert_eq!(labels.column_for("http.method"), Some("label_http_method"));
+        assert_eq!(
+            labels.column_for("http_method"),
+            Some("label_http_method_2")
+        );
+    }
+
+    #[test]
+    fn materialized_labels_documented_column_resolves_even_if_name_differs() {
+        // Suffix order flipped relative to the base-name guess.
+        let labels = labels_of(&[
+            ("label_http_method", Some("http_method")),
+            ("label_http_method_2", Some("http.method")),
+        ]);
+        assert_eq!(
+            labels.column_for("http.method"),
+            Some("label_http_method_2")
+        );
+        assert_eq!(labels.column_for("http_method"), Some("label_http_method"));
+    }
+
+    #[test]
+    fn materialized_labels_legacy_column_resolves_by_name() {
+        let labels = labels_of(&[("label_namespace", None)]);
+        assert_eq!(labels.column_for("namespace"), Some("label_namespace"));
+        assert_eq!(labels.column_for("missing"), None);
+    }
+
+    #[test]
+    fn materialized_labels_column_documented_to_other_key_is_not_matched() {
+        let labels = labels_of(&[("label_http_method", Some("http.method"))]);
+        assert_eq!(labels.column_for("http.method"), Some("label_http_method"));
+        assert_eq!(labels.column_for("http_method"), None);
+    }
+
+    #[test]
+    fn materialized_labels_undocumented_collision_falls_back() {
+        let labels = labels_of(&[("label_http_method", None), ("label_http_method_2", None)]);
+        assert_eq!(labels.column_for("http.method"), None);
+        assert_eq!(labels.column_for("http_method"), None);
+        let from_names = MaterializedLabels::from_names(["label_http_method"]);
+        assert_eq!(
+            from_names.column_for("http.method"),
+            Some("label_http_method")
+        );
+    }
+
+    fn labels_of(cols: &[(&str, Option<&str>)]) -> MaterializedLabels {
+        use datafusion::arrow::datatypes::{DataType, Field, Fields};
+        let fields: Fields = cols
+            .iter()
+            .map(|(name, key)| {
+                let mut f = Field::new(*name, DataType::Utf8, true);
+                if let Some(k) = key {
+                    f = f.with_metadata(HashMap::from([(
+                        LABEL_ORIGIN_KEY_METADATA.to_string(),
+                        k.to_string(),
+                    )]));
+                }
+                f
+            })
+            .collect();
+        MaterializedLabels::from_fields(&fields)
     }
 
     #[test]

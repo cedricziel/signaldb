@@ -10,6 +10,7 @@ use common::config::QuerierConfig;
 use common::flight::schema::create_span_batch_schema;
 use common::flight::transport::InMemoryFlightTransport;
 use common::parquet_metadata_cache::CacheParquetMetadata;
+use common::schema::LABEL_ORIGIN_KEY_METADATA;
 use common::storage::create_object_store_from_dsn;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::{CatalogProvider, SchemaProvider};
@@ -325,13 +326,17 @@ impl LiveIcebergSchema {
                     _ => std::collections::HashMap::new(),
                 });
                 let table = match tabular {
-                    Tabular::Table(t) => Arc::new(datafusion_iceberg::DataFusionTable::new(
-                        Tabular::Table(t),
-                        None,
-                        None,
-                        None,
-                    ))
-                        as Arc<dyn datafusion::datasource::TableProvider>,
+                    Tabular::Table(t) => {
+                        let origin = t.current_schema().map(origin_keys).unwrap_or_default();
+                        let mut provider = datafusion_iceberg::DataFusionTable::new(
+                            Tabular::Table(t),
+                            None,
+                            None,
+                            None,
+                        );
+                        provider.schema = with_origin_keys(&provider.schema, &origin);
+                        Arc::new(provider) as Arc<dyn datafusion::datasource::TableProvider>
+                    }
                     other => Arc::new(datafusion_iceberg::DataFusionTable::new(
                         other, None, None, None,
                     ))
@@ -351,6 +356,49 @@ impl LiveIcebergSchema {
             Err(e) => Err(datafusion::error::DataFusionError::External(Box::new(e))),
         }
     }
+}
+
+/// Column name -> origin key for the label columns of an Iceberg schema,
+/// read from each field's `doc`.
+fn origin_keys(
+    iceberg: &iceberg_rust::spec::schema::Schema,
+) -> std::collections::HashMap<String, String> {
+    iceberg
+        .fields()
+        .iter()
+        .filter_map(|f| {
+            let key = common::iceberg::evolution::origin_key_of(f.doc.as_deref())?;
+            Some((f.name.clone(), key.to_string()))
+        })
+        .collect()
+}
+
+/// Copies each materialized label column's origin key from the Iceberg
+/// field `doc` onto the Arrow field as [`LABEL_ORIGIN_KEY_METADATA`], so the
+/// planners resolve key to column exactly (#1533). iceberg-rust's
+/// Iceberg-to-Arrow conversion drops `doc`, hence this re-stamping.
+fn with_origin_keys(
+    arrow: &datafusion::arrow::datatypes::SchemaRef,
+    origin: &std::collections::HashMap<String, String>,
+) -> datafusion::arrow::datatypes::SchemaRef {
+    use datafusion::arrow::datatypes::{Field, Schema};
+
+    if origin.is_empty() {
+        return arrow.clone();
+    }
+    let fields: Vec<Arc<Field>> = arrow
+        .fields()
+        .iter()
+        .map(|field| match origin.get(field.name().as_str()) {
+            Some(key) => {
+                let mut metadata = field.metadata().clone();
+                metadata.insert(LABEL_ORIGIN_KEY_METADATA.to_string(), key.clone());
+                Arc::new(field.as_ref().clone().with_metadata(metadata))
+            }
+            None => field.clone(),
+        })
+        .collect();
+    Arc::new(Schema::new_with_metadata(fields, arrow.metadata().clone()))
 }
 
 /// A DataFusion `CatalogProvider` scoped to a single tenant.
@@ -2670,6 +2718,65 @@ mod tests {
         assert!(
             !Arc::ptr_eq(&first, &unpinned),
             "the next query must load the table again"
+        );
+    }
+
+    /// The scanned schema carries each label column's origin key (#1533),
+    /// since iceberg-rust drops the Iceberg field `doc` on conversion.
+    #[tokio::test]
+    async fn scanned_schema_carries_origin_keys_of_label_columns() {
+        let manager = common::CatalogManager::new_in_memory().await.unwrap();
+        manager
+            .ensure_table("default", "default", "logs")
+            .await
+            .unwrap();
+        let namespace = iceberg_rust::catalog::namespace::Namespace::try_new(&[
+            "default".to_string(),
+            "default".to_string(),
+        ])
+        .unwrap();
+        let ident = iceberg_rust::catalog::identifier::Identifier::try_new(
+            &[
+                "default".to_string(),
+                "default".to_string(),
+                "logs".to_string(),
+            ],
+            None,
+        )
+        .unwrap();
+        common::iceberg::evolution::add_label_columns(
+            manager.catalog(),
+            &ident,
+            &["http.method".to_string(), "http_method".to_string()],
+        )
+        .await
+        .unwrap();
+        let schema = LiveIcebergSchema {
+            namespace,
+            catalog: manager.catalog(),
+            warm_index: Default::default(),
+            tables: Arc::new(TableProviderCache::new(Duration::ZERO)),
+        };
+
+        let provider = schema.table("logs").await.unwrap().unwrap();
+        let arrow = provider.schema();
+        let origin = |column: &str| {
+            arrow
+                .field_with_name(column)
+                .unwrap()
+                .metadata()
+                .get(LABEL_ORIGIN_KEY_METADATA)
+                .cloned()
+        };
+        assert_eq!(origin("label_http_method").as_deref(), Some("http.method"));
+        assert_eq!(
+            origin("label_http_method_2").as_deref(),
+            Some("http_method")
+        );
+        assert_eq!(
+            origin("timestamp"),
+            None,
+            "base columns carry no origin key"
         );
     }
 

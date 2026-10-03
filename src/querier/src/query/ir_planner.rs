@@ -480,6 +480,9 @@ fn strip_scope_qualifier<'f>(
 /// current physical realization and discovers promoted attributes.
 pub(crate) struct SchemaResolver {
     columns: HashMap<String, ValueType>,
+    /// Key -> `label_<key>` column resolution, exact where the scanned
+    /// schema carries each column's origin key (#1533).
+    labels: common::schema::MaterializedLabels,
     physical_names: std::collections::HashSet<String>,
     container: String,
     /// Every attribute container this source coalesces over, in resolution
@@ -513,6 +516,7 @@ impl SchemaResolver {
         }
         SchemaResolver {
             columns,
+            labels: common::schema::MaterializedLabels::from_fields(schema.inner().fields()),
             physical_names,
             container: source.containers[0].to_string(),
             containers: source.containers,
@@ -566,18 +570,15 @@ impl SchemaResolver {
         // extraction path, or a scope-qualified field would never find its
         // promoted column (D10 of `ir-single-lowering`).
         let bare = strip_scope_qualifier(self.attr_prefixes, field).map_or(field, |(_, bare)| bare);
-        let materialized = common::schema::materialized_column_name(bare);
+        let materialized = self.labels.column_for(bare);
         // In typed mode, a `label_<key>` column only ever shadows a
         // `String`-canonical attribute — `typed_attribute` makes that call
         // itself, having checked the committed type first; this legacy,
         // type-blind lookup would otherwise promote a non-`String` key too
         // (task 4.4's "a stray legacy label is ignored" rule).
         if self.typed.is_none()
-            && let Some(vt) = self.columns.get(&materialized)
-            && !common::schema::has_colliding_materialized_variant(
-                &materialized,
-                self.columns.keys().map(String::as_str),
-            )
+            && let Some(materialized) = materialized
+            && let Some(vt) = self.columns.get(materialized)
         {
             // Matched via the materialized-label lookup, not a direct
             // physical alias — #816: this column may still be NULL in files
@@ -585,7 +586,7 @@ impl SchemaResolver {
             // must keep the JSON fallback alive rather than trusting it
             // exclusively.
             return Some(Resolved::PromotedColumn {
-                name: materialized,
+                name: materialized.to_string(),
                 value_type: vt.clone(),
                 key: field.to_string(),
             });
@@ -649,13 +650,10 @@ impl SchemaResolver {
         if canonical != CanonicalType::String || !single_level {
             return None;
         }
-        let materialized = common::schema::materialized_column_name(key);
-        (self.columns.contains_key(&materialized)
-            && !common::schema::has_colliding_materialized_variant(
-                &materialized,
-                self.columns.keys().map(String::as_str),
-            ))
-        .then_some(materialized)
+        let materialized = self.labels.column_for(key)?;
+        self.columns
+            .contains_key(materialized)
+            .then(|| materialized.to_string())
     }
 
     /// Resolve an unpromoted attribute against the typed layout's committed
@@ -809,8 +807,9 @@ impl FieldResolver for SchemaResolver {
         // names. (Without #811 the resolver cannot enumerate real attributes.)
         self.logical_schema.resolve(&self.source, field).is_some()
             || self
-                .columns
-                .contains_key(&common::schema::materialized_column_name(field))
+                .labels
+                .column_for(field)
+                .is_some_and(|c| self.columns.contains_key(c))
     }
 
     fn is_physical_name(&self, _source: &str, field: &str) -> bool {
@@ -11572,6 +11571,87 @@ mod tests {
             plan.contains("label_http_method"),
             "expected the promoted column fast path with no collision:\n{plan}"
         );
+    }
+
+    // #1533: when each colliding column carries its origin key, each key
+    // resolves to its own column and the fast path stays on for both.
+    #[tokio::test]
+    async fn documented_colliding_columns_each_resolve_to_their_own_key() {
+        let origin = |key: &str| {
+            HashMap::from([(
+                common::schema::LABEL_ORIGIN_KEY_METADATA.to_string(),
+                key.to_string(),
+            )])
+        };
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, false),
+            Field::new("span_id", DataType::Utf8, false),
+            Field::new("parent_span_id", DataType::Utf8, true),
+            Field::new("span_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("start_time_unix_nano", DataType::Int64, false),
+            Field::new("duration_nanos", DataType::Int64, false),
+            Field::new("status_code", DataType::Utf8, true),
+            map_field_named("span_attributes"),
+            Field::new("label_http_method", DataType::Utf8, true)
+                .with_metadata(origin("http.method")),
+            Field::new("label_http_method_2", DataType::Utf8, true)
+                .with_metadata(origin("http_method")),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["t0", "t1"])),
+                Arc::new(StringArray::from(vec!["s0", "s1"])),
+                Arc::new(StringArray::from(vec![None::<&str>, None])),
+                Arc::new(StringArray::from(vec!["GET /a", "POST /b"])),
+                Arc::new(StringArray::from(vec!["api", "api"])),
+                Arc::new(Int64Array::from(vec![10_i64, 20])),
+                Arc::new(Int64Array::from(vec![100_i64, 100])),
+                Arc::new(StringArray::from(vec![Some("OK"), Some("OK")])),
+                build_map(&[&[], &[]]),
+                Arc::new(StringArray::from(vec![Some("GET"), Some("POST")])),
+                Arc::new(StringArray::from(vec![Some("alpha"), Some("beta")])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("traces".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        let svc = IrService::new(ctx);
+
+        for (field, value, column, trace) in [
+            ("http.method", "POST", "label_http_method", "t1"),
+            ("http_method", "alpha", "label_http_method_2", "t0"),
+        ] {
+            let d = doc(serde_json::json!({
+                "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
+                "result": "rows",
+                "fields": ["trace_id"],
+                "pipeline": [{ "where": { "field": field, "op": "eq", "value": value } }]
+            }));
+            let (df, _) = svc
+                .plan(&d, "t", "d", 0)
+                .await
+                .unwrap()
+                .expect("source table is registered");
+            let plan = format!("{}", df.logical_plan().display_indent());
+            assert!(plan.contains(column), "{field} must read {column}:\n{plan}");
+            let batches = df.collect().await.unwrap();
+            let ids = batches[0]
+                .column_by_name("trace_id")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+            assert_eq!(ids.value(0), trace, "{field}={value}");
+        }
     }
 
     /// A traces table with the real v2 column names, for the single-signal
