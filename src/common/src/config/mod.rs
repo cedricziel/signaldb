@@ -28,72 +28,7 @@ pub fn redact_dsn(dsn: &str) -> String {
     dsn.to_string()
 }
 
-/// Retention policy configuration for compactor (Phase 3).
-/// This is a lightweight config-only version that matches the full RetentionConfig
-/// in the compactor crate but lives in common for TOML/env deserialization.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RetentionConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(with = "humantime_serde", default = "default_retention_check_interval")]
-    pub retention_check_interval: Duration,
-    #[serde(with = "humantime_serde", default = "default_signal_retention")]
-    pub traces: Duration,
-    #[serde(with = "humantime_serde", default = "default_signal_retention")]
-    pub logs: Duration,
-    #[serde(with = "humantime_serde", default = "default_signal_retention")]
-    pub metrics: Duration,
-    #[serde(with = "humantime_serde", default = "default_signal_retention")]
-    pub profiles: Duration,
-    #[serde(with = "humantime_serde", default = "default_grace_period")]
-    pub grace_period: Duration,
-    #[serde(default = "default_timezone")]
-    pub timezone: String,
-    #[serde(default = "default_dry_run")]
-    pub dry_run: bool,
-    #[serde(default)]
-    pub snapshots_to_keep: Option<usize>,
-    #[serde(default)]
-    pub tenant_overrides: HashMap<String, serde_json::Value>,
-}
-
-fn default_retention_check_interval() -> Duration {
-    Duration::from_secs(3600) // 1 hour
-}
-
-fn default_signal_retention() -> Duration {
-    Duration::from_secs(30 * 24 * 3600) // 30 days for every signal
-}
-
-fn default_grace_period() -> Duration {
-    Duration::from_secs(3600) // 1 hour
-}
-
-fn default_timezone() -> String {
-    "UTC".to_string()
-}
-
-fn default_dry_run() -> bool {
-    false // Retention enforces (deletes expired data) by default
-}
-
-impl Default for RetentionConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true, // Retention enforcement is on by default (30d)
-            retention_check_interval: default_retention_check_interval(),
-            traces: default_signal_retention(),
-            logs: default_signal_retention(),
-            metrics: default_signal_retention(),
-            profiles: default_signal_retention(),
-            grace_period: default_grace_period(),
-            timezone: default_timezone(),
-            dry_run: default_dry_run(),
-            snapshots_to_keep: Some(10),
-            tenant_overrides: HashMap::new(),
-        }
-    }
-}
+pub use crate::retention::RetentionConfig;
 
 /// Attribute auto-promotion at compaction rewrite (epic #737, #734).
 ///

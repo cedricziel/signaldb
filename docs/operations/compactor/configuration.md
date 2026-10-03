@@ -338,6 +338,10 @@ Results:
 - `acme/production` → **14 days** (tenant override)
 - `other/anything` → **7 days** (global default)
 
+### Retention in query responses
+
+`POST /api/v1/query` reports the retention that applies to the queried signal in a `retention` member (period, source, `enforced`, `cutoff_ns`), resolved from the same settings with the same override order. A window that starts before the cutoff of an enforced policy gets a `range_before_retention` warning. The window itself is never clamped. See [Query IR](../../users/querying-ir.md#retention).
+
 ### Complete Retention Example
 
 ```toml

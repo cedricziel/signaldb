@@ -5020,6 +5020,12 @@ pub mod types {
         /**The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`,
         `graph`, `metadata`, `scalar`, or `trace`.*/
         pub result: ::std::string::String,
+        /**How far back this answer can reach. Present for a single-document
+        query against a signal source (`traces`, `logs`, `metrics`,
+        `profiles`); omitted for a formula document and for sources that are
+        not signals. The window is never clamped to it.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub retention: ::std::option::Option<QueryRetention>,
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub rows: ::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>,
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -5071,6 +5077,29 @@ pub mod types {
             Default::default()
         }
     }
+    /**The retention policy that applies to the queried signal for the caller's
+    tenant and dataset. The compactor deletes data older than `cutoff_ns`, so
+    a window reaching further back is answered only from what remains.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct QueryRetention {
+        /**Server time minus the retention period and its grace period, in unix
+        nanoseconds. Data older than this is subject to deletion.*/
+        pub cutoff_ns: i64,
+        /**`true` when the compactor deletes expired data: retention is enabled
+        and not in dry-run mode.*/
+        pub enforced: bool,
+        ///The retention period as a humantime string, for example `30d`.
+        pub period: ::std::string::String,
+        ///The retention period in seconds.
+        pub period_s: i64,
+        ///Which setting supplied the period: `global`, `tenant` or `dataset`.
+        pub source: ::std::string::String,
+    }
+    impl QueryRetention {
+        pub fn builder() -> builder::QueryRetention {
+            Default::default()
+        }
+    }
     ///The `tail` member of a live-tail response.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct QueryTail {
@@ -5097,8 +5126,9 @@ pub mod types {
         /**Stable machine-readable identifier — clients branch on this, not on
         `message`. Today `unknown_group_by_field`, `no_attribute_statistics`,
         `correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`,
-        `graph_node_limit`, `match_incomplete_trace` and `tail_lagged` (a
-        live tail skipped forward).*/
+        `graph_node_limit`, `match_incomplete_trace`, `tail_lagged` (a
+        live tail skipped forward) and `range_before_retention` (the window
+        starts before the retention cutoff).*/
         pub code: ::std::string::String,
         ///The document field the warning is about, when it names one.
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
@@ -19902,6 +19932,10 @@ pub mod types {
                 ::std::string::String,
             >,
             result: ::std::result::Result<::std::string::String, ::std::string::String>,
+            retention: ::std::result::Result<
+                ::std::option::Option<super::QueryRetention>,
+                ::std::string::String,
+            >,
             rows: ::std::result::Result<
                 ::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>,
                 ::std::string::String,
@@ -19932,6 +19966,7 @@ pub mod types {
                     page: Ok(Default::default()),
                     points: Ok(Default::default()),
                     result: Err("no value supplied for result".to_string()),
+                    retention: Ok(Default::default()),
                     rows: Ok(Default::default()),
                     series: Ok(Default::default()),
                     step_ns: Ok(Default::default()),
@@ -20027,6 +20062,16 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for result: {e}"));
                 self
             }
+            pub fn retention<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::QueryRetention>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.retention = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for retention: {e}"));
+                self
+            }
             pub fn rows<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>>,
@@ -20114,6 +20159,7 @@ pub mod types {
                     page: value.page?,
                     points: value.points?,
                     result: value.result?,
+                    retention: value.retention?,
                     rows: value.rows?,
                     series: value.series?,
                     step_ns: value.step_ns?,
@@ -20135,6 +20181,7 @@ pub mod types {
                     page: Ok(value.page),
                     points: Ok(value.points),
                     result: Ok(value.result),
+                    retention: Ok(value.retention),
                     rows: Ok(value.rows),
                     series: Ok(value.series),
                     step_ns: Ok(value.step_ns),
@@ -20239,6 +20286,102 @@ pub mod types {
                 Self {
                     from: Ok(value.from),
                     to: Ok(value.to),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct QueryRetention {
+            cutoff_ns: ::std::result::Result<i64, ::std::string::String>,
+            enforced: ::std::result::Result<bool, ::std::string::String>,
+            period: ::std::result::Result<::std::string::String, ::std::string::String>,
+            period_s: ::std::result::Result<i64, ::std::string::String>,
+            source: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for QueryRetention {
+            fn default() -> Self {
+                Self {
+                    cutoff_ns: Err("no value supplied for cutoff_ns".to_string()),
+                    enforced: Err("no value supplied for enforced".to_string()),
+                    period: Err("no value supplied for period".to_string()),
+                    period_s: Err("no value supplied for period_s".to_string()),
+                    source: Err("no value supplied for source".to_string()),
+                }
+            }
+        }
+        impl QueryRetention {
+            pub fn cutoff_ns<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.cutoff_ns = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for cutoff_ns: {e}"));
+                self
+            }
+            pub fn enforced<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.enforced = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for enforced: {e}"));
+                self
+            }
+            pub fn period<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.period = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for period: {e}"));
+                self
+            }
+            pub fn period_s<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.period_s = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for period_s: {e}"));
+                self
+            }
+            pub fn source<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.source = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for source: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<QueryRetention> for super::QueryRetention {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: QueryRetention,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    cutoff_ns: value.cutoff_ns?,
+                    enforced: value.enforced?,
+                    period: value.period?,
+                    period_s: value.period_s?,
+                    source: value.source?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::QueryRetention> for QueryRetention {
+            fn from(value: super::QueryRetention) -> Self {
+                Self {
+                    cutoff_ns: Ok(value.cutoff_ns),
+                    enforced: Ok(value.enforced),
+                    period: Ok(value.period),
+                    period_s: Ok(value.period_s),
+                    source: Ok(value.source),
                 }
             }
         }

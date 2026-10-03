@@ -30,7 +30,7 @@ use compactor::retention::metrics::RetentionMetrics;
 use compactor::{
     CompactionExecutor, CompactionMetrics, CompactionPlanner, CompactionStatus, ExecutorConfig,
     ManifestReader, OrphanCleaner, OrphanCleanupConfig as CompactorOrphanConfig, OrphanDetector,
-    PlannerConfig, RetentionConfig as CompactorRetentionConfig,
+    PlannerConfig,
 };
 use iceberg_rust::catalog::tabular::Tabular;
 use iceberg_rust::table::Table;
@@ -387,7 +387,7 @@ async fn default_snapshots_to_keep_protects_a_referenced_file_then_reclaims_it_o
     .await
     .context("failed to write filler commits")?;
 
-    let retention_config = CompactorRetentionConfig::from(config.compactor.retention.clone());
+    let retention_config = config.compactor.retention.clone();
     let enforcer = RetentionEnforcer::new(
         catalog_manager.clone(),
         retention_config,

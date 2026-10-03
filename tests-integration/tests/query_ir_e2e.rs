@@ -3639,9 +3639,15 @@ async fn match_incomplete_trace_warns_when_the_range_cuts_a_trace() {
     let (status, body) = post_ir(&app, narrow).await;
     assert_eq!(status, StatusCode::OK, "narrow match: {body}");
     assert_eq!(witnesses(&body), whole, "the warning never changes rows");
-    let warnings = body["warnings"].as_array().expect("warnings array");
+    // The fixture's 2023 timestamps also draw a `range_before_retention` warning.
+    let warnings: Vec<_> = body["warnings"]
+        .as_array()
+        .expect("warnings array")
+        .iter()
+        .filter(|w| w["code"] != "range_before_retention")
+        .collect();
     let [warning] = warnings.as_slice() else {
-        panic!("exactly one warning: {body}");
+        panic!("exactly one match warning: {body}");
     };
     assert_eq!(warning["code"], "match_incomplete_trace", "{body}");
     let message = warning["message"].as_str().expect("message");
@@ -3695,9 +3701,15 @@ async fn match_incomplete_trace_counts_a_trace_whose_span_set_is_cut_off() {
     let (status, body) = post_ir(&app, narrow).await;
     assert_eq!(status, StatusCode::OK, "narrow match: {body}");
     assert!(trace_ids_in(&body).is_empty(), "{body}");
-    let warnings = body["warnings"].as_array().expect("warnings array");
+    // The fixture's 2023 timestamps also draw a `range_before_retention` warning.
+    let warnings: Vec<_> = body["warnings"]
+        .as_array()
+        .expect("warnings array")
+        .iter()
+        .filter(|w| w["code"] != "range_before_retention")
+        .collect();
     let [warning] = warnings.as_slice() else {
-        panic!("exactly one warning: {body}");
+        panic!("exactly one match warning: {body}");
     };
     assert_eq!(warning["code"], "match_incomplete_trace", "{body}");
     let message = warning["message"].as_str().expect("message");

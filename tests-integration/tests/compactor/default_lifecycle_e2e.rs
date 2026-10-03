@@ -30,7 +30,7 @@ use compactor::retention::metrics::RetentionMetrics;
 use compactor::{
     CompactionExecutor, CompactionMetrics, CompactionPlanner, CompactionStatus, ExecutorConfig,
     ManifestReader, OrphanCleaner, OrphanCleanupConfig as CompactorOrphanConfig, OrphanDetector,
-    PartitionManager, PlannerConfig, RetentionConfig as CompactorRetentionConfig,
+    PartitionManager, PlannerConfig,
 };
 use iceberg_rust::catalog::tabular::Tabular;
 use iceberg_rust::table::Table;
@@ -308,7 +308,7 @@ async fn default_config_compacts_and_reclaims_end_to_end() -> Result<()> {
     // post-drop table) — there is no separate public entry point for
     // "just" snapshot expiration in the production retention path, so one
     // call covers both halves of the task.
-    let retention_config = CompactorRetentionConfig::from(config.compactor.retention.clone());
+    let retention_config = config.compactor.retention.clone();
     let enforcer = RetentionEnforcer::new(
         catalog_manager.clone(),
         retention_config,
