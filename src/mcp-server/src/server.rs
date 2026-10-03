@@ -643,9 +643,10 @@ struct DiscoverAttributesParams {
     /// Maximum fields or values to return.
     #[serde(default)]
     limit: Option<u64>,
-    /// With `tag`: read data to answer when no declared value set or maintained
-    /// statistics cover the field. Leave false (the default) to get no values
-    /// and a `hint` instead of paying for a scan.
+    /// With `tag`: read the range's data to answer whenever no declared value
+    /// set covers the field, rather than answering from maintained statistics
+    /// (which cover one compacted partition, not the range). Leave false (the
+    /// default) to get statistics or a `hint` instead of paying for a scan.
     #[serde(default)]
     sample: bool,
     /// Tenant to query — must match the credential's authenticated tenant
@@ -961,9 +962,11 @@ struct DiscoverFieldValuesParams {
     /// Maximum values to return.
     #[serde(default)]
     limit: Option<u64>,
-    /// Read data to answer when no declared value set or maintained statistics
-    /// cover the field. Leave false (the default) to be told what would answer
-    /// it instead of paying for a scan.
+    /// Read the range's data to answer whenever no declared value set covers
+    /// the field, rather than answering from maintained statistics (which
+    /// cover one compacted partition, not the range). Leave false (the
+    /// default) to get statistics or be told what would answer it instead of
+    /// paying for a scan.
     #[serde(default)]
     sample: bool,
     /// Tenant to query — must match the credential's authenticated tenant
@@ -2975,7 +2978,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Discover queryable attributes for your tenant, through the Query IR `describe` stage. Call with no arguments to list the trace fields; pass `tag` to list the known values for that field. Pass `signal: \"logs\"`, `signal: \"metrics\"`, or `signal: \"profiles\"` to describe that source instead. With `signal: \"traces\"`, pass `scope: \"resource\"|\"span\"|\"intrinsic\"` to narrow to one attribute level (with `tag`, the level-qualified field `resource.<tag>` / `span.<tag>`; `intrinsic` cannot be combined with `tag`). A scope lists only typed keys at that level: untyped keys (no attribute level) and scope-level attributes are never listed, `limit` counts the scoped fields, and a qualified tag can land on an intrinsic such as `span.kind`. Listing fields reads no signal data. Values come from a declared set or maintained statistics; a field nothing covers returns no values plus a `hint`, unless you pass `sample: true`, which reads data bounded by `from`/`to`/`limit`. Names are logical dotted OTel names and the response is the `describe` result (`discover_fields` / `discover_field_values` with a signal-selected source). Use this to construct valid `query_ir` documents.",
+        description = "Discover queryable attributes for your tenant, through the Query IR `describe` stage. Call with no arguments to list the trace fields; pass `tag` to list the known values for that field. Pass `signal: \"logs\"`, `signal: \"metrics\"`, or `signal: \"profiles\"` to describe that source instead. With `signal: \"traces\"`, pass `scope: \"resource\"|\"span\"|\"intrinsic\"` to narrow to one attribute level (with `tag`, the level-qualified field `resource.<tag>` / `span.<tag>`; `intrinsic` cannot be combined with `tag`). A scope lists only typed keys at that level: untyped keys (no attribute level) and scope-level attributes are never listed, `limit` counts the scoped fields, and a qualified tag can land on an intrinsic such as `span.kind`. Listing fields reads no signal data. Values come from a declared set or maintained statistics; a field nothing covers returns no values plus a `hint`. Statistics are built from one compacted partition, so they can miss values: `cost.analyzed` says what they were built from and `cost.partial: true` means they do not span the requested range (cardinalities are then lower bounds). Pass `sample: true` to read the range instead, bounded by `from`/`to`/`limit`; only a declared value set skips the read. Names are logical dotted OTel names and the response is the `describe` result (`discover_fields` / `discover_field_values` with a signal-selected source). Use this to construct valid `query_ir` documents.",
         annotations(read_only_hint = true)
     )]
     async fn discover_attributes(
@@ -3148,7 +3151,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List the queryable fields of a signal source, as logical dotted OTel names with their canonical type. Answered from the declared schema, the type authority's committed attribute types and maintained statistics — it reads no signal data — so call it freely before building a `query_ir` document. An attribute's type is the type authority's canonical type, the one a predicate on it is coerced to. Each field carries `origin` (declared/authority/registry/observed), and where statistics exist, `coverage` (the fraction of records carrying it) and an approximate `cardinality`. The response's `cost.as_of` says how recent those statistics are; `cost.window_scoped: false` means the range did not narrow the answer.",
+        description = "List the queryable fields of a signal source, as logical dotted OTel names with their canonical type. Answered from the declared schema, the type authority's committed attribute types and maintained statistics — it reads no signal data — so call it freely before building a `query_ir` document. An attribute's type is the type authority's canonical type, the one a predicate on it is coerced to. Each field carries `origin` (declared/authority/registry/observed), and where statistics exist, `coverage` (the fraction of records carrying it) and an approximate `cardinality`. The response's `cost.as_of` says how recent those statistics are; `cost.window_scoped: false` means the range did not narrow the answer. Statistics are built from one compacted partition: `cost.analyzed` names its rows and time span, and `cost.partial: true` means it does not span the requested range, so fields seen only elsewhere can be missing and every `cardinality` is a lower bound (`at_least: true`).",
         annotations(read_only_hint = true)
     )]
     async fn discover_fields(
@@ -3173,7 +3176,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Suggest values for one logical field. A declared value set (a registry enumeration, or span kind / status code) is returned exactly and reads no data. When nothing covers the field the result has no values, `cost.mode: \"none\"`, and a `hint` naming the query that would compute the answer — pass `sample: true` only if you want that query run, which reads data bounded by the range and limit and reports `cost.mode: \"sampled_scan\"`.",
+        description = "Suggest values for one logical field. A declared value set (a registry enumeration, or span kind / status code) is returned exactly and reads no data. Otherwise, without `sample`, the answer comes from maintained statistics: a sketch built from one compacted partition, with `cost.analyzed` saying which rows and time span it saw and `cost.partial: true` when that does not span the requested range — treat such a list as incomplete. When nothing covers the field the result has no values, `cost.mode: \"none\"`, and a `hint` naming the query that would compute the answer. Pass `sample: true` to run that query instead of using statistics: it reads data bounded by the range and limit and reports `cost.mode: \"sampled_scan\"`.",
         annotations(read_only_hint = true)
     )]
     async fn discover_field_values(

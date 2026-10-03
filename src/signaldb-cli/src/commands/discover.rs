@@ -124,9 +124,10 @@ pub struct ValuesArgs {
     /// Maximum values to return
     #[arg(long)]
     limit: Option<u64>,
-    /// Read data to answer when no declared value set or maintained statistics
-    /// cover the field. Without this the command reports what would answer it
-    /// instead of scanning.
+    /// Read the range's data to answer whenever no declared value set covers
+    /// the field, rather than answering from maintained statistics (which
+    /// cover one compacted partition). Without this the command answers from
+    /// statistics or reports what would answer it instead of scanning.
     #[arg(long)]
     sample: bool,
     #[command(flatten)]
@@ -173,9 +174,10 @@ pub struct AttributesArgs {
     /// land on an intrinsic (`span.kind`).
     #[arg(long, value_enum)]
     scope: Option<TagScope>,
-    /// With `--tag`: read data to answer when no declared value set or
-    /// maintained statistics cover the field. Without this the command reports
-    /// what would answer it instead of scanning.
+    /// With `--tag`: read the range's data to answer whenever no declared
+    /// value set covers the field, rather than answering from maintained
+    /// statistics (which cover one compacted partition). Without this the
+    /// command answers from statistics or reports what would answer it.
     #[arg(long)]
     sample: bool,
     #[command(flatten)]

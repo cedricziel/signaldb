@@ -959,6 +959,10 @@ pub mod types {
     ///What a discovery answer cost and how far it can be trusted.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct DiscoveryCost {
+        /**What the statistics behind the answer were built from, when
+        statistics contributed to it.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub analyzed: ::std::option::Option<StatisticsCoverage>,
         /**Whether the answer is approximate — a bounded sketch of the most
         frequent values rather than the exact set. A declared value set is
         exact; a statistics- or scan-derived one is not, and saying so is the
@@ -969,6 +973,12 @@ pub mod types {
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub as_of: ::std::option::Option<::std::string::String>,
         pub mode: CostMode,
+        /**Whether the statistics behind the answer cover less than the
+        requested window. The analyzer observes one compacted partition at a
+        time, so a statistics answer over a longer window can miss values and
+        fields that only occur elsewhere, and its cardinalities are lower
+        bounds. Pass `sample: true` to read the window instead.*/
+        pub partial: bool,
         ///Whether the answer is sampled, and therefore possibly incomplete.
         pub sampled: bool,
         /**Whether the answer is scoped to the requested time window. Maintained
@@ -5642,6 +5652,25 @@ pub mod types {
             Default::default()
         }
     }
+    /**What a statistics-derived answer was built from: the rows the analyzer
+    last read and the event-time span they came from.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct StatisticsCoverage {
+        ///End (exclusive) of that span, in Unix nanoseconds.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub end_ns: ::std::option::Option<i64>,
+        ///Rows the analyzer read for the most recent observation.
+        pub rows_analyzed: i64,
+        /**Start of the event-time span those rows came from, in Unix
+        nanoseconds. Absent for statistics written before spans were recorded.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub start_ns: ::std::option::Option<i64>,
+    }
+    impl StatisticsCoverage {
+        pub fn builder() -> builder::StatisticsCoverage {
+            Default::default()
+        }
+    }
     ///API response for table information
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TableInfo {
@@ -9968,27 +9997,44 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct DiscoveryCost {
+            analyzed: ::std::result::Result<
+                ::std::option::Option<super::StatisticsCoverage>,
+                ::std::string::String,
+            >,
             approximate: ::std::result::Result<bool, ::std::string::String>,
             as_of: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
                 ::std::string::String,
             >,
             mode: ::std::result::Result<super::CostMode, ::std::string::String>,
+            partial: ::std::result::Result<bool, ::std::string::String>,
             sampled: ::std::result::Result<bool, ::std::string::String>,
             window_scoped: ::std::result::Result<bool, ::std::string::String>,
         }
         impl ::std::default::Default for DiscoveryCost {
             fn default() -> Self {
                 Self {
+                    analyzed: Ok(Default::default()),
                     approximate: Err("no value supplied for approximate".to_string()),
                     as_of: Ok(Default::default()),
                     mode: Err("no value supplied for mode".to_string()),
+                    partial: Err("no value supplied for partial".to_string()),
                     sampled: Err("no value supplied for sampled".to_string()),
                     window_scoped: Err("no value supplied for window_scoped".to_string()),
                 }
             }
         }
         impl DiscoveryCost {
+            pub fn analyzed<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::StatisticsCoverage>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.analyzed = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for analyzed: {e}"));
+                self
+            }
             pub fn approximate<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<bool>,
@@ -10019,6 +10065,16 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for mode: {e}"));
                 self
             }
+            pub fn partial<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.partial = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for partial: {e}"));
+                self
+            }
             pub fn sampled<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<bool>,
@@ -10046,9 +10102,11 @@ pub mod types {
                 value: DiscoveryCost,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    analyzed: value.analyzed?,
                     approximate: value.approximate?,
                     as_of: value.as_of?,
                     mode: value.mode?,
+                    partial: value.partial?,
                     sampled: value.sampled?,
                     window_scoped: value.window_scoped?,
                 })
@@ -10057,9 +10115,11 @@ pub mod types {
         impl ::std::convert::From<super::DiscoveryCost> for DiscoveryCost {
             fn from(value: super::DiscoveryCost) -> Self {
                 Self {
+                    analyzed: Ok(value.analyzed),
                     approximate: Ok(value.approximate),
                     as_of: Ok(value.as_of),
                     mode: Ok(value.mode),
+                    partial: Ok(value.partial),
                     sampled: Ok(value.sampled),
                     window_scoped: Ok(value.window_scoped),
                 }
@@ -22233,6 +22293,74 @@ pub mod types {
                     column: Ok(value.column),
                     message: Ok(value.message),
                     statement: Ok(value.statement),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct StatisticsCoverage {
+            end_ns: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
+            rows_analyzed: ::std::result::Result<i64, ::std::string::String>,
+            start_ns: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
+        }
+        impl ::std::default::Default for StatisticsCoverage {
+            fn default() -> Self {
+                Self {
+                    end_ns: Ok(Default::default()),
+                    rows_analyzed: Err("no value supplied for rows_analyzed".to_string()),
+                    start_ns: Ok(Default::default()),
+                }
+            }
+        }
+        impl StatisticsCoverage {
+            pub fn end_ns<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.end_ns = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for end_ns: {e}"));
+                self
+            }
+            pub fn rows_analyzed<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.rows_analyzed = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for rows_analyzed: {e}"));
+                self
+            }
+            pub fn start_ns<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.start_ns = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for start_ns: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<StatisticsCoverage> for super::StatisticsCoverage {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: StatisticsCoverage,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    end_ns: value.end_ns?,
+                    rows_analyzed: value.rows_analyzed?,
+                    start_ns: value.start_ns?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::StatisticsCoverage> for StatisticsCoverage {
+            fn from(value: super::StatisticsCoverage) -> Self {
+                Self {
+                    end_ns: Ok(value.end_ns),
+                    rows_analyzed: Ok(value.rows_analyzed),
+                    start_ns: Ok(value.start_ns),
                 }
             }
         }

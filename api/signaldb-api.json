@@ -7368,9 +7368,21 @@
           "mode",
           "window_scoped",
           "sampled",
-          "approximate"
+          "approximate",
+          "partial"
         ],
         "properties": {
+          "analyzed": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/StatisticsCoverage",
+                "description": "What the statistics behind the answer were built from, when\nstatistics contributed to it."
+              }
+            ]
+          },
           "approximate": {
             "type": "boolean",
             "description": "Whether the answer is approximate — a bounded sketch of the most\nfrequent values rather than the exact set. A declared value set is\nexact; a statistics- or scan-derived one is not, and saying so is the\ndifference between a suggestion and a claim."
@@ -7384,6 +7396,10 @@
           },
           "mode": {
             "$ref": "#/components/schemas/CostMode"
+          },
+          "partial": {
+            "type": "boolean",
+            "description": "Whether the statistics behind the answer cover less than the\nrequested window. The analyzer observes one compacted partition at a\ntime, so a statistics answer over a longer window can miss values and\nfields that only occur elsewhere, and its cardinalities are lower\nbounds. Pass `sample: true` to read the window instead."
           },
           "sampled": {
             "type": "boolean",
@@ -12359,6 +12375,36 @@
           "statement": {
             "type": "integer",
             "minimum": 0
+          }
+        }
+      },
+      "StatisticsCoverage": {
+        "type": "object",
+        "description": "What a statistics-derived answer was built from: the rows the analyzer\nlast read and the event-time span they came from.",
+        "required": [
+          "rows_analyzed"
+        ],
+        "properties": {
+          "end_ns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "End (exclusive) of that span, in Unix nanoseconds."
+          },
+          "rows_analyzed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Rows the analyzer read for the most recent observation."
+          },
+          "start_ns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Start of the event-time span those rows came from, in Unix\nnanoseconds. Absent for statistics written before spans were recorded."
           }
         }
       },
