@@ -1,13 +1,12 @@
 use super::api_error::ApiError;
 use crate::RouterAppState;
-use arrow_flight::{FlightData, Ticket};
+use arrow_flight::Ticket;
 use axum::{
     Router,
     extract::{Path, Query, State},
     routing::get,
 };
 use common::auth::TenantContextExtractor;
-use common::flight::decode::flight_data_vec_to_batches;
 use common::flight::transport::ServiceCapability;
 use datafusion::arrow::{
     array::{Array, BooleanArray, StringArray, UInt64Array},
@@ -71,19 +70,12 @@ pub fn router() -> Router<RouterAppState> {
         .route("/api/metrics/query_range", get(metrics_query_range))
 }
 
-/// Convert Arrow FlightData to internal trace model, then to Tempo API format
-async fn flight_data_to_tempo_trace(
-    flight_data: Vec<FlightData>,
+/// Convert the querier's record batches to the internal trace model, then
+/// to Tempo API format
+fn batches_to_tempo_trace(
+    batches: Vec<RecordBatch>,
     trace_id: &str,
 ) -> Result<Option<tempo_api::Trace>, Box<dyn std::error::Error + Send + Sync>> {
-    if flight_data.is_empty() {
-        return Ok(None);
-    }
-
-    // Convert FlightData to RecordBatches, honoring any dictionary batches
-    // the querier sent (#951).
-    let batches = flight_data_vec_to_batches(flight_data).await?;
-
     if batches.is_empty() {
         return Ok(None);
     }
@@ -396,30 +388,19 @@ fn internal_trace_to_tempo(
     }
 }
 
-/// Convert Arrow FlightData to Tempo search results.
+/// Convert the querier's record batches to Tempo search results.
 ///
 /// `spss` is Tempo's spans-per-spanset limit; non-positive values are
 /// ignored. When absent, every matched span is returned (Tempo itself
 /// defaults to 3, but SignalDB preserves its historical full-span
 /// responses unless the client asks for a cap).
-async fn flight_data_to_search_results(
-    flight_data: Vec<FlightData>,
+fn batches_to_search_results(
+    batches: Vec<RecordBatch>,
     spss: Option<i32>,
 ) -> Result<tempo_api::SearchResult, Box<dyn std::error::Error + Send + Sync>> {
     let span_cap = spss
         .and_then(|v| usize::try_from(v).ok())
         .filter(|v| *v > 0);
-    if flight_data.is_empty() {
-        return Ok(tempo_api::SearchResult {
-            traces: vec![],
-            metrics: HashMap::new(),
-        });
-    }
-
-    // Convert FlightData to RecordBatches, honoring any dictionary batches
-    // the querier sent (#951).
-    let batches = flight_data_vec_to_batches(flight_data).await?;
-
     if batches.is_empty() {
         return Ok(tempo_api::SearchResult {
             traces: vec![],
@@ -659,13 +640,14 @@ pub async fn query_single_trace(
     {
         Ok(response) => {
             let mut stream = response.into_inner();
-            let mut trace_data = Vec::new();
+            let mut trace_data = super::flight_decode::DecodedBatches::new("trace");
 
-            // Collect all flight data. The querier's terminal status can
-            // surface here rather than at do_get, so map it in both places.
+            // Decode the response as it arrives. The querier's terminal
+            // status can surface here rather than at do_get, so map it in
+            // both places.
             while let Some(flight_data) = stream.next().await {
                 match flight_data {
-                    Ok(data) => trace_data.push(data),
+                    Ok(data) => trace_data.push(data)?,
                     Err(e) => {
                         return Err(
                             rpc_span.in_scope(|| trace_lookup_status_to_http(&trace_id, &e))
@@ -677,7 +659,7 @@ pub async fn query_single_trace(
             let convert_started = std::time::Instant::now();
 
             // Convert flight data to trace format
-            match flight_data_to_tempo_trace(trace_data, &trace_id).await {
+            match batches_to_tempo_trace(trace_data.finish(), &trace_id) {
                 Ok(Some(mut trace)) => {
                     tracing::info!(trace_id = %trace_id, "Successfully converted trace to Tempo format");
                     // Optionally attach linked profile summaries. A failed
@@ -863,14 +845,14 @@ pub async fn search(
     {
         Ok(response) => {
             let mut stream = response.into_inner();
-            let mut search_results = Vec::new();
+            let mut search_results = super::flight_decode::DecodedBatches::new("trace_search");
 
-            // Collect all flight data. As on the trace-lookup path, the
-            // querier's terminal status usually surfaces here rather than at
-            // `do_get` — a timeout in particular — so map it in both places.
+            // Decode the response as it arrives. As on the trace-lookup path,
+            // the querier's terminal status usually surfaces here rather than
+            // at `do_get` — a timeout in particular — so map it in both places.
             while let Some(flight_data) = stream.next().await {
                 match flight_data {
-                    Ok(data) => search_results.push(data),
+                    Ok(data) => search_results.push(data)?,
                     Err(e) => {
                         tracing::error!(error = %e, "Error reading flight data for search");
                         return Err(search_status_to_http(&e));
@@ -879,7 +861,7 @@ pub async fn search(
             }
 
             // Convert flight data to search results
-            match flight_data_to_search_results(search_results, query.spss).await {
+            match batches_to_search_results(search_results.finish(), query.spss) {
                 Ok(search_result) => {
                     tracing::info!(
                         trace_count = search_result.traces.len(),
@@ -1037,25 +1019,20 @@ async fn execute_ticket(
         })?
         .into_inner();
 
-    let mut flight_data = Vec::new();
+    let mut decoded = super::flight_decode::DecodedBatches::new("tag_discovery");
     while let Some(data) = stream.next().await {
-        flight_data.push(data.map_err(|e| {
+        let data = data.map_err(|e| {
             tracing::error!(error = %e, "Error reading tag discovery flight data");
             ApiError::new(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.message())
-        })?);
+        })?;
+        decoded.push(data).map_err(|status| {
+            ApiError::new(
+                status,
+                "failed to decode tag discovery response returned by the querier",
+            )
+        })?;
     }
-    if flight_data.is_empty() {
-        return Ok(vec![]);
-    }
-
-    // Honor any dictionary batches the querier sent (#951).
-    flight_data_vec_to_batches(flight_data).await.map_err(|e| {
-        tracing::error!(error = %e, "Failed to decode tag discovery flight data");
-        ApiError::new(
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "failed to decode tag discovery response returned by the querier",
-        )
-    })
+    Ok(decoded.finish())
 }
 
 /// Collect the non-null string values of `column` across `batches`.

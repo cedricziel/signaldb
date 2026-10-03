@@ -625,14 +625,11 @@ async fn execute_ticket(
         .map_err(|e| rpc_span.in_scope(|| ApiError::from_flight(&e, "logs")))?
         .into_inner();
 
-    let mut data = Vec::new();
+    let mut decoded = super::flight_decode::DecodedBatches::new("logs");
     while let Some(flight_data) = stream.next().await {
-        data.push(flight_data.map_err(|e| ApiError::from_flight(&e, "logs"))?);
+        decoded.push(flight_data.map_err(|e| ApiError::from_flight(&e, "logs"))?)?;
     }
-
-    super::flight_decode::decode_flight_batches(data, "logs")
-        .await
-        .map_err(ApiError::from)
+    Ok(decoded.finish())
 }
 
 /// The attribute containers carried on a projected log row, in precedence

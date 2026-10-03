@@ -40,6 +40,10 @@ Sequenced per design D6: deadline + resource envelope first (small, ship immedia
 
 - [ ] 5.1 Tests per endpoint family (tempo/logql/promql/query): pre-first-byte failures keep today's status-code mapping (#921 regression tests stay green); mid-stream failure aborts the HTTP response attributably (no silent truncation); memory bounded while assembling format-required aggregations
 - [ ] 5.2 Replace collect-then-decode with incremental `FlightRecordBatchStream` consumption in router endpoints; stream JSON where the format allows, bounded assembly where it does not
+  - Incremental decode landed (#938): tempo, logql, pyroscope and query IR
+    decode each message as it arrives via
+    `common::flight::decode::IncrementalFlightDecoder`. Streaming the JSON
+    response itself is still open.
 - [ ] 5.3 Remove the collect fallback + flag one release later (tracked follow-up)
 
 ## 6. Close-out

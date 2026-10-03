@@ -1183,7 +1183,7 @@ pub(super) async fn execute_ticket(
             // Bound the buffered result size as well as the time — the deadline
             // alone would still let one uncapped query (no `limit` stage) buffer an
             // unbounded result set for up to the timeout.
-            let mut data = Vec::new();
+            let mut decoded = super::flight_decode::DecodedBatches::new("query_ir");
             let mut bytes: usize = 0;
             let mut correlate_report = common::flight::QueryReport::default();
             while let Some(flight_data) = stream.next().await {
@@ -1191,8 +1191,8 @@ pub(super) async fn execute_ticket(
                 // The trailer the querier appends reporting a `correlate` stage
                 // (see `common::flight::correlate_report_trailer`) is a
                 // data-free message: recognized and dropped here rather than
-                // handed to `decode_flight_batches`, which expects only schema
-                // and record-batch messages. A malformed payload only loses
+                // handed to the decoder, which expects only schema and
+                // record-batch messages. A malformed payload only loses
                 // the warnings, never the rows already received.
                 if let Some(parsed) =
                     common::flight::parse_correlate_report_trailer(&fd.app_metadata)
@@ -1213,17 +1213,14 @@ pub(super) async fn execute_ticket(
                         "IR query result too large; add a `limit` stage or narrow the range",
                     ));
                 }
-                data.push(fd);
+                decoded.push(fd)?;
             }
             common::self_monitoring::spans::record_rpc_result(
                 &record_span,
                 common::self_monitoring::spans::RpcBoundary::Client,
                 tonic::Code::Ok,
             );
-            let batches = super::flight_decode::decode_flight_batches(data, "query_ir")
-                .await
-                .map_err(ApiError::from)?;
-            Ok((batches, correlate_report))
+            Ok((decoded.finish(), correlate_report))
         }
         .instrument(rpc_span),
     )
