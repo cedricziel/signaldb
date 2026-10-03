@@ -2520,6 +2520,16 @@ pub struct QuerierConfig {
     /// This budget is separate from `memory_limit_mb`, which bounds query
     /// operators.
     pub parquet_metadata_cache_mb: u64,
+    /// How long a resolved Iceberg table is reused before the querier loads
+    /// it from the catalog again.
+    ///
+    /// Each load is a catalog query plus a metadata read from object store,
+    /// paid once per table per query without the cache. A table's newly
+    /// committed snapshot becomes visible within this delay; a newly
+    /// created table is visible immediately, since a missing table is never
+    /// cached. `0s` disables the cache.
+    #[serde(with = "humantime_serde")]
+    pub table_cache_ttl: Duration,
     /// Wall-clock timeout applied to each Flight query.
     #[serde(with = "humantime_serde")]
     pub query_timeout: Duration,
@@ -2629,6 +2639,7 @@ impl Default for QuerierConfig {
             memory_limit_mb: None,
             memory_pool_fraction: 0.8,
             parquet_metadata_cache_mb: 128,
+            table_cache_ttl: Duration::from_secs(1),
             query_timeout: Duration::from_secs(60),
             max_sql_rows: 1_000_000,
             max_search_limit: 1_000,
@@ -3144,6 +3155,7 @@ mod tests {
         assert_eq!(config.querier.memory_limit_mb, None);
         assert_eq!(config.querier.max_concurrent_queries_per_tenant, 8);
         assert_eq!(config.querier.query_timeout, Duration::from_secs(60));
+        assert_eq!(config.querier.table_cache_ttl, Duration::from_secs(1));
         assert_eq!(config.querier.max_sql_rows, 1_000_000);
         assert_eq!(config.querier.max_search_limit, 1_000);
         assert_eq!(config.querier.correlate_max_rows, 5_000_000);
@@ -3162,6 +3174,7 @@ mod tests {
                 memory_limit_mb = 512
                 memory_pool_fraction = 0.5
                 query_timeout = "5s"
+                table_cache_ttl = "0s"
                 max_sql_rows = 1000
                 max_search_limit = 50
                 max_concurrent_queries_per_tenant = 0
@@ -3181,6 +3194,7 @@ mod tests {
             assert_eq!(config.querier.memory_limit_mb, Some(512));
             assert_eq!(config.querier.memory_pool_fraction, 0.5);
             assert_eq!(config.querier.query_timeout, Duration::from_secs(5));
+            assert_eq!(config.querier.table_cache_ttl, Duration::ZERO);
             assert_eq!(config.querier.max_sql_rows, 1000);
             assert_eq!(config.querier.max_search_limit, 50);
             assert_eq!(config.querier.max_concurrent_queries_per_tenant, 0);

@@ -24,6 +24,7 @@ use futures::stream::{self, BoxStream};
 use object_store::ObjectStore;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tonic::{Request, Response, Status};
 use tracing::Instrument;
 
@@ -54,12 +55,51 @@ fn warm_index_gate(
     }
 }
 
+type TableRef = Arc<dyn datafusion::datasource::TableProvider>;
+
+/// Resolved table providers, reused for `[querier].table_cache_ttl` so a
+/// burst of queries against one table pays the catalog round-trip and
+/// metadata read once rather than per query (#939). A missing table is never
+/// cached, so a newly created one is visible on the next query. Keyed by the
+/// full Iceberg identifier, which leads with the tenant slug, so one cache
+/// serves every tenant catalog.
+struct TableProviderCache {
+    ttl: Duration,
+    entries: dashmap::DashMap<String, (Instant, TableRef)>,
+}
+
+impl TableProviderCache {
+    fn new(ttl: Duration) -> Self {
+        Self {
+            ttl,
+            entries: dashmap::DashMap::new(),
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<TableRef> {
+        let removed = self
+            .entries
+            .remove_if(key, |_, (loaded_at, _)| loaded_at.elapsed() >= self.ttl);
+        if removed.is_some() {
+            return None;
+        }
+        self.entries.get(key).map(|entry| Arc::clone(&entry.1))
+    }
+
+    fn insert(&self, key: String, table: TableRef) {
+        if !self.ttl.is_zero() {
+            self.entries.insert(key, (Instant::now(), table));
+        }
+    }
+}
+
 /// Queries the Iceberg catalog directly, bypassing `datafusion_iceberg`'s
 /// stale `Mirror` cache so newly-created tables are immediately visible.
 struct LiveIcebergSchema {
     namespace: iceberg_rust::catalog::namespace::Namespace,
     catalog: Arc<dyn iceberg_rust::catalog::Catalog>,
     warm_index: common::config::WarmIndexQuerierConfig,
+    tables: Arc<TableProviderCache>,
 }
 
 impl std::fmt::Debug for LiveIcebergSchema {
@@ -89,6 +129,10 @@ impl SchemaProvider for LiveIcebergSchema {
             None,
         )
         .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+        let cache_key = ident.to_string();
+        if let Some(table) = self.tables.get(&cache_key) {
+            return Ok(Some(table));
+        }
 
         match self.catalog.clone().load_tabular(&ident).await {
             Ok(tabular) => {
@@ -123,6 +167,7 @@ impl SchemaProvider for LiveIcebergSchema {
                     ),
                     None => table,
                 };
+                self.tables.insert(cache_key, Arc::clone(&table));
                 Ok(Some(table))
             }
             Err(iceberg_rust::error::Error::CatalogNotFound) => Ok(None),
@@ -141,6 +186,7 @@ struct TenantCatalog {
     tenant_slug: String,
     catalog: Arc<dyn iceberg_rust::catalog::Catalog>,
     warm_index: common::config::WarmIndexQuerierConfig,
+    tables: Arc<TableProviderCache>,
 }
 
 impl std::fmt::Debug for TenantCatalog {
@@ -167,6 +213,7 @@ impl CatalogProvider for TenantCatalog {
             namespace,
             catalog: self.catalog.clone(),
             warm_index: self.warm_index.clone(),
+            tables: Arc::clone(&self.tables),
         }))
     }
 
@@ -414,6 +461,8 @@ pub struct QuerierFlightService {
     catalog_manager: Option<Arc<CatalogManager>>,
     /// Slugs whose DataFusion catalog is already registered in `session_ctx`.
     registered_tenants: dashmap::DashSet<String>,
+    /// Resolved Iceberg tables shared by every tenant catalog.
+    table_cache: Arc<TableProviderCache>,
     /// Per-tenant registration locks so concurrent first-queries for the *same*
     /// tenant register exactly once, while different tenants register
     /// concurrently (no single global lock on the query path).
@@ -580,6 +629,7 @@ impl QuerierFlightService {
         limits: QuerierConfig,
     ) -> Self {
         let session_ctx = Arc::new(session_context_with_limits(&limits));
+        let table_cache = Arc::new(TableProviderCache::new(limits.table_cache_ttl));
 
         // Register object store with DataFusion for querying Parquet files
         // This allows querying files like: SELECT * FROM 'batch/file.parquet'
@@ -615,6 +665,7 @@ impl QuerierFlightService {
             query_permits: dashmap::DashMap::new(),
             catalog_manager: None,
             registered_tenants: dashmap::DashSet::new(),
+            table_cache,
             tenant_reg_locks: dashmap::DashMap::new(),
             session_cache: dashmap::DashMap::new(),
         }
@@ -661,11 +712,13 @@ impl QuerierFlightService {
         let iceberg_catalog = catalog_manager.catalog();
 
         let registered_tenants: dashmap::DashSet<String> = dashmap::DashSet::new();
+        let table_cache = Arc::new(TableProviderCache::new(limits.table_cache_ttl));
         for tenant in &tenants {
             let tenant_catalog = TenantCatalog {
                 tenant_slug: tenant.slug.clone(),
                 catalog: iceberg_catalog.clone(),
                 warm_index: limits.warm_index.clone(),
+                tables: Arc::clone(&table_cache),
             };
 
             session_ctx.register_catalog(&tenant.slug, Arc::new(tenant_catalog));
@@ -715,6 +768,7 @@ impl QuerierFlightService {
             query_permits: dashmap::DashMap::new(),
             catalog_manager: Some(catalog_manager),
             registered_tenants,
+            table_cache,
             tenant_reg_locks: dashmap::DashMap::new(),
             session_cache: dashmap::DashMap::new(),
         })
@@ -781,6 +835,7 @@ impl QuerierFlightService {
             tenant_slug: tenant.slug.clone(),
             catalog: iceberg_catalog,
             warm_index: self.limits.warm_index.clone(),
+            tables: Arc::clone(&self.table_cache),
         };
         self.session_ctx
             .register_catalog(&tenant.slug, Arc::new(tenant_catalog));
@@ -2404,6 +2459,37 @@ fn trace_error_to_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_table() -> Arc<dyn datafusion::datasource::TableProvider> {
+        Arc::new(datafusion::datasource::empty::EmptyTable::new(Arc::new(
+            datafusion::arrow::datatypes::Schema::empty(),
+        )))
+    }
+
+    #[test]
+    fn table_cache_reuses_a_table_within_its_ttl_only() {
+        let cache = TableProviderCache::new(Duration::from_millis(50));
+        assert!(cache.get("acme.prod.traces").is_none());
+
+        let table = empty_table();
+        cache.insert("acme.prod.traces".to_string(), Arc::clone(&table));
+        let hit = cache.get("acme.prod.traces").expect("fresh entry is a hit");
+        assert!(Arc::ptr_eq(&hit, &table));
+        assert!(cache.get("acme.prod.logs").is_none());
+
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        assert!(
+            cache.get("acme.prod.traces").is_none(),
+            "an expired entry must be reloaded so new snapshots become visible"
+        );
+    }
+
+    #[test]
+    fn table_cache_with_zero_ttl_never_caches() {
+        let cache = TableProviderCache::new(Duration::ZERO);
+        cache.insert("acme.prod.traces".to_string(), empty_table());
+        assert!(cache.get("acme.prod.traces").is_none());
+    }
 
     #[test]
     fn tenant_slug_names_the_ticket_tenant_and_is_none_for_raw_sql() {

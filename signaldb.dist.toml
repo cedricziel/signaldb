@@ -342,6 +342,12 @@ memory_pool_fraction = 0.8
 # memory_limit_mb, which bounds query operators. 0 disables the cache.
 parquet_metadata_cache_mb = 128
 #
+# How long a resolved Iceberg table is reused before it is loaded from the
+# catalog again (a catalog query plus a metadata read per load). New
+# snapshots become visible within this delay; new tables immediately.
+# "0s" disables the cache.
+table_cache_ttl = "1s"
+#
 # Wall-clock timeout per Flight query.
 query_timeout = "60s"
 #
