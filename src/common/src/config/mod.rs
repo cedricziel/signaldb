@@ -473,6 +473,9 @@ pub struct AcceptorConfig {
     /// Env: SIGNALDB__ACCEPTOR__RETRY_DEDUP_WINDOW
     #[serde(with = "humantime_serde")]
     pub retry_dedup_window: Duration,
+    /// Per-record attribute guardrails applied at ingest to every signal on
+    /// both OTLP transports. TOML section: `[acceptor.attribute_limits]`.
+    pub attribute_limits: AttributeLimits,
 }
 
 impl Default for AcceptorConfig {
@@ -480,6 +483,35 @@ impl Default for AcceptorConfig {
         Self {
             max_request_body_bytes: 64 * 1024 * 1024, // 64MB
             retry_dedup_window: Duration::from_secs(300),
+            attribute_limits: AttributeLimits::default(),
+        }
+    }
+}
+
+/// Limits on one OTLP attribute list (resource, scope, or record). An
+/// attribute past a limit is dropped and counted in the owning message's
+/// `dropped_attributes_count`.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct AttributeLimits {
+    /// Maximum attributes kept per list; later ones are dropped.
+    /// Env: SIGNALDB__ACCEPTOR__ATTRIBUTE_LIMITS__MAX_ATTRIBUTES
+    pub max_attributes: usize,
+    /// Attributes whose key is longer than this many bytes are dropped.
+    /// Env: SIGNALDB__ACCEPTOR__ATTRIBUTE_LIMITS__MAX_KEY_BYTES
+    pub max_key_bytes: usize,
+    /// Attributes whose value is longer than this many bytes are dropped
+    /// (strings and bytes by length, arrays and kvlists by encoded size).
+    /// Env: SIGNALDB__ACCEPTOR__ATTRIBUTE_LIMITS__MAX_VALUE_BYTES
+    pub max_value_bytes: usize,
+}
+
+impl Default for AttributeLimits {
+    fn default() -> Self {
+        Self {
+            max_attributes: 512,
+            max_key_bytes: 256,
+            max_value_bytes: 4096,
         }
     }
 }
@@ -3932,6 +3964,19 @@ mod tests {
 
             Ok(())
         });
+    }
+
+    #[test]
+    fn test_acceptor_attribute_limits_parse_and_default() {
+        let parsed: AcceptorConfig =
+            toml::from_str("[attribute_limits]\nmax_attributes = 8\nmax_key_bytes = 16\n")
+                .expect("attribute_limits must parse");
+        assert_eq!(parsed.attribute_limits.max_attributes, 8);
+        assert_eq!(parsed.attribute_limits.max_key_bytes, 16);
+        assert_eq!(parsed.attribute_limits.max_value_bytes, 4096);
+
+        let absent: AcceptorConfig = toml::from_str("").expect("empty acceptor block");
+        assert_eq!(absent.attribute_limits, AttributeLimits::default());
     }
 
     #[test]

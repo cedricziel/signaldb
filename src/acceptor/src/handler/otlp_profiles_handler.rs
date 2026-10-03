@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use common::auth::TenantContext;
+use common::config::AttributeLimits;
 use common::flight::conversion::otlp_profiles_to_arrow;
 use common::flight::transport::InMemoryFlightTransport;
 use common::wal::{WalOperation, record_batch_to_bytes};
@@ -20,6 +21,7 @@ use super::WalManager;
 use super::forward::{spawn_forward_and_mark, spawn_retire_resend};
 use super::ingest_error::IngestError;
 use super::retry_dedup::{RetryDedup, stamp_batch_fingerprint};
+use crate::attribute_limits::{cap_profiles, record_drops};
 
 pub struct ProfileHandler {
     /// Flight transport for forwarding telemetry
@@ -28,6 +30,8 @@ pub struct ProfileHandler {
     wal_manager: Arc<WalManager>,
     /// Recognizes a client's resend of a batch already made durable
     retry_dedup: Arc<RetryDedup>,
+    /// Per-record attribute guardrails (`[acceptor.attribute_limits]`)
+    attribute_limits: Arc<AttributeLimits>,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -73,6 +77,7 @@ impl ProfileHandler {
             flight_transport,
             wal_manager,
             retry_dedup: Arc::new(RetryDedup::default()),
+            attribute_limits: Arc::new(AttributeLimits::default()),
         }
     }
 
@@ -81,6 +86,13 @@ impl ProfileHandler {
     /// the default window.
     pub fn with_retry_dedup(mut self, retry_dedup: Arc<RetryDedup>) -> Self {
         self.retry_dedup = retry_dedup;
+        self
+    }
+
+    /// Apply the acceptor's `[acceptor.attribute_limits]`; the default is
+    /// [`AttributeLimits::default`].
+    pub fn with_attribute_limits(mut self, attribute_limits: Arc<AttributeLimits>) -> Self {
+        self.attribute_limits = attribute_limits;
         self
     }
 
@@ -99,13 +111,16 @@ impl ProfileHandler {
     pub async fn handle_grpc_otlp_profiles(
         &self,
         tenant_context: &TenantContext,
-        request: ExportProfilesServiceRequest,
+        mut request: ExportProfilesServiceRequest,
     ) -> Result<(), IngestError> {
         tracing::debug!(
             tenant_id = %tenant_context.tenant_id,
             dataset_id = %tenant_context.dataset_id,
             "Handling OTLP profiles request"
         );
+
+        let dropped = cap_profiles(&mut request, &self.attribute_limits);
+        record_drops(&tenant_context.tenant_id, "profiles", &dropped);
 
         // Get tenant/dataset-specific WAL
         let wal = self
