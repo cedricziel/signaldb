@@ -55,6 +55,9 @@ pub struct IcebergTableManager {
     /// bounded by the number of distinct tables this process ever
     /// recreates, not by ongoing load.
     recreation_locks: dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>,
+    /// Service catalog holding the advisory attribute statistics, cleared
+    /// for a table [`Self::recreate_as_typed`] drops (#1826).
+    stats_catalog: Option<Arc<crate::catalog::Catalog>>,
 }
 
 impl IcebergTableManager {
@@ -65,7 +68,14 @@ impl IcebergTableManager {
             catalog,
             metadata_previous_versions_max,
             recreation_locks: dashmap::DashMap::new(),
+            stats_catalog: None,
         }
+    }
+
+    /// Clear a recreated table's attribute statistics in `catalog`.
+    pub fn with_stats_catalog(mut self, catalog: Arc<crate::catalog::Catalog>) -> Self {
+        self.stats_catalog = Some(catalog);
+        self
     }
 
     /// The mutex serializing [`Self::recreate_as_typed`] calls for `ident`
@@ -403,10 +413,31 @@ impl IcebergTableManager {
                         ));
                     }
                 }
+                self.clear_attribute_stats(&request, ident).await;
             }
         }
 
         self.create_fresh_table(request).await
+    }
+
+    /// Drop the advisory attribute statistics of a table that was just
+    /// dropped, so discovery and promotion stop describing its data. Failures
+    /// are logged: the statistics are advisory and must not fail recreation.
+    async fn clear_attribute_stats(&self, request: &NewTableRequest<'_>, ident: &Identifier) {
+        let Some(catalog) = &self.stats_catalog else {
+            return;
+        };
+        let signal = crate::catalog::attribute_stats_signal(request.table_name);
+        if let Err(e) = catalog
+            .clear_attribute_stats(request.tenant_slug, request.dataset_slug, signal)
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                table = %ident,
+                "Failed to clear attribute statistics of a recreated table"
+            );
+        }
     }
 
     /// Load an existing table or create it if it doesn't exist.
@@ -1366,6 +1397,88 @@ mod tests {
             first.metadata().table_uuid,
             legacy_uuid,
             "the surviving table must be a genuinely new one, not the legacy table reused"
+        );
+        Ok(())
+    }
+
+    /// Recreating a table forgets its attribute statistics, so discovery
+    /// stops listing fields of the dropped data (#1826). Statistics of other
+    /// signals and the canonical attribute types are kept.
+    #[tokio::test]
+    async fn recreate_as_typed_clears_the_tables_attribute_statistics() -> anyhow::Result<()> {
+        use crate::schema::logical::AttributeLevel;
+
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let (ident, legacy_uuid) =
+            create_legacy_traces_table(&catalog, "stats_tenant", "stats_dataset").await?;
+
+        let stats = Arc::new(crate::catalog::Catalog::new("sqlite::memory:").await?);
+        let (tenant, dataset) = ("stats_tenant", "stats_dataset");
+        for signal in ["traces", "logs"] {
+            stats
+                .upsert_attribute_scan_stats(tenant, dataset, signal, "busy_ns", 10, 10, 3, false)
+                .await?;
+            stats
+                .upsert_attribute_level_scan_stats(
+                    tenant,
+                    dataset,
+                    signal,
+                    AttributeLevel::Record,
+                    "busy_ns",
+                    10,
+                    10,
+                )
+                .await?;
+            stats
+                .replace_attribute_value_stats(
+                    tenant,
+                    dataset,
+                    signal,
+                    "busy_ns",
+                    &[("42".to_string(), 10)],
+                )
+                .await?;
+        }
+
+        let table_manager =
+            IcebergTableManager::new(catalog.clone(), 5).with_stats_catalog(stats.clone());
+        let labels = MaterializedLabels::default();
+        let request = NewTableRequest {
+            tenant_slug: tenant,
+            dataset_slug: dataset,
+            table_name: "traces",
+            labels: &labels,
+            warm_index: None,
+        };
+        table_manager
+            .recreate_as_typed(request, &ident, legacy_uuid, Some("physical-v4"))
+            .await?;
+
+        assert!(
+            stats
+                .get_attribute_stats(tenant, dataset, "traces")
+                .await?
+                .is_empty()
+        );
+        assert!(
+            stats
+                .list_attribute_level_stats(tenant, dataset, "traces")
+                .await?
+                .is_empty()
+        );
+        assert!(
+            stats
+                .get_attribute_value_stats(tenant, dataset, "traces", "busy_ns", 10)
+                .await?
+                .is_empty()
+        );
+        assert_eq!(
+            stats
+                .get_attribute_stats(tenant, dataset, "logs")
+                .await?
+                .len(),
+            1
         );
         Ok(())
     }

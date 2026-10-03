@@ -280,7 +280,11 @@ materialized_labels` is applied when a table is created; `ensure_table`'s
   post-1.0 breaking-changes policy, not a bug. It happens the first time any
   reconcile pass or write touches a still-legacy table after upgrading past
   the cutover, so plan the upgrade around each table's retention window if
-  the pre-cutover data matters.
+  the pre-cutover data matters. The recreation also clears the signal's
+  attribute statistics (observed fields, per-level presence and value
+  sketches), so field discovery and promotion stop describing the dropped
+  data until the compactor observes the new table. The canonical attribute
+  types are kept.
 - **Not every table property is set at creation.** Provisioning applies the
   bloom-filter, column-statistics, compression and metadata-pruning
   properties, but deliberately not `write.target-file-size-bytes`: compaction

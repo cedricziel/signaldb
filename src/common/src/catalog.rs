@@ -3601,6 +3601,56 @@ impl Catalog {
         Ok(())
     }
 
+    /// Forget every advisory statistic for one (tenant, dataset, signal):
+    /// per-key stats, per-level stats and value sketches. Called when the
+    /// signal's table is dropped and recreated, so discovery and promotion
+    /// stop describing data that is no longer queryable. The canonical
+    /// `attribute_types` are kept on purpose: they are monotonic by design,
+    /// and new data for a key must keep the type it was committed with.
+    pub async fn clear_attribute_stats(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+    ) -> Result<(), sqlx::Error> {
+        const TABLES: [&str; 3] = [
+            "attribute_stats",
+            "attribute_level_stats",
+            "attribute_value_stats",
+        ];
+        match self {
+            Catalog::Sqlite(pool) => {
+                let mut tx = pool.begin().await?;
+                for table in TABLES {
+                    query(&format!(
+                        "DELETE FROM {table} WHERE tenant_id = ? AND dataset_id = ? AND signal = ?"
+                    ))
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(signal)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                tx.commit().await?;
+            }
+            Catalog::Postgres(pool) => {
+                let mut tx = pool.begin().await?;
+                for table in TABLES {
+                    query(&format!(
+                        "DELETE FROM {table} WHERE tenant_id = $1 AND dataset_id = $2 AND signal = $3"
+                    ))
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(signal)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                tx.commit().await?;
+            }
+        }
+        Ok(())
+    }
+
     /// One key's value sketch, most frequent first. Empty when the analyzer
     /// keeps no sketch for the key — which discovery reports as "nothing
     /// covers this field" rather than as "this field has no values".
