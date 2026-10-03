@@ -977,6 +977,8 @@ fn histogram_stddev_and_stdvar_lower_to_moment_stages() {
     ]);
     assert_eq!(lower("histogram_stddev(x)")["irVersion"], json!(16));
     assert_eq!(lower("histogram_quantile(0.5, x)")["irVersion"], json!(10));
+    // A stage nested in a binop's right operand raises the document too.
+    assert_eq!(lower("x / histogram_stddev(y)")["irVersion"], json!(16));
     assert_eq!(labels("histogram_stdvar(x)"), (vec![], true));
     assert_eq!(
         labels("histogram_stddev(sum by (le, job) (rate(x[5m])))"),
