@@ -3772,8 +3772,9 @@ async fn oldest_data_ns_reports_the_earliest_stored_event() {
         .await
         .expect("ingest logs");
 
+    wait_for_rows(&build_router(&services).await, "logs", range(), 2).await;
+    // A fresh router: the polls above cached the lookup from before the commit.
     let app = build_router(&services).await;
-    wait_for_rows(&app, "logs", range(), 2).await;
 
     // A window that excludes the earliest record still reports it.
     let (status, body) = post_ir(
