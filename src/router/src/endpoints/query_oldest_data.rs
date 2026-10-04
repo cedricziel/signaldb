@@ -60,15 +60,19 @@ pub(super) async fn oldest_data_ns(
             .oldest_event_ns(&ctx.tenant_id, &ctx.dataset_id, table)
             .await
     };
-    let error = match tokio::time::timeout(LOOKUP_TIMEOUT, lookup).await {
-        Ok(Ok(oldest)) => {
-            if let Ok(mut cache) = state.oldest_data_cache.lock() {
-                cache.insert(key, (Instant::now(), oldest));
-            }
-            return oldest;
-        }
-        Ok(Err(error)) => error.to_string(),
-        Err(_) => format!("timed out after {}ms", LOOKUP_TIMEOUT.as_millis()),
+    let (oldest, error) = match tokio::time::timeout(LOOKUP_TIMEOUT, lookup).await {
+        Ok(Ok(oldest)) => (oldest, None),
+        Ok(Err(error)) => (None, Some(error.to_string())),
+        Err(_) => (
+            None,
+            Some(format!("timed out after {}ms", LOOKUP_TIMEOUT.as_millis())),
+        ),
+    };
+    if let Ok(mut cache) = state.oldest_data_cache.lock() {
+        cache.insert(key, (Instant::now(), oldest));
+    }
+    let Some(error) = error else {
+        return oldest;
     };
     debug!(
         signaldb.tenant.id = %ctx.tenant_id,
