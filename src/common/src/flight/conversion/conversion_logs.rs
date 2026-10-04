@@ -27,7 +27,7 @@ use super::extract_scope_json;
 /// `RecordBatch`. Callers must reject the export instead of acknowledging
 /// it, otherwise the data would be silently lost.
 pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> Result<RecordBatch, ArrowError> {
-    let schemas = FlightSchemas::new();
+    let schemas = FlightSchemas::shared();
     let schema = schemas.log_schema.clone();
 
     // Extract logs from the request

@@ -41,7 +41,7 @@ use super::extract_scope_json;
 pub fn otlp_metrics_to_arrow(
     request: &ExportMetricsServiceRequest,
 ) -> Result<datafusion::arrow::record_batch::RecordBatch, ArrowError> {
-    let schemas = FlightSchemas::new();
+    let schemas = FlightSchemas::shared();
     let schema = schemas.metric_schema.clone();
 
     // Extract metrics from the request
