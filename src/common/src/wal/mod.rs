@@ -4,6 +4,7 @@ pub mod manager;
 pub mod rlimit;
 
 use anyhow::{Context, Result};
+use bytes::Bytes;
 use datafusion::arrow::record_batch::RecordBatch;
 use framing::{
     DATA_RECORD_HEADER_LEN, LOG_RECORD_HEADER_LEN, SEGMENT_HEADER_LEN, SegmentFormat,
@@ -580,7 +581,7 @@ impl WalSegment {
     /// `signaldb.wal.corrupt_entries{record="data"}` is incremented, and an
     /// error is returned. Neighbouring records are unaffected: the caller
     /// retires this entry (see [`Wal::dead_letter_unreadable`]) and moves on.
-    pub async fn read_entry_data(&self, entry: &WalEntry) -> Result<Vec<u8>> {
+    pub async fn read_entry_data(&self, entry: &WalEntry) -> Result<Bytes> {
         let data_len = tokio::fs::metadata(&self.data_path)
             .await
             .with_context(|| format!("Failed to stat WAL data file {}", self.data_path.display()))?
@@ -616,11 +617,11 @@ impl WalSegment {
         data_file.read_exact(&mut buffer).await?;
 
         if self.format == SegmentFormat::Legacy {
-            return Ok(buffer);
+            return Ok(Bytes::from(buffer));
         }
 
         match validate_data_record(&buffer, entry.data_size) {
-            Ok(payload) => Ok(payload.to_vec()),
+            Ok(_) => Ok(Bytes::from(buffer).slice(DATA_RECORD_HEADER_LEN..)),
             Err(e) => {
                 tracing::warn!(
                     entry_id = %entry.id,
@@ -906,7 +907,7 @@ impl Default for WalConfig {
 }
 
 /// Type alias for WAL buffer entries (entry_id, operation, data, optional_metadata)
-type WalBuffer = Arc<RwLock<VecDeque<(Uuid, WalOperation, Vec<u8>, Option<String>)>>>;
+type WalBuffer = Arc<RwLock<VecDeque<(Uuid, WalOperation, Bytes, Option<String>)>>>;
 
 /// Seconds since the Unix epoch. A clock before the epoch yields 0 rather
 /// than a panic — this is called on the write path.
@@ -1568,6 +1569,10 @@ impl Wal {
 
     /// Add an entry to the WAL
     ///
+    /// The buffer holds the reference-counted `data` rather than a copy, so
+    /// a caller can keep a clone of the same bytes (the acceptor forwards
+    /// them to the writer, #942).
+    ///
     /// # Arguments
     /// * `operation` - The type of WAL operation
     /// * `data` - The data to write
@@ -1580,7 +1585,7 @@ impl Wal {
     pub async fn append(
         &self,
         operation: WalOperation,
-        data: Vec<u8>,
+        data: Bytes,
         metadata: Option<String>,
     ) -> Result<Uuid> {
         self.flush_recovered_seed().await;
@@ -1804,7 +1809,7 @@ impl Wal {
     /// compaction still holds stale offsets. Honouring those verbatim would
     /// read another entry's bytes — the offset-desync class behind the hive
     /// WAL corruption (#865/#883). Only the id is taken from the caller.
-    pub async fn read_entry_data(&self, entry: &WalEntry) -> Result<Vec<u8>> {
+    pub async fn read_entry_data(&self, entry: &WalEntry) -> Result<Bytes> {
         let segments = self.segments.lock().await;
         for segment_arc in segments.iter() {
             let segment = segment_arc.lock().await;
@@ -2154,7 +2159,7 @@ pub(crate) mod test_support {
 /// this durability (not latency) path. Compression is recorded per IPC
 /// message, so [`bytes_to_record_batch`] transparently reads both these
 /// and legacy uncompressed segments.
-pub fn record_batch_to_bytes(batch: &RecordBatch) -> Result<Vec<u8>> {
+pub fn record_batch_to_bytes(batch: &RecordBatch) -> Result<Bytes> {
     use datafusion::arrow::ipc::CompressionType;
     use datafusion::arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
 
@@ -2165,7 +2170,7 @@ pub fn record_batch_to_bytes(batch: &RecordBatch) -> Result<Vec<u8>> {
         writer.write(batch)?;
         writer.finish()?;
     }
-    Ok(buffer)
+    Ok(Bytes::from(buffer))
 }
 
 /// Utility to convert bytes back to RecordBatch from WAL
@@ -2424,7 +2429,7 @@ mod tests {
     async fn framed_records_round_trip_through_reopen() {
         let temp_dir = TempDir::new().unwrap();
         let config = wal_test_config(temp_dir.path().to_path_buf());
-        let payloads: Vec<Vec<u8>> = (0..5)
+        let payloads: Vec<Bytes> = (0..5)
             .map(|i| record_batch_to_bytes(&make_batch_val(i)).unwrap())
             .collect();
 
@@ -2468,7 +2473,7 @@ mod tests {
         let config = wal_test_config(temp_dir.path().to_path_buf());
         let wal = Wal::new(config.clone()).await.unwrap();
 
-        let payloads: Vec<Vec<u8>> = (0..3)
+        let payloads: Vec<Bytes> = (0..3)
             .map(|i| record_batch_to_bytes(&make_batch_val(i)).unwrap())
             .collect();
         let mut ids = Vec::new();
@@ -2563,7 +2568,7 @@ mod tests {
         let mut ids = Vec::new();
         for i in 0..3u8 {
             ids.push(
-                wal.append(WalOperation::WriteTraces, vec![i; 16], None)
+                wal.append(WalOperation::WriteTraces, vec![i; 16].into(), None)
                     .await
                     .unwrap(),
             );
@@ -2646,7 +2651,7 @@ mod tests {
 
         // New appends land in a fresh framed segment, not the legacy one.
         let new_id = wal
-            .append(WalOperation::WriteTraces, b"framed".to_vec(), None)
+            .append(WalOperation::WriteTraces, b"framed".to_vec().into(), None)
             .await
             .unwrap();
         wal.flush().await.unwrap();
@@ -2675,7 +2680,7 @@ mod tests {
         let new_entry = entries.iter().find(|e| e.id == new_id).unwrap();
         assert_eq!(
             reopened.read_entry_data(new_entry).await.unwrap(),
-            b"framed"
+            &b"framed"[..]
         );
         let legacy_entry = entries.iter().find(|e| e.id == legacy_ids[1]).unwrap();
         assert_eq!(
@@ -2716,7 +2721,7 @@ mod tests {
         // Shared map of committed (id -> bytes), populated by writers as each
         // append returns and sampled by concurrent readers — mirrors the
         // WalProcessor reading entries while do_put appends and rotates.
-        let committed: Arc<tokio::sync::Mutex<std::collections::HashMap<Uuid, Vec<u8>>>> =
+        let committed: Arc<tokio::sync::Mutex<std::collections::HashMap<Uuid, Bytes>>> =
             Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
@@ -2811,7 +2816,7 @@ mod tests {
 
         let payload = b"poison payload".to_vec();
         let entry_id = wal
-            .append(WalOperation::WriteTraces, payload.clone(), None)
+            .append(WalOperation::WriteTraces, payload.clone().into(), None)
             .await
             .unwrap();
         wal.flush().await.unwrap();
@@ -2850,7 +2855,7 @@ mod tests {
 
         let payload = b"perfectly good batch the writer refuses".to_vec();
         let entry_id = wal
-            .append(WalOperation::WriteMetrics, payload.clone(), None)
+            .append(WalOperation::WriteMetrics, payload.clone().into(), None)
             .await
             .unwrap();
         wal.flush().await.unwrap();
@@ -2944,15 +2949,15 @@ mod tests {
         let second = b"entry two payload (will be corrupted)".to_vec();
         let third = b"entry three payload".to_vec();
         let first_id = wal
-            .append(WalOperation::WriteTraces, first.clone(), None)
+            .append(WalOperation::WriteTraces, first.clone().into(), None)
             .await
             .unwrap();
         let second_id = wal
-            .append(WalOperation::WriteTraces, second.clone(), None)
+            .append(WalOperation::WriteTraces, second.clone().into(), None)
             .await
             .unwrap();
         let third_id = wal
-            .append(WalOperation::WriteTraces, third.clone(), None)
+            .append(WalOperation::WriteTraces, third.clone().into(), None)
             .await
             .unwrap();
         wal.flush().await.unwrap();
@@ -2993,17 +2998,17 @@ mod tests {
         let config = wal_test_config(temp_dir.path().to_path_buf());
 
         let wal = Wal::new(config.clone()).await.unwrap();
-        wal.append(WalOperation::WriteTraces, b"first".to_vec(), None)
+        wal.append(WalOperation::WriteTraces, b"first".to_vec().into(), None)
             .await
             .unwrap();
         wal.append(
             WalOperation::WriteTraces,
-            b"second (corrupted)".to_vec(),
+            b"second (corrupted)".to_vec().into(),
             None,
         )
         .await
         .unwrap();
-        wal.append(WalOperation::WriteTraces, b"third".to_vec(), None)
+        wal.append(WalOperation::WriteTraces, b"third".to_vec().into(), None)
             .await
             .unwrap();
         wal.flush().await.unwrap();
@@ -3049,17 +3054,17 @@ mod tests {
         let config = wal_test_config(temp_dir.path().to_path_buf());
 
         let wal = Wal::new(config.clone()).await.unwrap();
-        wal.append(WalOperation::WriteTraces, b"first".to_vec(), None)
+        wal.append(WalOperation::WriteTraces, b"first".to_vec().into(), None)
             .await
             .unwrap();
         wal.append(
             WalOperation::WriteTraces,
-            b"second (corrupted)".to_vec(),
+            b"second (corrupted)".to_vec().into(),
             None,
         )
         .await
         .unwrap();
-        wal.append(WalOperation::WriteTraces, b"third".to_vec(), None)
+        wal.append(WalOperation::WriteTraces, b"third".to_vec().into(), None)
             .await
             .unwrap();
         wal.flush().await.unwrap();
@@ -3089,11 +3094,11 @@ mod tests {
         let first = b"entry one payload".to_vec();
         let second = b"entry two payload".to_vec();
         let first_id = wal
-            .append(WalOperation::WriteTraces, first.clone(), None)
+            .append(WalOperation::WriteTraces, first.clone().into(), None)
             .await
             .unwrap();
         let second_id = wal
-            .append(WalOperation::WriteTraces, second.clone(), None)
+            .append(WalOperation::WriteTraces, second.clone().into(), None)
             .await
             .unwrap();
         wal.flush().await.unwrap();
@@ -3149,7 +3154,7 @@ mod tests {
 
         let payload = vec![0xABu8; 1024];
         for _ in 0..8 {
-            wal.append(WalOperation::WriteTraces, payload.clone(), None)
+            wal.append(WalOperation::WriteTraces, payload.clone().into(), None)
                 .await
                 .unwrap();
             wal.flush().await.unwrap();
@@ -3237,7 +3242,7 @@ mod tests {
 
         // Append entry
         let _entry_id = wal
-            .append(WalOperation::WriteTraces, test_data.clone(), None)
+            .append(WalOperation::WriteTraces, test_data.clone().into(), None)
             .await
             .unwrap();
 
@@ -3275,7 +3280,7 @@ mod tests {
         for i in 0..3 {
             let payload = format!("payload-{i}-{}", "x".repeat(100)).into_bytes();
             let id = wal
-                .append(WalOperation::WriteTraces, payload, None)
+                .append(WalOperation::WriteTraces, payload.into(), None)
                 .await
                 .unwrap();
             wal.flush().await.unwrap();
@@ -3331,7 +3336,7 @@ mod tests {
         for i in 0..4 {
             let payload = format!("payload-{i}-{}", "x".repeat(100)).into_bytes();
             let id = wal
-                .append(WalOperation::WriteTraces, payload, None)
+                .append(WalOperation::WriteTraces, payload.into(), None)
                 .await
                 .unwrap();
             wal.flush().await.unwrap();
@@ -3385,7 +3390,7 @@ mod tests {
             let id = wal
                 .append(
                     WalOperation::WriteTraces,
-                    format!("payload-{i}").into_bytes(),
+                    format!("payload-{i}").into_bytes().into(),
                     None,
                 )
                 .await
@@ -3435,11 +3440,11 @@ mod tests {
         let wal = Wal::new(config).await.unwrap();
 
         let a = wal
-            .append(WalOperation::WriteTraces, b"a".to_vec(), None)
+            .append(WalOperation::WriteTraces, b"a".to_vec().into(), None)
             .await
             .unwrap();
         let b = wal
-            .append(WalOperation::WriteTraces, b"b".to_vec(), None)
+            .append(WalOperation::WriteTraces, b"b".to_vec().into(), None)
             .await
             .unwrap();
         wal.flush().await.unwrap();
@@ -3478,7 +3483,7 @@ mod tests {
         let wal = Wal::new(config).await.unwrap();
 
         let id = wal
-            .append(WalOperation::WriteTraces, b"x".to_vec(), None)
+            .append(WalOperation::WriteTraces, b"x".to_vec().into(), None)
             .await
             .unwrap();
         wal.flush().await.unwrap();
@@ -3509,7 +3514,7 @@ mod tests {
         let wal = Wal::new(config.clone()).await.unwrap();
 
         let id = wal
-            .append(WalOperation::WriteTraces, b"x".to_vec(), None)
+            .append(WalOperation::WriteTraces, b"x".to_vec().into(), None)
             .await
             .unwrap();
         wal.flush().await.unwrap();
@@ -3549,7 +3554,7 @@ mod tests {
         let wal = Wal::new(config.clone()).await.unwrap();
         for i in 0..3 {
             let payload = format!("payload-{i}-{}", "x".repeat(100)).into_bytes();
-            wal.append(WalOperation::WriteTraces, payload, None)
+            wal.append(WalOperation::WriteTraces, payload.into(), None)
                 .await
                 .unwrap();
             wal.flush().await.unwrap();
@@ -3721,7 +3726,7 @@ mod tests {
 
         let ids = append_rotating(&wal, 12).await;
         let before = wal.get_entries().await.unwrap();
-        let mut payloads: std::collections::HashMap<Uuid, Vec<u8>> = Default::default();
+        let mut payloads: std::collections::HashMap<Uuid, Bytes> = Default::default();
         for entry in &before {
             payloads.insert(entry.id, wal.read_entry_data(entry).await.unwrap());
         }
@@ -3775,7 +3780,7 @@ mod tests {
 
         let ids = append_rotating(&wal, 12).await;
         let stale: Vec<WalEntry> = wal.get_entries().await.unwrap();
-        let mut payloads: std::collections::HashMap<Uuid, Vec<u8>> = Default::default();
+        let mut payloads: std::collections::HashMap<Uuid, Bytes> = Default::default();
         for entry in &stale {
             payloads.insert(entry.id, wal.read_entry_data(entry).await.unwrap());
         }

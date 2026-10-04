@@ -172,7 +172,7 @@ impl ProfileHandler {
         let wal_entry_id = wal
             .append(
                 WalOperation::WriteProfiles,
-                batch_bytes,
+                batch_bytes.clone(),
                 metadata_str.clone(),
             )
             .await
@@ -206,6 +206,7 @@ impl ProfileHandler {
                 wal_entry_id,
                 ingest_id,
                 record_batch,
+                batch_bytes,
                 metadata_str,
                 "profiles",
             )

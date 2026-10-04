@@ -328,7 +328,11 @@ impl PrometheusHandler {
             );
             let wal_metadata_str = serde_json::to_string(&wal_metadata).ok();
             let wal_entry_id = wal
-                .append(WalOperation::WriteMetrics, batch_bytes, wal_metadata_str)
+                .append(
+                    WalOperation::WriteMetrics,
+                    batch_bytes.clone(),
+                    wal_metadata_str,
+                )
                 .await
                 .map_err(|e| {
                     tracing::error!(error = ?e, "Failed to write to WAL");
@@ -384,6 +388,7 @@ impl PrometheusHandler {
             match forward_batch_to_writer(
                 &self.flight_transport,
                 record_batch,
+                Some(batch_bytes),
                 Some(&metadata.to_string()),
                 ingest_id,
             )

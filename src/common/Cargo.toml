@@ -70,6 +70,7 @@ futures.workspace = true
 chrono = { workspace = true }
 
 arrow-flight.workspace = true
+bytes.workspace = true
 tonic.workspace = true
 axum.workspace = true
 tower.workspace = true

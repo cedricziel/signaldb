@@ -438,7 +438,7 @@ pub async fn replay(
             result.replayed += 1;
             continue;
         }
-        if let Err(e) = wal.append(operation.clone(), bytes, None).await {
+        if let Err(e) = wal.append(operation.clone(), bytes.into(), None).await {
             tracing::warn!(
                 entry_id = %entry.stem,
                 error = %e,

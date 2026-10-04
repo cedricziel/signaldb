@@ -239,7 +239,11 @@ impl MetricsHandler {
             );
             let wal_metadata_str = serde_json::to_string(&wal_metadata).ok();
             let wal_entry_id = match wal
-                .append(WalOperation::WriteMetrics, batch_bytes, wal_metadata_str)
+                .append(
+                    WalOperation::WriteMetrics,
+                    batch_bytes.clone(),
+                    wal_metadata_str,
+                )
                 .await
             {
                 Ok(id) => id,
@@ -301,6 +305,7 @@ impl MetricsHandler {
                     wal_entry_id,
                     ingest_id,
                     record_batch,
+                    batch_bytes,
                     Some(metadata.to_string()),
                     "metrics",
                 )

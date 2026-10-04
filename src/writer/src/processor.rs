@@ -1926,7 +1926,7 @@ mod tests {
             .unwrap();
         acme.append(
             WalOperation::WriteMetrics,
-            b"not arrow ipc".to_vec(),
+            b"not arrow ipc".to_vec().into(),
             Some(r#"{"tenant_id":"acme","dataset_id":"production"}"#.to_string()),
         )
         .await
@@ -2024,7 +2024,7 @@ mod tests {
                 let payload = vec![7u8; 1024 * 1024];
                 let mut first_write_tx = Some(first_write_tx);
                 while !stop.load(Ordering::Relaxed) {
-                    acme.append(WalOperation::WriteMetrics, payload.clone(), None)
+                    acme.append(WalOperation::WriteMetrics, payload.clone().into(), None)
                         .await
                         .unwrap();
                     acme.flush().await.unwrap();
@@ -2178,7 +2178,7 @@ mod tests {
             let id = wal
                 .append(
                     WalOperation::WriteTraces,
-                    vec![b'x'; 200 + i as usize],
+                    vec![b'x'; 200 + i as usize].into(),
                     None,
                 )
                 .await
@@ -2347,7 +2347,11 @@ mod tests {
         // the dead-letter path this aborted every processing cycle
         // forever.
         let entry_id = wal
-            .append(WalOperation::WriteTraces, b"not arrow ipc".to_vec(), None)
+            .append(
+                WalOperation::WriteTraces,
+                b"not arrow ipc".to_vec().into(),
+                None,
+            )
             .await
             .unwrap();
         wal.flush().await.unwrap();
@@ -2584,7 +2588,7 @@ mod tests {
         // _system-tenant entry: nothing may pass the export filter.
         wal.append(
             WalOperation::WriteTraces,
-            b"not arrow ipc".to_vec(),
+            b"not arrow ipc".to_vec().into(),
             Some(r#"{"tenant_id":"_system","dataset_id":"_monitoring"}"#.to_string()),
         )
         .await
@@ -2605,7 +2609,7 @@ mod tests {
         // Normal-tenant entry: processing logs still export.
         wal.append(
             WalOperation::WriteTraces,
-            b"not arrow ipc".to_vec(),
+            b"not arrow ipc".to_vec().into(),
             Some(r#"{"tenant_id":"acme","dataset_id":"production"}"#.to_string()),
         )
         .await
@@ -2789,7 +2793,7 @@ mod tests {
         assert_eq!(wal.get_unprocessed_entries().await.unwrap().len(), 1);
 
         // A Flush marker forces the drain via the normal processing loop.
-        wal.append(WalOperation::Flush, Vec::new(), None)
+        wal.append(WalOperation::Flush, bytes::Bytes::new(), None)
             .await
             .unwrap();
         wal.flush().await.unwrap();
@@ -2983,7 +2987,7 @@ mod tests {
         )
         .await
         .unwrap();
-        wal.append(WalOperation::Flush, Vec::new(), None)
+        wal.append(WalOperation::Flush, bytes::Bytes::new(), None)
             .await
             .unwrap();
         wal.flush().await.unwrap();
@@ -3025,7 +3029,7 @@ mod tests {
         )
         .await
         .unwrap();
-        wal.append(WalOperation::Flush, Vec::new(), None)
+        wal.append(WalOperation::Flush, bytes::Bytes::new(), None)
             .await
             .unwrap();
         wal.flush().await.unwrap();
@@ -3191,7 +3195,7 @@ mod tests {
             .unwrap();
         }
         // Arrives after the data, past the byte budget's cutoff.
-        wal.append(WalOperation::Flush, Vec::new(), None)
+        wal.append(WalOperation::Flush, bytes::Bytes::new(), None)
             .await
             .unwrap();
         wal.flush().await.unwrap();

@@ -83,7 +83,7 @@ async fn reconciliation_does_not_subtract_buffered_unflushed_entries() {
     for i in 0..ENTRY_COUNT {
         wal.append(
             WalOperation::WriteTraces,
-            format!("payload-{i}").into_bytes(),
+            format!("payload-{i}").into_bytes().into(),
             None,
         )
         .await

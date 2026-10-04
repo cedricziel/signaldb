@@ -1111,92 +1111,6 @@ mod tests {
         );
     }
 
-    /// Bare-minimum `FlightService` that answers every RPC with
-    /// `unimplemented` — enough to let a client complete its connection
-    /// handshake against a real listener.
-    struct NoopFlightService;
-
-    #[tonic::async_trait]
-    impl arrow_flight::flight_service_server::FlightService for NoopFlightService {
-        type HandshakeStream = futures::stream::BoxStream<
-            'static,
-            Result<arrow_flight::HandshakeResponse, tonic::Status>,
-        >;
-        type ListFlightsStream =
-            futures::stream::BoxStream<'static, Result<arrow_flight::FlightInfo, tonic::Status>>;
-        type DoGetStream =
-            futures::stream::BoxStream<'static, Result<arrow_flight::FlightData, tonic::Status>>;
-        type DoPutStream =
-            futures::stream::BoxStream<'static, Result<arrow_flight::PutResult, tonic::Status>>;
-        type DoExchangeStream =
-            futures::stream::BoxStream<'static, Result<arrow_flight::FlightData, tonic::Status>>;
-        type DoActionStream =
-            futures::stream::BoxStream<'static, Result<arrow_flight::Result, tonic::Status>>;
-        type ListActionsStream =
-            futures::stream::BoxStream<'static, Result<arrow_flight::ActionType, tonic::Status>>;
-
-        async fn handshake(
-            &self,
-            _request: tonic::Request<tonic::Streaming<arrow_flight::HandshakeRequest>>,
-        ) -> Result<tonic::Response<Self::HandshakeStream>, tonic::Status> {
-            Err(tonic::Status::unimplemented("handshake"))
-        }
-        async fn list_flights(
-            &self,
-            _request: tonic::Request<arrow_flight::Criteria>,
-        ) -> Result<tonic::Response<Self::ListFlightsStream>, tonic::Status> {
-            Err(tonic::Status::unimplemented("list_flights"))
-        }
-        async fn get_flight_info(
-            &self,
-            _request: tonic::Request<arrow_flight::FlightDescriptor>,
-        ) -> Result<tonic::Response<arrow_flight::FlightInfo>, tonic::Status> {
-            Err(tonic::Status::unimplemented("get_flight_info"))
-        }
-        async fn poll_flight_info(
-            &self,
-            _request: tonic::Request<arrow_flight::FlightDescriptor>,
-        ) -> Result<tonic::Response<arrow_flight::PollInfo>, tonic::Status> {
-            Err(tonic::Status::unimplemented("poll_flight_info"))
-        }
-        async fn get_schema(
-            &self,
-            _request: tonic::Request<arrow_flight::FlightDescriptor>,
-        ) -> Result<tonic::Response<arrow_flight::SchemaResult>, tonic::Status> {
-            Err(tonic::Status::unimplemented("get_schema"))
-        }
-        async fn do_get(
-            &self,
-            _request: tonic::Request<arrow_flight::Ticket>,
-        ) -> Result<tonic::Response<Self::DoGetStream>, tonic::Status> {
-            Err(tonic::Status::unimplemented("do_get"))
-        }
-        async fn do_put(
-            &self,
-            _request: tonic::Request<tonic::Streaming<arrow_flight::FlightData>>,
-        ) -> Result<tonic::Response<Self::DoPutStream>, tonic::Status> {
-            Err(tonic::Status::unimplemented("do_put"))
-        }
-        async fn do_exchange(
-            &self,
-            _request: tonic::Request<tonic::Streaming<arrow_flight::FlightData>>,
-        ) -> Result<tonic::Response<Self::DoExchangeStream>, tonic::Status> {
-            Err(tonic::Status::unimplemented("do_exchange"))
-        }
-        async fn do_action(
-            &self,
-            _request: tonic::Request<arrow_flight::Action>,
-        ) -> Result<tonic::Response<Self::DoActionStream>, tonic::Status> {
-            Err(tonic::Status::unimplemented("do_action"))
-        }
-        async fn list_actions(
-            &self,
-            _request: tonic::Request<arrow_flight::Empty>,
-        ) -> Result<tonic::Response<Self::ListActionsStream>, tonic::Status> {
-            Err(tonic::Status::unimplemented("list_actions"))
-        }
-    }
-
     /// `get_client_and_address_for_capability` must return the bare
     /// `host:port` of the resolved service, not `host:port:port` —
     /// `FlightServiceMetadata::address` already carries the port
@@ -1210,7 +1124,9 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             tonic::transport::Server::builder()
-                .add_service(crate::flight::flight_service_server(NoopFlightService))
+                .add_service(crate::flight::flight_service_server(
+                    crate::flight::test_support::NoopFlightService::default(),
+                ))
                 .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
                 .await
                 .unwrap();

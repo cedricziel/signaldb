@@ -65,7 +65,7 @@ async fn clear_cache_does_not_decrement_the_gauge_for_the_surviving_legacy_wal()
     // A pre-#932 writer left one legacy segment directly in the base dir.
     let legacy = Wal::new(wal_config(base_path.clone())).await.unwrap();
     legacy
-        .append(WalOperation::WriteTraces, b"legacy".to_vec(), None)
+        .append(WalOperation::WriteTraces, b"legacy".to_vec().into(), None)
         .await
         .unwrap();
     legacy.flush().await.unwrap();

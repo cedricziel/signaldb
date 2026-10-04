@@ -189,7 +189,11 @@ impl LogHandler {
         // Serialize metadata for WAL storage (enables background processor routing)
         let metadata_str = serde_json::to_string(&metadata).ok();
         let wal_entry_id = wal
-            .append(WalOperation::WriteLogs, batch_bytes, metadata_str.clone())
+            .append(
+                WalOperation::WriteLogs,
+                batch_bytes.clone(),
+                metadata_str.clone(),
+            )
             .await
             .context("Failed to write logs to WAL")
             .map_err(IngestError::Unavailable)?;
@@ -221,6 +225,7 @@ impl LogHandler {
                 wal_entry_id,
                 ingest_id,
                 record_batch,
+                batch_bytes,
                 metadata_str,
                 "logs",
             )

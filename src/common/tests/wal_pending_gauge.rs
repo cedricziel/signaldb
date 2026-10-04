@@ -75,7 +75,7 @@ async fn pending_gauge_returns_to_zero_after_entries_recovered_from_disk_are_pro
         for i in 0..ENTRY_COUNT {
             wal.append(
                 WalOperation::WriteTraces,
-                format!("payload-{i}").into_bytes(),
+                format!("payload-{i}").into_bytes().into(),
                 None,
             )
             .await
@@ -130,7 +130,7 @@ async fn pending_gauge_returns_to_zero_after_entries_recovered_from_disk_are_pro
     for i in 0..ENTRY_COUNT {
         wal.append(
             WalOperation::WriteTraces,
-            format!("second-round-{i}").into_bytes(),
+            format!("second-round-{i}").into_bytes().into(),
             None,
         )
         .await

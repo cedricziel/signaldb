@@ -177,6 +177,7 @@ impl ServiceRegistry {
         common::flight::forward::forward_batch_to_writer(
             transport,
             batch,
+            None,
             Some(metadata_json),
             ingest_id,
         )

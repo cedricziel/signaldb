@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use bytes::Bytes;
 pub use common::flight::forward::forward_batch_to_writer;
 use common::flight::transport::InMemoryFlightTransport;
 use common::wal::{Wal, WalOperation};
@@ -72,12 +73,14 @@ pub fn classify_forward_failure(error: &anyhow::Error) -> ForwardFailureKind {
 /// Error semantics are unchanged: a forward failure is logged and the entry
 /// stays unprocessed for the retry consumer; the caller still acks the
 /// request either way.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_forward_and_mark(
     flight_transport: Arc<InMemoryFlightTransport>,
     wal: Arc<Wal>,
     wal_entry_id: Uuid,
     ingest_id: Uuid,
     record_batch: RecordBatch,
+    ipc_stream: Bytes,
     metadata_json: Option<String>,
     signal: &'static str,
 ) -> tokio::task::JoinHandle<()> {
@@ -86,6 +89,7 @@ pub fn spawn_forward_and_mark(
             match forward_batch_to_writer(
                 &flight_transport,
                 record_batch,
+                Some(ipc_stream),
                 metadata_json.as_deref(),
                 ingest_id,
             )

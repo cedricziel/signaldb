@@ -28,13 +28,13 @@ pub(crate) mod test_support {
     /// [`metrics_wire_bytes`] kept under its own name where call sites read
     /// better naming the legacy per-type target table they route through
     /// (the in-flight redirect to the wide `metrics` table, #1926-class).
-    pub(crate) fn metrics_gauge_bytes(num_rows: usize) -> Vec<u8> {
+    pub(crate) fn metrics_gauge_bytes(num_rows: usize) -> bytes::Bytes {
         metrics_wire_bytes(num_rows)
     }
 
     /// A wire-format gauge metrics batch, built from a real OTLP request via
     /// [`common::flight::conversion::otlp_metrics_to_arrow`].
-    pub(crate) fn metrics_wire_bytes(num_rows: usize) -> Vec<u8> {
+    pub(crate) fn metrics_wire_bytes(num_rows: usize) -> bytes::Bytes {
         let values: Vec<f64> = (0..num_rows).map(|i| i as f64).collect();
         let request = common::testing::gauge_metrics_request_with_values(
             "test.metric",
@@ -47,7 +47,7 @@ pub(crate) mod test_support {
 
     /// An Arrow-valid batch whose schema matches no target table, so committing
     /// it fails during schema coercion — used to exercise commit-failure paths.
-    pub(crate) fn schema_mismatched_bytes() -> Vec<u8> {
+    pub(crate) fn schema_mismatched_bytes() -> bytes::Bytes {
         use datafusion::arrow::array::Int32Array;
         use datafusion::arrow::datatypes::{DataType, Field, Schema};
 
