@@ -2615,6 +2615,17 @@ export type QueryIrResponse = {
     graph?: null | ServiceGraph;
     heatmap?: HeatmapResult;
     metadata?: null | MetadataResult;
+    /**
+     * The earliest event timestamp, in unix nanoseconds, that the source's
+     * table holds for the caller's tenant and dataset, regardless of the
+     * window. Read from Iceberg file statistics: the exact earliest
+     * timestamp, or the start of the hour it falls in when a file of that
+     * hour records no column bounds. Present for a single-document query
+     * against a signal source (`traces`, `logs`, `metrics`, `exemplars`,
+     * `profiles`) whose table holds data; omitted otherwise, and when the
+     * lookup fails or takes too long.
+     */
+    oldest_data_ns?: number | null;
     page?: null | QueryPage;
     /**
      * Present iff `result == "scalar"`: one `[t_ns, value]` point per

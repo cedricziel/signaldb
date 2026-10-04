@@ -3748,3 +3748,98 @@ async fn match_trace_span_bound_is_422() {
         "the error names the config key, got: {body}"
     );
 }
+
+// Issue #2174 — `oldest_data_ns` reports the earliest event the source's
+// table holds, from Iceberg file statistics, whatever window was asked for.
+#[tokio::test]
+async fn oldest_data_ns_reports_the_earliest_stored_event() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+    // Microsecond-aligned: the table stores timestamps in microseconds.
+    let earliest_offset_ns = 1_234_000;
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "api",
+                vec![
+                    log_record(7_000_000_000, "INFO", "later"),
+                    log_record(earliest_offset_ns, "ERROR", "earliest"),
+                ],
+            ),
+        )
+        .await
+        .expect("ingest logs");
+
+    let app = build_router(&services).await;
+    wait_for_rows(&app, "logs", range(), 2).await;
+
+    // A window that excludes the earliest record still reports it.
+    let (status, body) = post_ir(
+        &app,
+        serde_json::json!({
+            "irVersion": 1,
+            "from": "logs",
+            "range": {
+                "from": (BASE_NS + 5_000_000_000).to_string(),
+                "to": (BASE_NS + 10_000_000_000).to_string(),
+            },
+            "result": "rows",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["oldest_data_ns"].as_i64(),
+        Some(BASE_NS + earliest_offset_ns),
+        "the exact earliest timestamp from the file's column bounds: {body}"
+    );
+
+    // A dataset without a table for the source omits the member.
+    let (status, body) = post_ir_as(
+        &app,
+        serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": range(), "result": "rows",
+        }),
+        "test-key-123",
+        "test-tenant",
+        Some("other-dataset"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.get("oldest_data_ns").is_none(), "{body}");
+
+    // A formula document omits it.
+    let series = serde_json::json!({
+        "irVersion": 1, "from": "logs", "range": range(), "result": "series",
+        "pipeline": [{ "aggregate": {
+            "by": ["service.name"],
+            "aggs": [{ "fn": "count", "as": "n" }],
+            "step": "1s"
+        } }]
+    });
+    let (status, body) = post_ir(
+        &app,
+        serde_json::json!({
+            "queries": { "a": series.clone(), "b": series },
+            "formulas": [{ "name": "ratio", "expr": "a / b" }],
+            "result": "series"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.get("oldest_data_ns").is_none(), "{body}");
+
+    // So does a describe document.
+    let (status, body) = post_ir(
+        &app,
+        serde_json::json!({
+            "irVersion": 4, "from": "logs", "range": range(), "result": "metadata",
+            "pipeline": [ { "describe": { "target": "fields" } } ]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.get("oldest_data_ns").is_none(), "{body}");
+}

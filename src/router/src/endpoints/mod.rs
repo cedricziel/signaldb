@@ -16,6 +16,7 @@ pub mod processors;
 pub mod promql;
 pub mod pyroscope;
 pub mod query;
+pub(crate) mod query_oldest_data;
 mod query_paging;
 mod query_tail;
 pub mod schema;

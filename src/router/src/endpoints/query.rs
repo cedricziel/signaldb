@@ -190,6 +190,7 @@ impl QueryIrResponse {
             page: None,
             tail: None,
             retention: None,
+            oldest_data_ns: None,
             warnings,
         }
     }
@@ -429,6 +430,16 @@ pub struct QueryIrResponse {
     /// not signals. The window is never clamped to it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention: Option<QueryRetention>,
+    /// The earliest event timestamp, in unix nanoseconds, that the source's
+    /// table holds for the caller's tenant and dataset, regardless of the
+    /// window. Read from Iceberg file statistics: the exact earliest
+    /// timestamp, or the start of the hour it falls in when a file of that
+    /// hour records no column bounds. Present for a single-document query
+    /// against a signal source (`traces`, `logs`, `metrics`, `exemplars`,
+    /// `profiles`) whose table holds data; omitted otherwise, and when the
+    /// lookup fails or takes too long.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_data_ns: Option<i64>,
 }
 
 /// The retention policy that applies to the queried signal for the caller's
@@ -462,12 +473,7 @@ impl QueryRetention {
         source: &str,
         now_ns: i64,
     ) -> Option<Self> {
-        use common::retention::SignalType;
-        // The IR's `exemplars` source reads the metric exemplars table.
-        let signal = match source {
-            "exemplars" => SignalType::Metrics,
-            source => SignalType::from_table_name(source).ok()?,
-        };
+        let (signal, _) = super::query_oldest_data::signal_source(source)?;
         let resolved = config.resolve_period(&ctx.tenant_id, &ctx.dataset_id, signal);
         let effective = resolved.period.checked_add(config.grace_period)?;
         let effective_ns = i64::try_from(effective.as_nanos()).ok()?;
@@ -637,6 +643,8 @@ async fn query_ir_single(
     if let Some(tailing) = tailing.as_ref().filter(|t| t.is_empty()) {
         let mut response = build_envelope(&req.result, window, &[], &document)?;
         response.tail = Some(tailing.response(None, now)?);
+        response.oldest_data_ns =
+            super::query_oldest_data::oldest_data_ns(&state, ctx, &req.from).await;
         annotate_retention(
             &mut response,
             &state.config().compactor.retention,
@@ -662,8 +670,15 @@ async fn query_ir_single(
         _ => query_ir_ticket(ctx, &document, now)?,
     };
 
-    let (batches, correlate_report) = execute_ticket(&state, ticket).await?;
+    // The oldest-data lookup reads only catalog metadata and is bounded by
+    // its own timeout, so it runs alongside the query rather than after it.
+    let (executed, oldest_data_ns) = tokio::join!(
+        execute_ticket(&state, ticket),
+        super::query_oldest_data::oldest_data_ns(&state, ctx, &req.from),
+    );
+    let (batches, correlate_report) = executed?;
     let mut response = build_envelope(&req.result, window, &batches, &document)?;
+    response.oldest_data_ns = oldest_data_ns;
     if let Some(paging) = paging {
         let report = walk_report(correlate_report.page.as_ref())?;
         response.page = Some(paging.response(report, now)?);
@@ -783,6 +798,7 @@ async fn query_ir_multi(
         page: None,
         tail: None,
         retention: None,
+        oldest_data_ns: None,
         warnings: Vec::new(),
     }))
 }
@@ -1382,6 +1398,7 @@ fn build_envelope(
                 page: None,
                 tail: None,
                 retention: None,
+                oldest_data_ns: None,
                 warnings: Vec::new(),
             })
         }
@@ -1404,6 +1421,7 @@ fn build_envelope(
                 page: None,
                 tail: None,
                 retention: None,
+                oldest_data_ns: None,
                 warnings: Vec::new(),
             })
         }
@@ -1425,6 +1443,7 @@ fn build_envelope(
                 page: None,
                 tail: None,
                 retention: None,
+                oldest_data_ns: None,
                 warnings: Vec::new(),
             })
         }
@@ -1481,6 +1500,7 @@ fn build_envelope(
                 page: None,
                 tail: None,
                 retention: None,
+                oldest_data_ns: None,
                 warnings: Vec::new(),
             })
         }
@@ -1500,6 +1520,7 @@ fn build_envelope(
             page: None,
             tail: None,
             retention: None,
+            oldest_data_ns: None,
             warnings: Vec::new(),
         }),
         "trace" => {
@@ -1521,6 +1542,7 @@ fn build_envelope(
                 page: None,
                 tail: None,
                 retention: None,
+                oldest_data_ns: None,
                 warnings: Vec::new(),
             })
         }
@@ -1540,6 +1562,7 @@ fn build_envelope(
                 page: None,
                 tail: None,
                 retention: None,
+                oldest_data_ns: None,
                 warnings: graph_node_limit_warning(graph.dropped_nodes)
                     .into_iter()
                     .collect(),
