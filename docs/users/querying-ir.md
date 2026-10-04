@@ -732,7 +732,7 @@ rejection because an unpromoted attribute cannot be enumerated while planning:
 grouping by a real attribute that is simply absent from a short window is a
 legitimate query, and would otherwise fail a quiet dashboard panel.
 
-`range_before_retention` is described under [Retention](#retention).
+`range_before_retention` is described under [Retention and oldest data](#retention-and-oldest-data).
 
 `match_incomplete_trace` is raised when a
 [`match`](#structural-matching-the-match-stage-ir-v12) stage with a relation
@@ -746,7 +746,7 @@ to three example trace ids:
   "message": "1 matched trace may be missing witness spans and 2 traces did not match but may match over a wider range: a span's parent is not in the queried range (it started before the range or was not ingested) or a span ends after the range (its children may start after it). Widen `range` to see whole traces. Examples: 0102…, 0a0b…, 0c0d…" }
 ```
 
-### Retention
+### Retention and oldest data
 
 A single-document response over a signal source (`traces`, `logs`,
 `metrics`, `exemplars`, `profiles`) carries a `retention` member saying how far back the
@@ -774,6 +774,16 @@ response also carries a `range_before_retention` warning on `range.from`.
 The message names the cutoff as an RFC 3339 time, the period and its source.
 It does not appear for a recent window, with retention disabled, or in
 dry-run mode.
+
+The same responses carry `oldest_data_ns`: the earliest event timestamp, in
+unix nanoseconds, that the source's table holds for your tenant and dataset,
+whatever the window. It comes from Iceberg file statistics, not a data scan,
+so it is the exact earliest timestamp, or the start of its hour when a file
+in that hour records no column bounds. The router reuses a looked-up value
+for up to a minute, so data that arrives older than it shows on a later
+query. It is absent where `retention` is,
+when the table is missing or empty, and when the lookup fails or takes more
+than two seconds; it never fails the query.
 
 ## Pagination (IR v14)
 

@@ -5057,6 +5057,16 @@ pub mod types {
         about, with the provenance and cost of the answer.*/
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub metadata: ::std::option::Option<MetadataResult>,
+        /**The earliest event timestamp, in unix nanoseconds, that the source's
+        table holds for the caller's tenant and dataset, regardless of the
+        window. Read from Iceberg file statistics: the exact earliest
+        timestamp, or the start of the hour it falls in when a file of that
+        hour records no column bounds. Present for a single-document query
+        against a signal source (`traces`, `logs`, `metrics`, `exemplars`,
+        `profiles`) whose table holds data; omitted otherwise, and when the
+        lookup fails or takes too long.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub oldest_data_ns: ::std::option::Option<i64>,
         ///Present iff the request carried `page` (`rows`/`trace` only).
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub page: ::std::option::Option<QueryPage>,
@@ -20140,6 +20150,8 @@ pub mod types {
                 ::std::option::Option<super::MetadataResult>,
                 ::std::string::String,
             >,
+            oldest_data_ns:
+                ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
             page: ::std::result::Result<
                 ::std::option::Option<super::QueryPage>,
                 ::std::string::String,
@@ -20180,6 +20192,7 @@ pub mod types {
                     graph: Ok(Default::default()),
                     heatmap: Ok(Default::default()),
                     metadata: Ok(Default::default()),
+                    oldest_data_ns: Ok(Default::default()),
                     page: Ok(Default::default()),
                     points: Ok(Default::default()),
                     result: Err("no value supplied for result".to_string()),
@@ -20243,6 +20256,16 @@ pub mod types {
                 self.metadata = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for metadata: {e}"));
+                self
+            }
+            pub fn oldest_data_ns<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.oldest_data_ns = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for oldest_data_ns: {e}")
+                });
                 self
             }
             pub fn page<T>(mut self, value: T) -> Self
@@ -20373,6 +20396,7 @@ pub mod types {
                     graph: value.graph?,
                     heatmap: value.heatmap?,
                     metadata: value.metadata?,
+                    oldest_data_ns: value.oldest_data_ns?,
                     page: value.page?,
                     points: value.points?,
                     result: value.result?,
@@ -20395,6 +20419,7 @@ pub mod types {
                     graph: Ok(value.graph),
                     heatmap: Ok(value.heatmap),
                     metadata: Ok(value.metadata),
+                    oldest_data_ns: Ok(value.oldest_data_ns),
                     page: Ok(value.page),
                     points: Ok(value.points),
                     result: Ok(value.result),

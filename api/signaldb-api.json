@@ -11669,6 +11669,14 @@
               }
             ]
           },
+          "oldest_data_ns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The earliest event timestamp, in unix nanoseconds, that the source's\ntable holds for the caller's tenant and dataset, regardless of the\nwindow. Read from Iceberg file statistics: the exact earliest\ntimestamp, or the start of the hour it falls in when a file of that\nhour records no column bounds. Present for a single-document query\nagainst a signal source (`traces`, `logs`, `metrics`, `exemplars`,\n`profiles`) whose table holds data; omitted otherwise, and when the\nlookup fails or takes too long."
+          },
           "page": {
             "oneOf": [
               {

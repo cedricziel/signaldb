@@ -72,6 +72,7 @@ pub struct RouterAppState {
     github: Option<Arc<github::GitHubApp>>,
     source_context: Option<Arc<source_context::SourceContextService>>,
     catalog_manager: Arc<SharedCatalogManager>,
+    oldest_data_cache: Arc<endpoints::query_oldest_data::OldestDataCache>,
 }
 
 impl std::fmt::Debug for RouterAppState {
@@ -115,6 +116,7 @@ impl RouterAppState {
             github,
             source_context,
             catalog_manager: Arc::default(),
+            oldest_data_cache: Arc::default(),
         }
     }
 
@@ -149,6 +151,7 @@ impl RouterAppState {
             github,
             source_context,
             catalog_manager: Arc::default(),
+            oldest_data_cache: Arc::default(),
         }
     }
 }
