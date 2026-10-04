@@ -58,7 +58,7 @@ pub(crate) async fn only_wal_entry_bytes(
     wal_manager: &WalManager,
     tenant_context: &TenantContext,
     signal: &str,
-) -> Vec<u8> {
+) -> bytes::Bytes {
     let wal = wal_manager
         .get_wal(
             &tenant_context.tenant_id,

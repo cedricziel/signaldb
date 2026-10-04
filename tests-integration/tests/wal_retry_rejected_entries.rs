@@ -146,7 +146,7 @@ fn test_manager(base_dir: &Path) -> WalManager {
 
 /// A valid Arrow IPC payload, so entries reach the forward stage rather than
 /// being retired by the deserialization path added in #1059.
-fn valid_payload(value: i64) -> Vec<u8> {
+fn valid_payload(value: i64) -> bytes::Bytes {
     let schema = Arc::new(Schema::new(vec![Field::new(
         "value",
         DataType::Int64,

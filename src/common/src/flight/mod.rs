@@ -5,11 +5,13 @@
 //! inter-service transport.
 //!
 //! This module also centralizes the compression policy for Flight traffic
-//! (#945): IPC record-batch buffers are lz4-compressed (fast, latency
-//! friendly), and the tonic channel negotiates zstd/gzip message
-//! compression on top. Servers keep accepting uncompressed messages, and
-//! Arrow IPC readers auto-detect per-message buffer compression, so both
-//! layers stay wire-compatible with older peers' payloads.
+//! (#945): IPC record-batch buffers built here are lz4-compressed (fast,
+//! latency friendly), and the tonic channel negotiates zstd/gzip message
+//! compression on top. The one exception is the acceptor's ingest `DoPut`,
+//! which re-frames the WAL's zstd IPC bytes ([`ipc_stream`], #942). Servers
+//! keep accepting uncompressed messages, and Arrow IPC readers auto-detect
+//! per-message buffer compression, so every layer stays wire-compatible with
+//! older peers' payloads.
 
 use arrow_flight::FlightData;
 use arrow_flight::flight_service_server::{FlightService, FlightServiceServer};
@@ -28,6 +30,7 @@ pub mod chunk;
 pub mod conversion;
 pub mod decode;
 pub mod forward;
+pub mod ipc_stream;
 pub mod schema;
 
 /// `app_metadata` prefix for the trailing, data-free `FlightData` message
@@ -168,6 +171,9 @@ pub mod transport;
 
 #[cfg(test)]
 mod integration_tests;
+
+#[cfg(test)]
+pub(crate) mod test_support;
 
 /// Maximum gRPC message size (encoding and decoding) for all Flight
 /// servers and clients, in bytes.

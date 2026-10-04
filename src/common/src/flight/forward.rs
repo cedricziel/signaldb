@@ -8,6 +8,7 @@
 //! same way.
 
 use anyhow::Context;
+use bytes::Bytes;
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::{StreamExt, stream};
 use tracing::Instrument;
@@ -58,12 +59,19 @@ fn build_first_message_metadata(metadata_json: Option<&str>, ingest_id: Uuid) ->
 /// [`InMemoryFlightTransport::get_client_for_capability_keyed`]), so every
 /// resend is pinned to the same writer.
 ///
+/// `ipc_stream` is the batch already encoded as an Arrow IPC stream (the
+/// acceptor's WAL bytes); when given and the batch fits one message it is
+/// re-framed instead of re-encoded (see [`super::ipc_stream`], #942).
+/// `ipc_stream` must encode `record_batch`; the batch is not compared
+/// against it.
+///
 /// Returns an error if no storage service is discoverable, the batch cannot
 /// be encoded, or the Flight put fails. The caller decides whether the data
 /// stays in the WAL for retry.
 pub async fn forward_batch_to_writer(
     flight_transport: &InMemoryFlightTransport,
     record_batch: RecordBatch,
+    ipc_stream: Option<Bytes>,
     metadata_json: Option<&str>,
     ingest_id: Uuid,
 ) -> anyhow::Result<()> {
@@ -83,10 +91,15 @@ pub async fn forward_batch_to_writer(
         server_address.as_deref(),
     );
     let record_span = rpc_span.clone();
-    let result =
-        forward_batch_to_writer_inner(flight_transport, record_batch, metadata_json, ingest_id)
-            .instrument(rpc_span)
-            .await;
+    let result = forward_batch_to_writer_inner(
+        flight_transport,
+        record_batch,
+        ipc_stream,
+        metadata_json,
+        ingest_id,
+    )
+    .instrument(rpc_span)
+    .await;
     // Best-effort status: the underlying tonic code survives anyhow's
     // context chain via the root cause; anything else is UNKNOWN.
     let code = match &result {
@@ -105,9 +118,36 @@ pub async fn forward_batch_to_writer(
     result
 }
 
+/// The `DoPut` payload for one batch: the pre-encoded IPC stream re-framed
+/// when it is supplied and the batch needs no splitting, otherwise a fresh
+/// lz4 encoding.
+fn flight_data_for_batch(
+    record_batch: &RecordBatch,
+    ipc_stream: Option<Bytes>,
+    max_message_size: usize,
+) -> anyhow::Result<Vec<arrow_flight::FlightData>> {
+    if let Some(ipc_stream) = ipc_stream
+        && super::chunk::fits_single_message(record_batch, max_message_size)
+    {
+        return super::ipc_stream::ipc_stream_to_flight_data(&ipc_stream)
+            .context("Failed to frame pre-encoded IPC stream as flight data");
+    }
+    // One RecordBatch encodes into one FlightData message; a batch whose
+    // encoded size exceeds the receiver's gRPC limit fails do_put on every
+    // retry and wedges its WAL entry forever (#944). Chunk oversized
+    // batches so each message stays well below the shared limit — the
+    // budget is measured on in-memory size, so IPC compression (#945)
+    // only adds headroom on top.
+    let batches = super::chunk::split_batch_for_grpc(record_batch, max_message_size)
+        .context("Failed to split batch for transport")?;
+    batches_to_compressed_flight_data(&record_batch.schema(), batches)
+        .context("Failed to convert batch to flight data")
+}
+
 async fn forward_batch_to_writer_inner(
     flight_transport: &InMemoryFlightTransport,
     record_batch: RecordBatch,
+    ipc_stream: Option<Bytes>,
     metadata_json: Option<&str>,
     ingest_id: Uuid,
 ) -> anyhow::Result<()> {
@@ -116,18 +156,11 @@ async fn forward_batch_to_writer_inner(
         .await
         .map_err(|e| anyhow::anyhow!("Failed to get Flight client for storage service: {e}"))?;
 
-    let schema = record_batch.schema();
-    // One RecordBatch encodes into one FlightData message; a batch whose
-    // encoded size exceeds the receiver's gRPC limit fails do_put on every
-    // retry and wedges its WAL entry forever (#944). Chunk oversized
-    // batches so each message stays well below the shared limit — the
-    // budget is measured on in-memory size, so lz4 IPC compression (#945)
-    // only adds headroom on top.
-    let batches =
-        super::chunk::split_batch_for_grpc(&record_batch, super::chunk::MAX_ENCODED_BATCH_SIZE)
-            .context("Failed to split batch for transport")?;
-    let mut flight_data = batches_to_compressed_flight_data(&schema, batches)
-        .context("Failed to convert batch to flight data")?;
+    let mut flight_data = flight_data_for_batch(
+        &record_batch,
+        ipc_stream,
+        super::chunk::MAX_ENCODED_BATCH_SIZE,
+    )?;
 
     // Add metadata to the first FlightData message (which contains the
     // schema): the ingest id for writer-side dedup, and the trace context
@@ -161,6 +194,109 @@ async fn forward_batch_to_writer_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::Catalog;
+    use crate::flight::test_support::{NoopFlightService, batch_with_nulls};
+    use crate::service_bootstrap::{ServiceBootstrap, ServiceType};
+    use crate::wal::record_batch_to_bytes;
+    use arrow_flight::FlightData;
+    use std::sync::{Arc, Mutex};
+
+    /// Run a writer that records DoPut payloads and a transport that finds it.
+    async fn transport_with_recording_writer()
+    -> (InMemoryFlightTransport, Arc<Mutex<Vec<FlightData>>>) {
+        let catalog = Catalog::new_in_memory().await.unwrap();
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let writer = NoopFlightService {
+            received: Some(received.clone()),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(crate::flight::flight_service_server(writer))
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                .await
+                .unwrap();
+        });
+        ServiceBootstrap::new_for_test_with_catalog(
+            catalog.clone(),
+            ServiceType::Writer,
+            &addr.to_string(),
+        )
+        .await
+        .unwrap();
+        let acceptor = ServiceBootstrap::new_for_test_with_catalog(
+            catalog,
+            ServiceType::Acceptor,
+            "127.0.0.1:0",
+        )
+        .await
+        .unwrap();
+        (InMemoryFlightTransport::new(acceptor), received)
+    }
+
+    #[tokio::test]
+    async fn pre_encoded_bytes_reach_the_writer_as_the_same_rows() {
+        let (transport, received) = transport_with_recording_writer().await;
+        let batch = batch_with_nulls();
+        let wal_bytes = record_batch_to_bytes(&batch).unwrap();
+        let ingest_id = Uuid::new_v4();
+
+        forward_batch_to_writer(
+            &transport,
+            batch.clone(),
+            Some(wal_bytes.clone()),
+            Some(r#"{"signal_type":"logs"}"#),
+            ingest_id,
+        )
+        .await
+        .unwrap();
+
+        let received = received.lock().unwrap().clone();
+        let first_metadata: serde_json::Value =
+            serde_json::from_slice(&received[0].app_metadata).unwrap();
+        assert_eq!(first_metadata["ingest_id"], ingest_id.to_string());
+        assert_eq!(first_metadata["signal_type"], "logs");
+        // The batch message is the WAL's zstd body, untouched.
+        let wal_messages =
+            crate::flight::ipc_stream::ipc_stream_to_flight_data(&wal_bytes).unwrap();
+        assert_eq!(received[1].data_body, wal_messages[1].data_body);
+
+        let decoded = arrow_flight::utils::flight_data_to_batches(&received).unwrap();
+        assert_eq!(decoded, vec![batch]);
+    }
+
+    #[tokio::test]
+    async fn without_pre_encoded_bytes_the_batch_is_encoded_with_lz4() {
+        let (transport, received) = transport_with_recording_writer().await;
+        let batch = batch_with_nulls();
+
+        forward_batch_to_writer(&transport, batch.clone(), None, None, Uuid::new_v4())
+            .await
+            .unwrap();
+
+        let received = received.lock().unwrap().clone();
+        let decoded = arrow_flight::utils::flight_data_to_batches(&received).unwrap();
+        assert_eq!(decoded, vec![batch]);
+    }
+
+    #[test]
+    fn oversized_batches_ignore_pre_encoded_bytes_and_are_chunked() {
+        let batch = batch_with_nulls();
+        let wal_bytes = record_batch_to_bytes(&batch).unwrap();
+        let limit = 512;
+        assert!(!super::super::chunk::fits_single_message(&batch, limit));
+
+        let flight_data = flight_data_for_batch(&batch, Some(wal_bytes), limit).unwrap();
+
+        assert!(
+            flight_data.len() > 2,
+            "oversized batch must be split into several batch messages"
+        );
+        let decoded = arrow_flight::utils::flight_data_to_batches(&flight_data).unwrap();
+        let rows: usize = decoded.iter().map(RecordBatch::num_rows).sum();
+        assert_eq!(rows, batch.num_rows());
+    }
 
     #[test]
     fn first_message_metadata_carries_ingest_id() {

@@ -58,7 +58,7 @@ async fn idle_eviction_does_not_bound_a_fleet_of_actively_written_wals() {
         // reason eviction skips it, independent of the separate
         // no-unprocessed-entries guard.
         let id = wal
-            .append(WalOperation::WriteTraces, b"payload".to_vec(), None)
+            .append(WalOperation::WriteTraces, b"payload".to_vec().into(), None)
             .await
             .unwrap();
         wal.flush().await.unwrap();
@@ -114,7 +114,7 @@ async fn an_instance_cap_bounds_the_same_actively_written_fleet() {
             .await
             .unwrap();
         let id = wal
-            .append(WalOperation::WriteTraces, b"payload".to_vec(), None)
+            .append(WalOperation::WriteTraces, b"payload".to_vec().into(), None)
             .await
             .unwrap();
         wal.flush().await.unwrap();

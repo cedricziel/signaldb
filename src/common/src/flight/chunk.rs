@@ -23,6 +23,12 @@ use datafusion::arrow::record_batch::RecordBatch;
 /// the batch average.
 pub const MAX_ENCODED_BATCH_SIZE: usize = super::MAX_GRPC_MESSAGE_SIZE / 4;
 
+/// Whether `batch` fits a single FlightData message within
+/// `max_chunk_bytes`, i.e. [`split_batch_for_grpc`] would return it whole.
+pub fn fits_single_message(batch: &RecordBatch, max_chunk_bytes: usize) -> bool {
+    batch.num_rows() == 0 || batch.get_array_memory_size() <= max_chunk_bytes
+}
+
 /// Split a `RecordBatch` into chunks whose in-memory size each stays at or
 /// below `max_chunk_bytes` (single-row chunks excepted — one row cannot be
 /// split further).
@@ -44,7 +50,7 @@ pub fn split_batch_for_grpc(
     batch: &RecordBatch,
     max_chunk_bytes: usize,
 ) -> Result<Vec<RecordBatch>, ArrowError> {
-    if batch.num_rows() == 0 || batch.get_array_memory_size() <= max_chunk_bytes {
+    if fits_single_message(batch, max_chunk_bytes) {
         return Ok(vec![batch.clone()]);
     }
 

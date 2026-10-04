@@ -87,7 +87,7 @@ async fn reconciliation_corrects_a_gauge_that_drifted_from_the_true_backlog() {
         let id = wal
             .append(
                 WalOperation::WriteTraces,
-                format!("payload-{i}").into_bytes(),
+                format!("payload-{i}").into_bytes().into(),
                 None,
             )
             .await

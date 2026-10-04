@@ -1429,7 +1429,7 @@ mod tests {
         let pending = legacy
             .append(
                 WalOperation::WriteTraces,
-                b"legacy".to_vec(),
+                b"legacy".to_vec().into(),
                 Some(r#"{"tenant_id":"acme","dataset_id":"production"}"#.to_string()),
             )
             .await
@@ -1476,7 +1476,7 @@ mod tests {
         legacy
             .append(
                 crate::wal::WalOperation::WriteTraces,
-                b"legacy".to_vec(),
+                b"legacy".to_vec().into(),
                 None,
             )
             .await
@@ -1731,7 +1731,7 @@ mod tests {
                 let id = wal
                     .append(
                         crate::wal::WalOperation::WriteTraces,
-                        vec![b'x'; 200 + i as usize],
+                        vec![b'x'; 200 + i as usize].into(),
                         None,
                     )
                     .await
@@ -1787,7 +1787,7 @@ mod tests {
             let id = wal
                 .append(
                     crate::wal::WalOperation::WriteTraces,
-                    vec![b'x'; 200 + i as usize],
+                    vec![b'x'; 200 + i as usize].into(),
                     None,
                 )
                 .await
@@ -1823,7 +1823,7 @@ mod tests {
         let id = wal
             .append(
                 crate::wal::WalOperation::WriteTraces,
-                payload.to_vec(),
+                payload.to_vec().into(),
                 None,
             )
             .await
@@ -1862,7 +1862,7 @@ mod tests {
         let err = match wal
             .append(
                 crate::wal::WalOperation::WriteTraces,
-                b"after".to_vec(),
+                b"after".to_vec().into(),
                 None,
             )
             .await
@@ -1892,7 +1892,7 @@ mod tests {
         let id = legacy
             .append(
                 crate::wal::WalOperation::WriteTraces,
-                b"legacy".to_vec(),
+                b"legacy".to_vec().into(),
                 None,
             )
             .await
@@ -1919,7 +1919,7 @@ mod tests {
         let err = match legacy_wal
             .append(
                 crate::wal::WalOperation::WriteTraces,
-                b"after".to_vec(),
+                b"after".to_vec().into(),
                 None,
             )
             .await
@@ -1945,7 +1945,7 @@ mod tests {
         legacy
             .append(
                 crate::wal::WalOperation::WriteTraces,
-                b"pending".to_vec(),
+                b"pending".to_vec().into(),
                 None,
             )
             .await
@@ -1975,7 +1975,7 @@ mod tests {
         legacy
             .append(
                 crate::wal::WalOperation::WriteTraces,
-                b"legacy".to_vec(),
+                b"legacy".to_vec().into(),
                 None,
             )
             .await
@@ -2040,7 +2040,7 @@ mod tests {
             .unwrap();
         wal.append(
             crate::wal::WalOperation::WriteTraces,
-            b"pending".to_vec(),
+            b"pending".to_vec().into(),
             None,
         )
         .await
@@ -2095,7 +2095,11 @@ mod tests {
 
         // The fresh instance writes at correct offsets over the same directory.
         let id = second
-            .append(crate::wal::WalOperation::WriteTraces, b"two".to_vec(), None)
+            .append(
+                crate::wal::WalOperation::WriteTraces,
+                b"two".to_vec().into(),
+                None,
+            )
             .await
             .unwrap();
         second.flush().await.unwrap();
@@ -2166,7 +2170,7 @@ mod tests {
         let a = manager.get_wal("a", "production", "traces").await.unwrap();
         a.append(
             crate::wal::WalOperation::WriteTraces,
-            b"pending".to_vec(),
+            b"pending".to_vec().into(),
             None,
         )
         .await
@@ -2218,7 +2222,7 @@ mod tests {
         // in-memory buffer is not.
         a.append(
             crate::wal::WalOperation::WriteTraces,
-            b"buffered".to_vec(),
+            b"buffered".to_vec().into(),
             None,
         )
         .await

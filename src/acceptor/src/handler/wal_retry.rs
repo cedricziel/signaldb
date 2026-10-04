@@ -147,9 +147,9 @@ impl WalRetryConsumer {
                     continue;
                 }
 
-                let batch = match wal.read_entry_data(&entry).await {
+                let (batch, ipc_stream) = match wal.read_entry_data(&entry).await {
                     Ok(data) => match bytes_to_record_batch(&data) {
-                        Ok(batch) => batch,
+                        Ok(batch) => (batch, data),
                         Err(e) => {
                             tracing::warn!(
                                 entry_id = %entry.id,
@@ -184,6 +184,7 @@ impl WalRetryConsumer {
                 match forward_batch_to_writer(
                     &self.flight_transport,
                     batch,
+                    Some(ipc_stream),
                     entry.metadata.as_deref(),
                     ingest_id,
                 )
@@ -439,9 +440,13 @@ mod tests {
             .get_wal("acme", "production", "traces")
             .await
             .unwrap();
-        wal.append(WalOperation::WriteTraces, b"not-a-batch".to_vec(), None)
-            .await
-            .unwrap();
+        wal.append(
+            WalOperation::WriteTraces,
+            b"not-a-batch".to_vec().into(),
+            None,
+        )
+        .await
+        .unwrap();
         wal.flush().await.unwrap();
     }
 
@@ -659,7 +664,7 @@ mod tests {
             let id = wal
                 .append(
                     WalOperation::WriteTraces,
-                    vec![b'x'; 200 + i as usize],
+                    vec![b'x'; 200 + i as usize].into(),
                     None,
                 )
                 .await

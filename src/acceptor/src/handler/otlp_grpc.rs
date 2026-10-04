@@ -212,7 +212,11 @@ impl TraceHandler {
         );
         let metadata_str = serde_json::to_string(&metadata).ok();
         let wal_entry_id = wal
-            .append(WalOperation::WriteTraces, batch_bytes, metadata_str.clone())
+            .append(
+                WalOperation::WriteTraces,
+                batch_bytes.clone(),
+                metadata_str.clone(),
+            )
             .await
             .context("Failed to write traces to WAL")
             .map_err(IngestError::Unavailable)?;
@@ -244,6 +248,7 @@ impl TraceHandler {
                 wal_entry_id,
                 ingest_id,
                 record_batch,
+                batch_bytes,
                 metadata_str,
                 "traces",
             )

@@ -466,6 +466,21 @@ The writer's per-`do_put` "Received data" line is `DEBUG`; per-request
 handler lines on the acceptor are `DEBUG` too — steady-state `INFO` shows WAL
 batch commits, not individual requests.
 
+#### Ingest `DoPut` Reuses the WAL's IPC Bytes
+
+The Acceptor encodes each ingest batch to Arrow IPC once, zstd-compressed, for
+its WAL. `forward_batch_to_writer` takes those bytes and
+`common::flight::ipc_stream::ipc_stream_to_flight_data` re-frames them as the
+`DoPut` `FlightData` (schema message, then the record-batch message) without
+decoding or re-encoding, so the ingest payload is zstd rather than the lz4 the
+other Flight paths use. A batch over `MAX_ENCODED_BATCH_SIZE` is still split
+and lz4-encoded, as is any caller that passes no pre-encoded bytes (the
+Router's eval-results upload).
+
+The internal channel's tonic message compression (zstd) still applies on top,
+so these `DoPut` payloads are compressed twice. A follow-up may disable
+message compression for ingest.
+
 #### Dictionary-Safe Encode/Decode
 
 RecordBatch encoding goes through `common::flight::batches_to_compressed_flight_data`,

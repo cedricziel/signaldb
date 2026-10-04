@@ -107,7 +107,7 @@ async fn recovered_backlog_is_attributed_to_the_final_role_not_a_placeholder() {
         for i in 0..ENTRY_COUNT {
             wal.append(
                 WalOperation::WriteTraces,
-                format!("payload-{i}").into_bytes(),
+                format!("payload-{i}").into_bytes().into(),
                 None,
             )
             .await
@@ -138,9 +138,13 @@ async fn recovered_backlog_is_attributed_to_the_final_role_not_a_placeholder() {
 
     // Trigger the deferred seed emission via a normal gauge-touching call —
     // a fresh append, exactly like real traffic arriving after recovery.
-    wal.append(WalOperation::WriteTraces, b"post-restart".to_vec(), None)
-        .await
-        .unwrap();
+    wal.append(
+        WalOperation::WriteTraces,
+        b"post-restart".to_vec().into(),
+        None,
+    )
+    .await
+    .unwrap();
     wal.flush().await.unwrap();
 
     provider.force_flush().unwrap();
