@@ -215,6 +215,25 @@ impl CatalogManager {
         iceberg::names::build_table_identifier(&tenant_slug, &dataset_slug, table_name)
     }
 
+    /// The earliest event timestamp, in unix nanoseconds, that a table holds
+    /// for a tenant and dataset, from Iceberg file statistics only. `None`
+    /// when the table does not exist or holds no data.
+    pub async fn oldest_event_ns(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        table_name: &str,
+    ) -> Result<Option<i64>> {
+        let identifier = self.build_table_identifier(tenant_id, dataset_id, table_name);
+        let table = match self.catalog.clone().load_tabular(&identifier).await {
+            Ok(iceberg_rust::catalog::tabular::Tabular::Table(table)) => table,
+            Ok(_) => return Ok(None),
+            Err(iceberg_rust::error::Error::NotFound(_)) => return Ok(None),
+            Err(e) => return Err(anyhow::anyhow!("failed to load table {table_name}: {e}")),
+        };
+        iceberg::oldest_data::oldest_event_ns(&table).await
+    }
+
     /// Build an object-store table location for a tenant, dataset, and table.
     pub fn build_table_location(
         &self,
