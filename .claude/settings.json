@@ -53,7 +53,8 @@
     "cedricziel": {
       "source": {
         "source": "github",
-        "repo": "cedricziel/claude-plugins"
+        "repo": "cedricziel/claude-plugins",
+        "sha": "ae19680787859b36c8717868086b7b24d0aaa8c1"
       }
     }
   }
