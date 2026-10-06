@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791175444380,
+  "lastUpdate": 1791260524492,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -13055,6 +13055,454 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 1126661,
             "range": "± 14642",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cedric Ziel",
+            "username": "cedricziel",
+            "email": "mail@cedric-ziel.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "be7e5ee93f9f539ed86adf476e03fe044ee00768",
+          "message": "perf(acceptor): send WAL IPC bytes to the writer without re-encoding (#2192)\n\nThe acceptor encoded every ingest batch to Arrow IPC twice: zstd for its\nWAL, then lz4 again for the Flight DoPut to the writer. The forward path\nnow takes the WAL's IPC stream bytes and re-frames them as FlightData\n(schema message, record-batch message) without decoding or re-encoding\nthe batch, so each batch is encoded once and the DoPut payload is zstd.\n\n- common::flight::ipc_stream::ipc_stream_to_flight_data walks the\n  stream's encapsulated messages and returns zero-copy slices; truncated,\n  corrupt and legacy-framed input is an error, never a panic.\n- forward_batch_to_writer takes Option<Bytes> of pre-encoded IPC. The\n  fast path applies only when chunk::fits_single_message holds (the same\n  predicate split_batch_for_grpc uses). Oversized batches and callers\n  passing None keep the chunked lz4 path (#944). The schema message still\n  carries app_metadata (ingest_id, trace context).\n- Wal::append_shared buffers a Bytes so handlers append and forward the\n  same allocation instead of copying it. The OTLP and Prometheus handlers\n  and the WAL retry consumer pass their bytes; the router's eval-results\n  upload passes None.\n\nRefs #942\n\n\nClaude-Session: https://claude.ai/code/session_01H7L7TMa1kuTbuJnCc9JxPm\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-10-04T10:01:16Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/be7e5ee93f9f539ed86adf476e03fe044ee00768"
+        },
+        "date": 1791260523234,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 1672269,
+            "range": "± 31230",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 1025116,
+            "range": "± 23052",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 725298,
+            "range": "± 4882",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 1306177,
+            "range": "± 21768",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 621733,
+            "range": "± 6064",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 1762150,
+            "range": "± 21304",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 1164649,
+            "range": "± 18377",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/evaluator",
+            "value": 16087491,
+            "range": "± 274827",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/ancestry",
+            "value": 6756719,
+            "range": "± 158630",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/decode(a)",
+            "value": 3166395,
+            "range": "± 44723",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/decode(b)",
+            "value": 3803291,
+            "range": "± 44658",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/materialize",
+            "value": 339442,
+            "range": "± 74774",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/evaluator",
+            "value": 2737767,
+            "range": "± 119537",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/ancestry",
+            "value": 32636521,
+            "range": "± 1330728",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/decode(a)",
+            "value": 1247853,
+            "range": "± 87934",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/decode(b)",
+            "value": 32123565,
+            "range": "± 1348771",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/materialize",
+            "value": 20289453,
+            "range": "± 6052804",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/evaluator",
+            "value": 19966443,
+            "range": "± 788607",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/ancestry",
+            "value": 14303139,
+            "range": "± 531775",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/decode(a)",
+            "value": 5944326,
+            "range": "± 270137",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/decode(b)",
+            "value": 6831749,
+            "range": "± 300219",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/materialize",
+            "value": 699773,
+            "range": "± 41371",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/evaluator",
+            "value": 23120805,
+            "range": "± 712596",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/ancestry",
+            "value": 26531124,
+            "range": "± 1208239",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/decode(a)",
+            "value": 7858691,
+            "range": "± 391990",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/decode(b)",
+            "value": 21286390,
+            "range": "± 1116173",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/materialize",
+            "value": 7768803,
+            "range": "± 919126",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.1MB",
+            "value": 2502777,
+            "range": "± 58976",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.5MB",
+            "value": 4648549,
+            "range": "± 297687",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_5.3MB",
+            "value": 24082846,
+            "range": "± 220379",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_46.7MB",
+            "value": 227348007,
+            "range": "± 1660732",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 6991125,
+            "range": "± 85543",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 14021744,
+            "range": "± 186951",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 25810590,
+            "range": "± 411418",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 50813593,
+            "range": "± 677242",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 1145397,
+            "range": "± 13989",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 4384369,
+            "range": "± 168452",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 7340070,
+            "range": "± 333552",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 13025698,
+            "range": "± 274777",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/1000",
+            "value": 103352,
+            "range": "± 2363",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/1000",
+            "value": 142222,
+            "range": "± 3816",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/10000",
+            "value": 874538,
+            "range": "± 19534",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/10000",
+            "value": 1462770,
+            "range": "± 25508",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/100000",
+            "value": 8700541,
+            "range": "± 119630",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/100000",
+            "value": 26202740,
+            "range": "± 426167",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 1405121,
+            "range": "± 34214",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 25183896,
+            "range": "± 800859",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 25035121,
+            "range": "± 326637",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 24405643,
+            "range": "± 860656",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 24260766,
+            "range": "± 179756",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 24001847,
+            "range": "± 226264",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 6759861,
+            "range": "± 51661",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 14633025,
+            "range": "± 307226",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 23438452,
+            "range": "± 242273",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested",
+            "value": 8240836,
+            "range": "± 83232",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested_split_off",
+            "value": 8153012,
+            "range": "± 102157",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/unattested",
+            "value": 8017646,
+            "range": "± 43523",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested",
+            "value": 7032213,
+            "range": "± 94913",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested_split_off",
+            "value": 7098014,
+            "range": "± 31479",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/unattested",
+            "value": 7868304,
+            "range": "± 38677",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested",
+            "value": 13917417,
+            "range": "± 197190",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested_split_off",
+            "value": 19284035,
+            "range": "± 231633",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/unattested",
+            "value": 14350636,
+            "range": "± 467585",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 25585678,
+            "range": "± 1688052",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 5536217,
+            "range": "± 48142",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 74885358,
+            "range": "± 1724312",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 173381395,
+            "range": "± 3402286",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 131882981,
+            "range": "± 1727459",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 1042248,
+            "range": "± 21176",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 1057342,
+            "range": "± 20877",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 1096199,
+            "range": "± 13588",
             "unit": "ns/iter"
           }
         ]
