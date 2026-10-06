@@ -37,15 +37,18 @@ use axum::{
     Json, Router,
     body::Body,
     extract::State,
-    http::{Request, StatusCode, Uri, header::AUTHORIZATION, request::Parts},
+    http::{Method, Request, StatusCode, Uri, header::AUTHORIZATION, request::Parts},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{any, get},
 };
 use dashmap::DashMap;
-use rmcp::transport::streamable_http_server::{
-    session::local::LocalSessionManager,
-    tower::{StreamableHttpServerConfig, StreamableHttpService},
+use rmcp::transport::{
+    common::http_header::HEADER_SESSION_ID,
+    streamable_http_server::{
+        session::local::LocalSessionManager,
+        tower::{StreamableHttpServerConfig, StreamableHttpService},
+    },
 };
 
 use server::McpServer;
@@ -249,19 +252,25 @@ pub fn mcp_http_router(state: McpAppState, allowed_hosts: &[String]) -> Router {
         config.allowed_hosts.extend_from_slice(allowed_hosts);
     }
 
-    let service = StreamableHttpService::new(
-        move || {
-            Ok(McpServer::with_max_concurrent_tool_calls(
-                base_url.clone(),
-                router_timeout,
-                max_concurrent_tool_calls,
-            )
-            .with_tool_call_deadline(tool_call_deadline)
-            .with_ui_base_url(ui_base_url.clone()))
-        },
-        session_manager,
-        config,
-    );
+    let new_server = move || {
+        Ok(McpServer::with_max_concurrent_tool_calls(
+            base_url.clone(),
+            router_timeout,
+            max_concurrent_tool_calls,
+        )
+        .with_tool_call_deadline(tool_call_deadline)
+        .with_ui_base_url(ui_base_url.clone()))
+    };
+    let mut stateless_config = config.clone();
+    stateless_config.legacy_session_mode = false;
+    let transport = Arc::new(McpTransport {
+        sessions: StreamableHttpService::new(new_server.clone(), session_manager.clone(), config),
+        stateless: StreamableHttpService::new(new_server, session_manager, stateless_config),
+    });
+    let service = any(move |request: Request<Body>| {
+        let transport = transport.clone();
+        async move { transport.handle(request).await }
+    });
 
     // The `/mcp` transport is gated by router-validated credentials and session
     // binding; the Protected Resource Metadata document is public (it is how an
@@ -291,6 +300,54 @@ pub fn mcp_http_router(state: McpAppState, allowed_hosts: &[String]) -> Router {
     );
 
     mcp.merge(well_known)
+}
+
+/// Clients on a pre-2026-07-28 protocol revision are meant to open a session
+/// with `initialize` and send its `Mcp-Session-Id` afterwards; some skip that
+/// and send e.g. `tools/list` straight away, which the session transport
+/// refuses with `422`. Those requests go to a stateless transport instead,
+/// the way 2026-07-28 requests already are.
+struct McpTransport {
+    sessions: StreamableHttpService<McpServer, LocalSessionManager>,
+    stateless: StreamableHttpService<McpServer, LocalSessionManager>,
+}
+
+impl McpTransport {
+    async fn handle(&self, request: Request<Body>) -> Response {
+        let (transport, request) = if request.method() != Method::POST
+            || request.headers().contains_key(HEADER_SESSION_ID)
+        {
+            (&self.sessions, request)
+        } else {
+            let limit = self.sessions.config.max_request_body_bytes;
+            let (parts, body) = request.into_parts();
+            let Ok(bytes) = axum::body::to_bytes(body, limit).await else {
+                return (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    format!("Payload Too Large: request body exceeds {limit} bytes"),
+                )
+                    .into_response();
+            };
+            let transport = if is_initialize(&bytes) {
+                &self.sessions
+            } else {
+                &self.stateless
+            };
+            (transport, Request::from_parts(parts, Body::from(bytes)))
+        };
+        transport.handle(request).await.map(Body::new)
+    }
+}
+
+/// Whether a JSON-RPC body is an `initialize` request. A body that does not
+/// parse is not one; either transport answers it with the same parse error.
+fn is_initialize(body: &[u8]) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Probe<'a> {
+        #[serde(borrow)]
+        method: Option<&'a str>,
+    }
+    serde_json::from_slice::<Probe>(body).is_ok_and(|m| m.method == Some("initialize"))
 }
 
 /// Serve the RFC 9728 Protected Resource Metadata document, naming the
@@ -974,6 +1031,40 @@ mod tests {
             "{request}"
         );
         assert!(request.contains("x-tenant-id: acme"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn sessionless_legacy_request_is_served_without_initialize() {
+        let (router_url, router) = spawn_whoami_router("200 OK", 1).await;
+        let app = mcp_http_router(McpAppState::new(router_url), &[]);
+
+        let response = app
+            .oneshot(
+                RequestBuilder::new()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("authorization", "Bearer sk-acme")
+                    .header("x-tenant-id", "acme")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .header("host", "localhost")
+                    .header("mcp-protocol-version", "2025-06-18")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+                    ))
+                    .expect("build request"),
+            )
+            .await
+            .expect("MCP response");
+
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body = String::from_utf8_lossy(&body);
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("\"server_info\""), "{body}");
+        router.await.expect("mock router task panicked");
     }
 
     #[tokio::test]
