@@ -342,6 +342,14 @@ router_timeout = 30                  # seconds per forwarded request (default 30
 max_concurrent_tool_calls = 8        # tool calls in flight per session (default 8)
 ```
 
+MCP is served over Streamable HTTP at `/mcp`. A client that opens a session
+with `initialize` gets an `Mcp-Session-Id` and keeps using it. A request
+without a session id that is not `initialize` is answered on its own,
+statelessly: that covers 2026-07-28 clients, which need no session, and older
+clients that skip the handshake (for example, sending `tools/list` first).
+Such a client gets no server-to-client requests (sampling, elicitation) or
+notifications, since those need a session.
+
 `ui_base_url` (also `--ui-base-url` / `SIGNALDB__MCP__UI_BASE_URL`) points at
 the SignalDB UI. When set, `search_traces`, `get_trace`, and `search_logs`
 results carry a `_links.ui` field with a deep link into the matching UI view
