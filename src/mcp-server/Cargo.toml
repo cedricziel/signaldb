@@ -9,6 +9,9 @@ signaldb-sdk.workspace = true
 # Self-monitoring only: span factories, app metrics, HTTP server-span
 # middleware, and telemetry init. No catalog, storage, or auth from here.
 common.workspace = true
+# Native document parsing, only to report a precise error for a document the
+# generated SDK type (untagged enums) rejects without saying why.
+query-ir.workspace = true
 rmcp.workspace = true
 
 tokio.workspace = true

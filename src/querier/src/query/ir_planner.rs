@@ -165,6 +165,8 @@ impl SourcePlan {
                 ],
                 aliases: &[
                     ("service.name", "service_name"),
+                    ("trace.id", "trace_id"),
+                    ("span.id", "span_id"),
                     ("resource.schema_url", "resource_schema_url"),
                     ("scope.name", "scope_name"),
                     ("scope.version", "scope_version"),
@@ -198,6 +200,8 @@ impl SourcePlan {
                 ],
                 aliases: &[
                     ("service.name", "service_name"),
+                    ("trace.id", "trace_id"),
+                    ("span.id", "span_id"),
                     ("name", "span_name"),
                     ("span.name", "span_name"),
                     ("duration", "duration_nanos"),
@@ -11036,6 +11040,33 @@ mod tests {
             .collect::<HashMap<_, _>>();
         assert_eq!(sessions.get("web").copied(), Some(2), "s1, s2");
         assert_eq!(sessions.get("api").copied(), Some(1), "s3 only");
+    }
+
+    /// `trace.id`/`span.id` name the same columns on every source that
+    /// carries trace context, so a document written for profiles or
+    /// exemplars (or the MCP minimal example) counts traces rather than an
+    /// absent attribute's zero (#2204).
+    #[tokio::test]
+    async fn count_distinct_of_trace_id_reads_the_trace_id_column() {
+        let batches = collect_doc_over(
+            traces_ctx(),
+            serde_json::json!({
+                "irVersion": 9, "from": "traces", "range": { "from": 0, "to": 1000 },
+                "result": "table",
+                "pipeline": [ { "aggregate": { "by": ["service.name"], "aggs": [
+                    { "fn": "count_distinct", "of": "trace.id", "as": "traces" },
+                    { "fn": "count_distinct", "of": "span.id", "as": "spans" }
+                ] } } ]
+            }),
+        )
+        .await;
+        for measure in ["traces", "spans"] {
+            let counts = counts_by_group(&batches, "service_name", measure)
+                .into_iter()
+                .collect::<HashMap<_, _>>();
+            assert_eq!(counts.get("api").copied(), Some(2), "{measure}: t1, t2");
+            assert_eq!(counts.get("web").copied(), Some(1), "{measure}: t3");
+        }
     }
 
     /// A scoped `count_distinct` counts only the records the scope admits;

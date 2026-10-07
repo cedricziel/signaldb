@@ -6065,6 +6065,11 @@ fn query_ir_parse_error(query: &serde_json::Value, e: serde_json::Error) -> Stri
         None => QUERY_IR_REQUIRED_FIELDS.to_vec(),
     };
     if missing.is_empty() {
+        // The SDK's untagged enums report only "did not match any variant";
+        // the native parser names the offending key or operator (#2204).
+        let e = serde_json::from_value::<query_ir::Document>(query.clone())
+            .err()
+            .map_or_else(|| e.to_string(), |native| native.to_string());
         let message = format!("invalid IR document: {e}");
         let hint = docs::query_ir_section_hint(&message);
         format!("{message}{hint}")
@@ -6356,6 +6361,33 @@ mod tests {
             description.contains(docs::QUERY_IR_MINIMAL_EXAMPLE),
             "the description must quote docs::QUERY_IR_MINIMAL_EXAMPLE verbatim"
         );
+    }
+
+    /// A malformed stage gets the native parser's message, which names the
+    /// bad key or operator, not the SDK's bare "did not match any variant".
+    #[test]
+    fn a_malformed_stage_error_names_what_is_wrong() {
+        for (stage, expected) in [
+            (
+                serde_json::json!({ "where": { "field": "service.name", "op": "=", "value": "api" } }),
+                "unknown variant `=`",
+            ),
+            (
+                serde_json::json!({ "filter": { "field": "service.name", "op": "eq", "value": "api" } }),
+                "unknown field `field`",
+            ),
+        ] {
+            let query = serde_json::json!({
+                "irVersion": 9, "from": "traces",
+                "range": { "from": "now-1h", "to": "now" }, "result": "rows",
+                "pipeline": [stage]
+            });
+            let e = serde_json::from_value::<signaldb_sdk::types::QueryIrRequest>(query.clone())
+                .expect_err("the document should fail to parse");
+            let message = query_ir_parse_error(&query, e);
+            assert!(message.contains(expected), "got {message}");
+            assert!(!message.contains("untagged enum"), "got {message}");
+        }
     }
 
     #[test]

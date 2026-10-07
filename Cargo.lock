@@ -4515,6 +4515,7 @@ dependencies = [
  "futures",
  "opentelemetry",
  "opentelemetry_sdk",
+ "query-ir",
  "reqwest 0.13.5",
  "rmcp",
  "serde",

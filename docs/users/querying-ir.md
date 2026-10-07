@@ -91,6 +91,10 @@ the instrumentation scope (`scope_name`, `scope_version`, `scope_schema_url`),
 **separate** — they are not merged into one bag, because their scopes mean
 different things. Each arrives as a JSON object you can index by key.
 
+The trace context has one spelling everywhere: `trace.id` and `span.id` name
+the trace and span on every source that carries them (traces, logs, profiles,
+exemplars), and on traces and logs `trace_id`/`span_id` name the same columns.
+
 ### Pipeline stages
 
 The `pipeline` is an ordered list of transform stages. Each stage is a
