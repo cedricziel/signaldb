@@ -201,19 +201,40 @@ mod tests {
     use arrow_flight::FlightData;
     use std::sync::{Arc, Mutex};
 
-    /// Run a writer that records DoPut payloads and a transport that finds it.
-    async fn transport_with_recording_writer()
-    -> (InMemoryFlightTransport, Arc<Mutex<Vec<FlightData>>>) {
+    /// The `grpc-encoding` header of every request the writer received.
+    type RequestEncodings = Arc<Mutex<Vec<Option<String>>>>;
+
+    /// Run a writer that records DoPut payloads (and each request's
+    /// `grpc-encoding`) and a transport that finds it.
+    async fn transport_with_recording_writer() -> (
+        InMemoryFlightTransport,
+        Arc<Mutex<Vec<FlightData>>>,
+        RequestEncodings,
+    ) {
         let catalog = Catalog::new_in_memory().await.unwrap();
         let received = Arc::new(Mutex::new(Vec::new()));
         let writer = NoopFlightService {
             received: Some(received.clone()),
         };
+        let encodings = RequestEncodings::default();
+        let seen = encodings.clone();
+        let record_encoding = move |request: tonic::Request<()>| {
+            let encoding = request
+                .metadata()
+                .get("grpc-encoding")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            seen.lock().unwrap().push(encoding);
+            Ok(request)
+        };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             tonic::transport::Server::builder()
-                .add_service(crate::flight::flight_service_server(writer))
+                .add_service(crate::flight::flight_service_server_with_interceptor(
+                    writer,
+                    record_encoding,
+                ))
                 .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
                 .await
                 .unwrap();
@@ -232,12 +253,12 @@ mod tests {
         )
         .await
         .unwrap();
-        (InMemoryFlightTransport::new(acceptor), received)
+        (InMemoryFlightTransport::new(acceptor), received, encodings)
     }
 
     #[tokio::test]
     async fn pre_encoded_bytes_reach_the_writer_as_the_same_rows() {
-        let (transport, received) = transport_with_recording_writer().await;
+        let (transport, received, _) = transport_with_recording_writer().await;
         let batch = batch_with_nulls();
         let wal_bytes = record_batch_to_bytes(&batch).unwrap();
         let ingest_id = Uuid::new_v4();
@@ -268,7 +289,7 @@ mod tests {
 
     #[tokio::test]
     async fn without_pre_encoded_bytes_the_batch_is_encoded_with_lz4() {
-        let (transport, received) = transport_with_recording_writer().await;
+        let (transport, received, _) = transport_with_recording_writer().await;
         let batch = batch_with_nulls();
 
         forward_batch_to_writer(&transport, batch.clone(), None, None, Uuid::new_v4())
@@ -278,6 +299,26 @@ mod tests {
         let received = received.lock().unwrap().clone();
         let decoded = arrow_flight::utils::flight_data_to_batches(&received).unwrap();
         assert_eq!(decoded, vec![batch]);
+    }
+
+    /// The batch bodies are already zstd/lz4 IPC, so gRPC must not compress
+    /// the request a second time (#942).
+    #[tokio::test]
+    async fn the_do_put_request_is_not_grpc_compressed() {
+        let (transport, _, encodings) = transport_with_recording_writer().await;
+        let batch = batch_with_nulls();
+        let wal_bytes = record_batch_to_bytes(&batch).unwrap();
+
+        forward_batch_to_writer(&transport, batch, Some(wal_bytes), None, Uuid::new_v4())
+            .await
+            .unwrap();
+
+        let encodings = encodings.lock().unwrap().clone();
+        assert!(!encodings.is_empty(), "the writer saw no request");
+        assert!(
+            encodings.iter().all(Option::is_none),
+            "requests carried grpc-encoding: {encodings:?}"
+        );
     }
 
     #[test]

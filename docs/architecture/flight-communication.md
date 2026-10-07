@@ -477,9 +477,10 @@ other Flight paths use. A batch over `MAX_ENCODED_BATCH_SIZE` is still split
 and lz4-encoded, as is any caller that passes no pre-encoded bytes (the
 Router's eval-results upload).
 
-The internal channel's tonic message compression (zstd) still applies on top,
-so these `DoPut` payloads are compressed twice. A follow-up may disable
-message compression for ingest.
+Pooled Flight clients send requests without tonic message compression, since
+every large request is a `DoPut` whose IPC bodies are already compressed;
+compressing them again cost CPU for no size win. Responses are still
+zstd-compressed when the server supports it.
 
 #### Dictionary-Safe Encode/Decode
 

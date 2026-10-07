@@ -413,17 +413,16 @@ impl InMemoryFlightTransport {
             .connect_timeout(self.connect_timeout)
             .timeout(self.request_timeout);
         let channel = endpoint.connect().await?;
-        // Internal service-to-service hop: compress requests with zstd and
-        // advertise zstd for responses. Every in-tree Flight server accepts
-        // zstd (see `crate::flight::flight_service_server`); mixed-version
-        // deployments must upgrade servers before clients.
+        // Internal service-to-service hop: advertise zstd for responses.
+        // Requests go uncompressed: the only large ones are `do_put` batches,
+        // whose IPC bodies are already zstd/lz4 (#942), so a second gRPC pass
+        // costs CPU for no size win.
         //
         // Also raise tonic's 4 MiB receive default on both directions: one
         // OTLP export becomes one FlightData message, and Arrow encoding
         // inflates OTLP, so the default wedges oversized batches in the WAL
         // retry loop (#944). Every Flight server applies the same limit.
         let client = FlightServiceClient::new(channel)
-            .send_compressed(tonic::codec::CompressionEncoding::Zstd)
             .accept_compressed(tonic::codec::CompressionEncoding::Zstd)
             .max_decoding_message_size(crate::flight::MAX_GRPC_MESSAGE_SIZE)
             .max_encoding_message_size(crate::flight::MAX_GRPC_MESSAGE_SIZE);
