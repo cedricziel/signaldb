@@ -112,12 +112,14 @@ describe("App", () => {
     renderApp("/?tenant=acme");
     await waitFor(() => expect(window.location.pathname).toBe("/overview"));
     expect(window.location.search).toContain("tenant=acme");
-    expect(
-      within(screen.getByRole("navigation", { name: "Pages" })).getByRole(
-        "link",
-        { name: "Overview" },
-      ),
-    ).toHaveAttribute("aria-current", "page");
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("navigation", { name: "Pages" })).getByRole(
+          "link",
+          { name: "Overview" },
+        ),
+      ).toHaveAttribute("aria-current", "page"),
+    );
   });
 
   it("redirects an unknown path home to /overview, keeping the query string", async () => {
@@ -620,6 +622,47 @@ describe("App", () => {
       );
       expect(queryCalls).toHaveLength(0);
     });
+
+    it.each([
+      ["in the URL", "/overview?tenant=acme&dataset=production", false],
+      ["remembered locally", "/overview", true],
+    ])(
+      "sends no data query when the session expired but the tenant is %s, then goes to /login",
+      async (_label, path, persisted) => {
+        if (persisted) {
+          window.localStorage.setItem(
+            TENANT_CONTEXT_STORAGE_KEY,
+            JSON.stringify({ tenant: "acme", dataset: "production" }),
+          );
+        }
+        const fetchMock = stubFetchRoutes([
+          {
+            match: SESSION,
+            method: "GET",
+            body: { error: "unauthenticated" },
+            status: 401,
+          },
+          {
+            match: "/api/v1/whoami",
+            body: { error: "unauthenticated" },
+            status: 401,
+          },
+          {
+            match: "/api/v1/query",
+            body: { error: "unauthenticated" },
+            status: 401,
+          },
+        ]);
+        renderApp(path);
+        await waitFor(() => expect(window.location.pathname).toBe("/login"));
+        const queryCalls = fetchMock.mock.calls.filter(([input]) =>
+          String(input instanceof Request ? input.url : input).includes(
+            "/api/v1/query",
+          ),
+        );
+        expect(queryCalls).toHaveLength(0);
+      },
+    );
 
     it("keeps API-key auth out of /login when the probe is a 401 but whoami succeeds, with no tenant anywhere", async () => {
       stubFetchRoutes([
