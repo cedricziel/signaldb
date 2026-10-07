@@ -52,7 +52,7 @@ groups:
     type: metric
     metric_name: container.cpu.utilization
     stability: development
-    brief: Fraction of CPU used by the container (Docker Stats receiver).
+    brief: Percent of CPU used by the container, where 100 is one full core (Docker Stats receiver).
     instrument: gauge
     unit: "1"
     entity_associations:
@@ -83,7 +83,7 @@ groups:
     type: metric
     metric_name: container.memory.percent
     stability: development
-    brief: Fraction of the memory limit used by the container (Docker Stats receiver). Not supported on Windows.
+    brief: Percent of the memory limit used by the container, from 0 to 100 (Docker Stats receiver). Not supported on Windows.
     instrument: gauge
     unit: "1"
     entity_associations:
