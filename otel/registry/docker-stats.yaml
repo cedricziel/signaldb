@@ -1,0 +1,162 @@
+# Metrics emitted by the OpenTelemetry Collector Docker Stats receiver
+# (receiver/dockerstatsreceiver in opentelemetry-collector-contrib),
+# associated with the upstream `container` entity so the Catalog charts them
+# out of the box.
+#
+# These are their own definitions, not `aliases` of the upstream
+# `container.*` metrics: the receiver predates the semantic conventions and
+# several of its metrics measure something different (`container.cpu.usage.total`
+# is cumulative nanoseconds, upstream `container.cpu.time` is seconds), and
+# the bundled signaldb registry does not alias upstream otel metrics. Names,
+# units and instruments follow the receiver's metadata.yaml (monotonic sums
+# are `counter`, non-monotonic sums `updowncounter`); only its default-enabled
+# metrics are listed.
+#
+# The receiver's metric attributes (`interface` on network metrics,
+# `device_major`/`device_minor`/`operation` on block IO) are left off: they
+# are bare receiver-local names, and declaring them would add shared
+# attribute keys to the registry that upstream does not define.
+groups:
+  # CPU
+  - id: metric.container.cpu.usage.total
+    type: metric
+    metric_name: container.cpu.usage.total
+    stability: development
+    brief: Total CPU time consumed by the container, in cumulative nanoseconds (Docker Stats receiver).
+    instrument: counter
+    unit: ns
+    entity_associations:
+      - container
+
+  - id: metric.container.cpu.usage.kernelmode
+    type: metric
+    metric_name: container.cpu.usage.kernelmode
+    stability: development
+    brief: Time spent by the container's tasks in kernel mode, in cumulative nanoseconds (Docker Stats receiver).
+    instrument: counter
+    unit: ns
+    entity_associations:
+      - container
+
+  - id: metric.container.cpu.usage.usermode
+    type: metric
+    metric_name: container.cpu.usage.usermode
+    stability: development
+    brief: Time spent by the container's tasks in user mode, in cumulative nanoseconds (Docker Stats receiver).
+    instrument: counter
+    unit: ns
+    entity_associations:
+      - container
+
+  - id: metric.container.cpu.utilization
+    type: metric
+    metric_name: container.cpu.utilization
+    stability: development
+    brief: Fraction of CPU used by the container (Docker Stats receiver).
+    instrument: gauge
+    unit: "1"
+    entity_associations:
+      - container
+
+  # Memory
+  - id: metric.container.memory.usage.total
+    type: metric
+    metric_name: container.memory.usage.total
+    stability: development
+    brief: Memory usage of the container, excluding cache (Docker Stats receiver).
+    instrument: updowncounter
+    unit: By
+    entity_associations:
+      - container
+
+  - id: metric.container.memory.usage.limit
+    type: metric
+    metric_name: container.memory.usage.limit
+    stability: development
+    brief: Memory limit of the container (Docker Stats receiver). Not supported on Windows.
+    instrument: updowncounter
+    unit: By
+    entity_associations:
+      - container
+
+  - id: metric.container.memory.percent
+    type: metric
+    metric_name: container.memory.percent
+    stability: development
+    brief: Fraction of the memory limit used by the container (Docker Stats receiver). Not supported on Windows.
+    instrument: gauge
+    unit: "1"
+    entity_associations:
+      - container
+
+  - id: metric.container.memory.file
+    type: metric
+    metric_name: container.memory.file
+    stability: development
+    brief: Memory used to cache filesystem data, including tmpfs and shared memory (Docker Stats receiver, cgroups v2).
+    instrument: updowncounter
+    unit: By
+    entity_associations:
+      - container
+
+  - id: metric.container.memory.total_cache
+    type: metric
+    metric_name: container.memory.total_cache
+    stability: development
+    brief: Memory used by the container's processes and descendants that can be associated with a block on a block device (Docker Stats receiver, cgroups v1).
+    instrument: updowncounter
+    unit: By
+    entity_associations:
+      - container
+
+  # Network
+  - id: metric.container.network.io.usage.rx_bytes
+    type: metric
+    metric_name: container.network.io.usage.rx_bytes
+    stability: development
+    brief: Bytes received by the container (Docker Stats receiver).
+    instrument: counter
+    unit: By
+    entity_associations:
+      - container
+
+  - id: metric.container.network.io.usage.tx_bytes
+    type: metric
+    metric_name: container.network.io.usage.tx_bytes
+    stability: development
+    brief: Bytes sent by the container (Docker Stats receiver).
+    instrument: counter
+    unit: By
+    entity_associations:
+      - container
+
+  - id: metric.container.network.io.usage.rx_dropped
+    type: metric
+    metric_name: container.network.io.usage.rx_dropped
+    stability: development
+    brief: Incoming packets dropped (Docker Stats receiver).
+    instrument: counter
+    unit: "{packets}"
+    entity_associations:
+      - container
+
+  - id: metric.container.network.io.usage.tx_dropped
+    type: metric
+    metric_name: container.network.io.usage.tx_dropped
+    stability: development
+    brief: Outgoing packets dropped (Docker Stats receiver).
+    instrument: counter
+    unit: "{packets}"
+    entity_associations:
+      - container
+
+  # Block IO
+  - id: metric.container.blockio.io_service_bytes_recursive
+    type: metric
+    metric_name: container.blockio.io_service_bytes_recursive
+    stability: development
+    brief: Bytes transferred to or from disk by the container's cgroup and its descendants (Docker Stats receiver).
+    instrument: counter
+    unit: By
+    entity_associations:
+      - container

@@ -294,6 +294,58 @@ async fn resolution_precedence_and_alternatives() {
     assert!(res.primary.is_none());
 }
 
+/// The Docker Stats receiver names its metrics differently from upstream
+/// semconv (`container.memory.usage.total`, not `container.memory.usage`), so
+/// the Catalog only shows them on a `container` entity if the bundled
+/// registry associates the receiver's own names with it.
+#[tokio::test]
+async fn container_entity_lists_docker_stats_receiver_metrics() {
+    let r = resolver().await;
+    let res = r.resolve_entity("t1", "container").await.expect("resolve");
+    let container = res
+        .hits
+        .iter()
+        .find(|h| h.namespace == "otel")
+        .expect("upstream container entity");
+    for name in [
+        "container.memory.usage.total",
+        "container.cpu.usage.total",
+        "container.cpu.usage.kernelmode",
+        "container.cpu.usage.usermode",
+        "container.cpu.utilization",
+        "container.memory.usage.limit",
+        "container.memory.percent",
+        "container.memory.file",
+        "container.memory.total_cache",
+        "container.network.io.usage.rx_bytes",
+        "container.network.io.usage.tx_bytes",
+        "container.network.io.usage.rx_dropped",
+        "container.network.io.usage.tx_dropped",
+        "container.blockio.io_service_bytes_recursive",
+    ] {
+        assert!(
+            container.metrics.iter().any(|m| m == name),
+            "container entity is missing {name}: {:?}",
+            container.metrics
+        );
+    }
+    // Upstream's own container metrics stay associated.
+    assert!(container.metrics.iter().any(|m| m == "container.cpu.time"));
+
+    // The receiver's cumulative-nanosecond total is its own measurement, not
+    // an alias of upstream's seconds-based `container.cpu.time`.
+    let cpu = r
+        .resolve_metric("t1", "container.cpu.usage.total")
+        .await
+        .expect("resolve");
+    let hit = cpu.hits.first().expect("defined");
+    assert_eq!(hit.namespace, "signaldb");
+    assert_eq!(hit.def.unit, "ns");
+    assert_eq!(hit.def.instrument, "counter");
+    assert!(hit.def.aliases.is_empty());
+    assert_eq!(hit.def.entity_associations, vec!["container".to_string()]);
+}
+
 #[tokio::test]
 async fn resolve_metrics_batches_exact_names_precedence_first_wins_deduped() {
     let r = resolver().await;
