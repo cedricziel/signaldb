@@ -120,8 +120,13 @@ export function App() {
     identityQuery.data,
     update,
   ]);
+  // `isFetchedAfterMount`, not `isPending`: the shared QueryClient outlives
+  // this component (coming back from `/login`, any remount), so a cached
+  // success would otherwise let the routes through while the stale-time-0
+  // refetch is still deciding whether the cookie has since expired.
   const holdRoutes =
-    sessionQuery.isPending || (probeRejected && identityQuery.isPending);
+    !sessionQuery.isFetchedAfterMount ||
+    (probeRejected && !identityQuery.isFetchedAfterMount);
   const sessionRejected = probeRejected && isAuthError(identityQuery.error);
   useEffect(() => {
     if (!sessionRejected) return;

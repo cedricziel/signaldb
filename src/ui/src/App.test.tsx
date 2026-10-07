@@ -1,4 +1,5 @@
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RouterProvider } from "react-router";
 import { TENANT_CONTEXT_STORAGE_KEY, getTenantContext } from "./api/http";
@@ -12,6 +13,7 @@ import {
 } from "./lib/pwaUpdate";
 import { AppRoot } from "./AppRoot";
 import { createAppRouter } from "./routes";
+import { testQueryClient } from "./lib/queryClient";
 import {
   emptyIrLogs,
   emptyMatrix,
@@ -663,6 +665,60 @@ describe("App", () => {
         expect(queryCalls).toHaveLength(0);
       },
     );
+
+    it("sends no data query on a remount whose cached session turns out to be expired, then goes to /login", async () => {
+      const fetchMock = stubFetchRoutes([
+        {
+          match: SESSION,
+          method: "GET",
+          body: { error: "unauthenticated" },
+          status: 401,
+        },
+        {
+          match: "/api/v1/whoami",
+          body: { error: "unauthenticated" },
+          status: 401,
+        },
+        {
+          match: "/api/v1/query",
+          body: { error: "unauthenticated" },
+          status: 401,
+        },
+      ]);
+      // The session answer arrives late, so a mount that trusts the cached
+      // success would render the routes in the meantime.
+      const answer = fetchMock.getMockImplementation()!;
+      fetchMock.mockImplementation(async (input, init) => {
+        const url = String(input instanceof Request ? input.url : input);
+        if (SESSION.test(url)) await new Promise((r) => setTimeout(r, 100));
+        return answer(input, init);
+      });
+      const client = testQueryClient();
+      client.setQueryData(["current-session"], {
+        user: {
+          id: "u1",
+          email: "alice@example.com",
+          display_name: "Alice",
+          is_instance_admin: false,
+        },
+        tenant: "acme",
+        dataset: "production",
+        memberships: [{ tenant_id: "acme", name: "Acme", role: "admin" }],
+      });
+      window.history.replaceState(null, "", "/overview?tenant=acme");
+      render(
+        <QueryClientProvider client={client}>
+          <AppRoot router={createAppRouter()} />
+        </QueryClientProvider>,
+      );
+      await waitFor(() => expect(window.location.pathname).toBe("/login"));
+      const queryCalls = fetchMock.mock.calls.filter(([input]) =>
+        String(input instanceof Request ? input.url : input).includes(
+          "/api/v1/query",
+        ),
+      );
+      expect(queryCalls).toHaveLength(0);
+    });
 
     it("keeps API-key auth out of /login when the probe is a 401 but whoami succeeds, with no tenant anywhere", async () => {
       stubFetchRoutes([
