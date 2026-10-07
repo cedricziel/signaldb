@@ -24,12 +24,12 @@ key, entity type, or metric name to its definitions for your tenant.
 
 Four kinds of registry exist:
 
-| Namespace       | Source  | What it is                                                                                         |
-| --------------- | ------- | -------------------------------------------------------------------------------------------------- |
-| `otel`          | bundled | The OpenTelemetry semantic conventions, vendored at the version SignalDB itself emits (`1.43.0`)   |
-| `otel-genai`    | bundled | The OpenTelemetry GenAI conventions (`gen_ai.*`, `mcp.*`), vendored at a pinned upstream commit    |
+| Namespace       | Source  | What it is                                                                                           |
+| --------------- | ------- | ---------------------------------------------------------------------------------------------------- |
+| `otel`          | bundled | The OpenTelemetry semantic conventions, vendored at the version SignalDB itself emits (`1.43.0`)     |
+| `otel-genai`    | bundled | The OpenTelemetry GenAI conventions (`gen_ai.*`, `mcp.*`), vendored at a pinned upstream commit      |
 | `signaldb`      | bundled | SignalDB's own conventions: its `signaldb.*` self-monitoring telemetry and the `gen_ai.agent` entity |
-| _anything else_ | custom  | Registries **you** upload for your tenant, in the same OTel Weaver model, versioned `name@version` |
+| _anything else_ | custom  | Registries **you** upload for your tenant, in the same OTel Weaver model, versioned `name@version`   |
 
 Bundled registries are visible to every tenant and read-only. Custom registries
 are private to the tenant that owns them. Registries are **namespaced**, so a
@@ -59,6 +59,18 @@ telemetry declares it on every instrumentation scope as
 those URLs are published with this site, one per release. See
 [Self-Monitoring Trace Model](../operations/self-monitoring-traces.md) for
 what that telemetry contains.
+
+The `signaldb` registry also bundles the metrics the OpenTelemetry Collector
+[Docker Stats receiver](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/dockerstatsreceiver)
+enables by default (`container.memory.usage.total`, `container.cpu.usage.total`,
+`container.cpu.utilization`, `container.network.io.usage.rx_bytes`,
+`container.blockio.io_service_bytes_recursive`, and the rest of that set),
+associated with the `container` entity, so a container's Catalog page charts
+them without any custom registry. They are separate definitions rather than
+aliases of the upstream `container.*` metrics because they measure different
+things (`container.cpu.usage.total` is cumulative nanoseconds, upstream
+`container.cpu.time` is seconds). The receiver's per-metric attributes
+(`interface`, `device_major`, `device_minor`, `operation`) are not declared.
 
 ## Prerequisites
 
