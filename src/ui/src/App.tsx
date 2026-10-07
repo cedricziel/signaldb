@@ -65,7 +65,7 @@ export function App() {
   // none — defers to `/select-tenant`, which owns rendering a picker or the
   // no-access explanation.
   const needsTenantResolution = !state.tenant && !remembered.current.tenant;
-  const sessionQuery = useCurrentSession(needsTenantResolution);
+  const sessionQuery = useCurrentSession();
   useEffect(() => {
     if (!needsTenantResolution || !sessionQuery.isSuccess) return;
     const session = sessionQuery.data;
@@ -91,14 +91,14 @@ export function App() {
     update,
   ]);
 
-  // Until the probe answers there is no tenant to query for, and a visitor
-  // without a session would only collect a 401 per widget before the redirect
-  // below, so the routes stay unmounted. The probe only knows cookies: with
-  // API-key auth (the Vite dev proxy injects the key and tenant) it is always
-  // a 401, so one `whoami` decides — it succeeds for a key, 401s for a
-  // logged-out visitor, who then goes straight to the login page.
-  const probeRejected =
-    needsTenantResolution && isAuthError(sessionQuery.error);
+  // Until the probe answers, a visitor without a session would only collect a
+  // 401 per widget before the redirect below, so the routes stay unmounted —
+  // also when a tenant is in the URL or remembered locally, which says nothing
+  // about whether the session cookie is still valid. The probe only knows
+  // cookies: with API-key auth (the Vite dev proxy injects the key and tenant)
+  // it is always a 401, so one `whoami` decides — it succeeds for a key, 401s
+  // for a logged-out visitor, who then goes straight to the login page.
+  const probeRejected = isAuthError(sessionQuery.error);
   const identityQuery = useQuery({
     queryKey: ["whoami", "session-fallback"],
     queryFn: () => whoami(),
@@ -106,15 +106,27 @@ export function App() {
     retry: false,
   });
   useEffect(() => {
-    if (!probeRejected || !identityQuery.isSuccess) return;
+    if (!needsTenantResolution || !probeRejected || !identityQuery.isSuccess) {
+      return;
+    }
     update({
       tenant: identityQuery.data.tenant.id,
       dataset: identityQuery.data.default_dataset ?? "",
     });
-  }, [probeRejected, identityQuery.isSuccess, identityQuery.data, update]);
+  }, [
+    needsTenantResolution,
+    probeRejected,
+    identityQuery.isSuccess,
+    identityQuery.data,
+    update,
+  ]);
+  // `isFetchedAfterMount`, not `isPending`: the shared QueryClient outlives
+  // this component (coming back from `/login`, any remount), so a cached
+  // success would otherwise let the routes through while the stale-time-0
+  // refetch is still deciding whether the cookie has since expired.
   const holdRoutes =
-    needsTenantResolution &&
-    (sessionQuery.isPending || (probeRejected && identityQuery.isPending));
+    !sessionQuery.isFetchedAfterMount ||
+    (probeRejected && !identityQuery.isFetchedAfterMount);
   const sessionRejected = probeRejected && isAuthError(identityQuery.error);
   useEffect(() => {
     if (!sessionRejected) return;
