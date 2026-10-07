@@ -229,7 +229,9 @@ When the router rejects a query-backed tool's request outright (`query_ir`,
 `discover_field_values`), the tool error carries the router's own message —
 e.g. `invalid IR document: unknown field 'all', expected one of …` — instead
 of a bare status code, so an agent can correct its request rather than
-guessing what was wrong.
+guessing what was wrong. A `query_ir` document the MCP server cannot parse
+fails before reaching the router with the same kind of message, naming the
+bad key or operator (`unknown variant '=', expected one of 'eq', …`).
 
 ## Prompts
 
