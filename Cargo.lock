@@ -9810,7 +9810,7 @@ dependencies = [
  "num-bigint 0.4.8",
  "num-iter",
  "num-traits",
- "object 0.37.3",
+ "object 0.39.1",
  "object_store",
  "once_cell",
  "opentelemetry",
