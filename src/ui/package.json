@@ -26,7 +26,7 @@
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/api-logs": "^0.222.0",
-    "@opentelemetry/auto-instrumentations-web": "^0.66.0",
+    "@opentelemetry/auto-instrumentations-web": "^0.67.0",
     "@opentelemetry/browser-instrumentation": "^0.7.0",
     "@opentelemetry/context-zone": "^2.10.0",
     "@opentelemetry/core": "^2.10.0",
