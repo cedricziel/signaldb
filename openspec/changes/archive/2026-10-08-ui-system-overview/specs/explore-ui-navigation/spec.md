@@ -1,6 +1,11 @@
+## RENAMED Requirements
+
+- FROM: `### Requirement: Root path redirects to the logs view`
+- TO: `### Requirement: Root path redirects to the overview`
+
 ## MODIFIED Requirements
 
-### Requirement: Root path redirects to the logs view
+### Requirement: Root path redirects to the overview
 
 Navigating to the site root SHALL redirect to `/overview`, preserving any
 query string from the original URL.
