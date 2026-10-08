@@ -79,7 +79,7 @@
     "@storybook/addon-a11y": "^10.6.0",
     "@storybook/addon-docs": "^10.6.0",
     "@storybook/addon-mcp": "^10.6.0",
-    "eslint-plugin-storybook": "^10.6.0",
+    "eslint-plugin-storybook": "^10.6.1",
     "@vitest/browser-playwright": "4.1.11",
     "playwright": "^1.63.0",
     "workbox-precaching": "7.4.1",
