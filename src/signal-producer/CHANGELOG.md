@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.3](https://github.com/cedricziel/signaldb/compare/signal-producer-v0.2.2...signal-producer-v0.2.3) (2026-10-08)
+
+
+### Build System
+
+* **deps:** bump object from 0.37.3 to 0.39.1 ([#2203](https://github.com/cedricziel/signaldb/issues/2203)) ([b6de77a](https://github.com/cedricziel/signaldb/commit/b6de77a4378388901382c517ed72e7a93c309c48))
+* fix the beta test leg for cargo's unused-dependency lints ([#2047](https://github.com/cedricziel/signaldb/issues/2047)) ([6867d69](https://github.com/cedricziel/signaldb/commit/6867d69dceb26f2e55ccfac31e60ae42aad76418))
+
 ## [0.2.2](https://github.com/cedricziel/signaldb/compare/signal-producer-v0.2.1...signal-producer-v0.2.2) (2026-08-17)
 
 

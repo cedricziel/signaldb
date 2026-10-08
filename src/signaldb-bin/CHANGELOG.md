@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.5.0](https://github.com/cedricziel/signaldb/compare/signaldb-bin-v0.4.1...signaldb-bin-v0.5.0) (2026-10-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **querier:** a standalone querier with no `memory_limit_mb` is now bounded (set 0 to opt out), and a tenant running more than 8 concurrent queries gets RESOURCE_EXHAUSTED unless `max_concurrent_queries_per_tenant` is raised (0 = unlimited).
+
+### Features
+
+* **acceptor:** cap attributes per record at ingest ([#2185](https://github.com/cedricziel/signaldb/issues/2185)) ([56cc1f0](https://github.com/cedricziel/signaldb/commit/56cc1f0cad0aef215eb54639f187f55cd8055af5)), closes [#821](https://github.com/cedricziel/signaldb/issues/821)
+* **acceptor:** warn OTLP senders about off-type attribute values ([#1834](https://github.com/cedricziel/signaldb/issues/1834)) ([1538139](https://github.com/cedricziel/signaldb/commit/1538139f06b5eac84158048f54283040b236185a))
+* **querier:** bound memory and per-tenant concurrency by default ([#2161](https://github.com/cedricziel/signaldb/issues/2161)) ([93dc0d9](https://github.com/cedricziel/signaldb/commit/93dc0d9e60c84ddfc6fb876b09e40be4e7b305cc))
+* **router:** paginate Query IR rows and trace results (IR v14) ([#2142](https://github.com/cedricziel/signaldb/issues/2142)) ([67023cc](https://github.com/cedricziel/signaldb/commit/67023cc0f71ab345f23d6278f9a917ee3d349941))
+* **writer:** place typed attributes in every writer deployment ([#1790](https://github.com/cedricziel/signaldb/issues/1790)) ([49551e8](https://github.com/cedricziel/signaldb/commit/49551e8fd811514c222b1643ecbc2cca3c83495f))
+
+
+### Bug Fixes
+
+* **acceptor:** acknowledge an exporter's resend of an already-durable batch ([#1814](https://github.com/cedricziel/signaldb/issues/1814)) ([ff52ded](https://github.com/cedricziel/signaldb/commit/ff52deda64b5b803c4040cee0db249a6beb5d7f4))
+* **signaldb-bin:** honour the *_ADVERTISE_ADDR overrides in the monolith ([#2109](https://github.com/cedricziel/signaldb/issues/2109)) ([de5de92](https://github.com/cedricziel/signaldb/commit/de5de922ee7ae88d5ee82f9fded3dac0caf38976)), closes [#1843](https://github.com/cedricziel/signaldb/issues/1843)
+* **telemetry:** namespace bare log fields flagged by weaver live-check ([#1879](https://github.com/cedricziel/signaldb/issues/1879)) ([90dbf09](https://github.com/cedricziel/signaldb/commit/90dbf09c31f7181f4f97c4a0bdb6c79f0f78aca3)), closes [#912](https://github.com/cedricziel/signaldb/issues/912)
+
+
+### Code Refactoring
+
+* **common:** let ServiceBootstrap resolve the advertised address ([#2121](https://github.com/cedricziel/signaldb/issues/2121)) ([6bef83b](https://github.com/cedricziel/signaldb/commit/6bef83b68b873ea7407d0f92981665a2b4cb420e))
+
+
+### Build System
+
+* **deps:** bump object from 0.37.3 to 0.39.1 ([#2203](https://github.com/cedricziel/signaldb/issues/2203)) ([b6de77a](https://github.com/cedricziel/signaldb/commit/b6de77a4378388901382c517ed72e7a93c309c48))
+* fix the beta test leg for cargo's unused-dependency lints ([#2047](https://github.com/cedricziel/signaldb/issues/2047)) ([6867d69](https://github.com/cedricziel/signaldb/commit/6867d69dceb26f2e55ccfac31e60ae42aad76418))
+
 ## [0.4.1](https://github.com/cedricziel/signaldb/compare/signaldb-bin-v0.4.0...signaldb-bin-v0.4.1) (2026-09-23)
 
 

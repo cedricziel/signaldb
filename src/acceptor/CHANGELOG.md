@@ -1,5 +1,55 @@
 # Changelog
 
+## [0.5.0](https://github.com/cedricziel/signaldb/compare/acceptor-v0.4.1...acceptor-v0.5.0) (2026-10-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **tests-integration:** metric tables are recreated as metrics/metric_exemplars; pre-cutover metric data is dropped, not migrated.
+* metric tables are recreated as metrics/metric_exemplars; pre-cutover metric data is dropped, not migrated.
+
+### Features
+
+* **acceptor:** build off-type attribute warnings for OTLP exports ([#1833](https://github.com/cedricziel/signaldb/issues/1833)) ([b6b74ff](https://github.com/cedricziel/signaldb/commit/b6b74ffdd6d73d3bea2f0d0137ddd1dbee7259c8))
+* **acceptor:** cap attributes per record at ingest ([#2185](https://github.com/cedricziel/signaldb/issues/2185)) ([56cc1f0](https://github.com/cedricziel/signaldb/commit/56cc1f0cad0aef215eb54639f187f55cd8055af5)), closes [#821](https://github.com/cedricziel/signaldb/issues/821)
+* **acceptor:** override attribute limits per tenant ([#2186](https://github.com/cedricziel/signaldb/issues/2186)) ([6f8d408](https://github.com/cedricziel/signaldb/commit/6f8d408c823bc1fbd95533cadfb8cd6d1f24791b)), closes [#821](https://github.com/cedricziel/signaldb/issues/821)
+* **acceptor:** target the wide metrics table under the wide layout ([#1907](https://github.com/cedricziel/signaldb/issues/1907)) ([e6fb521](https://github.com/cedricziel/signaldb/commit/e6fb521164fa99ba4ebf987de022696576916cf9))
+* **acceptor:** warn OTLP senders about off-type attribute values ([#1834](https://github.com/cedricziel/signaldb/issues/1834)) ([1538139](https://github.com/cedricziel/signaldb/commit/1538139f06b5eac84158048f54283040b236185a))
+* cut metrics over to the typed metrics layout ([#1928](https://github.com/cedricziel/signaldb/issues/1928)) ([e416d6f](https://github.com/cedricziel/signaldb/commit/e416d6f79029d36930b0b98a288517ac18a0b7ff))
+* **evals:** accept evaluation results sent as span events ([#1858](https://github.com/cedricziel/signaldb/issues/1858)) ([1c96f50](https://github.com/cedricziel/signaldb/commit/1c96f50f398c747ca1ada2d3c8ead74c5516afd3))
+* **evals:** upload eval results and gate CI on them ([#1857](https://github.com/cedricziel/signaldb/issues/1857)) ([175155a](https://github.com/cedricziel/signaldb/commit/175155a3a2d958d59e16a05961206c0b09f1e79a))
+
+
+### Bug Fixes
+
+* **acceptor:** acknowledge an exporter's resend of an already-durable batch ([#1814](https://github.com/cedricziel/signaldb/issues/1814)) ([ff52ded](https://github.com/cedricziel/signaldb/commit/ff52deda64b5b803c4040cee0db249a6beb5d7f4))
+* **acceptor:** dedup client resends across acceptor replicas and restarts ([#1821](https://github.com/cedricziel/signaldb/issues/1821)) ([98cf40e](https://github.com/cedricziel/signaldb/commit/98cf40e5e6bc7d97f3b43564591df2039b9c8070))
+* **compactor:** advertise COMPACTOR_ADVERTISE_ADDR instead of the bind address ([#2107](https://github.com/cedricziel/signaldb/issues/2107)) ([2b8adb7](https://github.com/cedricziel/signaldb/commit/2b8adb7f23df02ee44a7d7f72dde53bcdd436254)), closes [#1844](https://github.com/cedricziel/signaldb/issues/1844)
+* **telemetry:** namespace bare log fields flagged by weaver live-check ([#1879](https://github.com/cedricziel/signaldb/issues/1879)) ([90dbf09](https://github.com/cedricziel/signaldb/commit/90dbf09c31f7181f4f97c4a0bdb6c79f0f78aca3)), closes [#912](https://github.com/cedricziel/signaldb/issues/912)
+
+
+### Performance Improvements
+
+* **acceptor:** send WAL IPC bytes to the writer without re-encoding ([#2192](https://github.com/cedricziel/signaldb/issues/2192)) ([be7e5ee](https://github.com/cedricziel/signaldb/commit/be7e5ee93f9f539ed86adf476e03fe044ee00768)), closes [#942](https://github.com/cedricziel/signaldb/issues/942)
+
+
+### Code Refactoring
+
+* **common:** let ServiceBootstrap resolve the advertised address ([#2121](https://github.com/cedricziel/signaldb/issues/2121)) ([6bef83b](https://github.com/cedricziel/signaldb/commit/6bef83b68b873ea7407d0f92981665a2b4cb420e))
+* drop the dead MetricsLayout switch and *_with_layout helpers ([#1961](https://github.com/cedricziel/signaldb/issues/1961)) ([4a98be3](https://github.com/cedricziel/signaldb/commit/4a98be3e108b2c67be847db23de0f768c1ad2a58))
+
+
+### Tests
+
+* **ingest:** pin WAL format and typed ingest before layer-5 enforcement ([#1828](https://github.com/cedricziel/signaldb/issues/1828)) ([a4b0d74](https://github.com/cedricziel/signaldb/commit/a4b0d740cbb4eab0535a2552797996e47047aa80))
+* **tests-integration:** add an end-to-end metrics cutover test ([#1929](https://github.com/cedricziel/signaldb/issues/1929)) ([bb47677](https://github.com/cedricziel/signaldb/commit/bb4767732f40a82ca1af1e4eab88a8dc11580829))
+
+
+### Build System
+
+* **deps:** bump object from 0.37.3 to 0.39.1 ([#2203](https://github.com/cedricziel/signaldb/issues/2203)) ([b6de77a](https://github.com/cedricziel/signaldb/commit/b6de77a4378388901382c517ed72e7a93c309c48))
+* fix the beta test leg for cargo's unused-dependency lints ([#2047](https://github.com/cedricziel/signaldb/issues/2047)) ([6867d69](https://github.com/cedricziel/signaldb/commit/6867d69dceb26f2e55ccfac31e60ae42aad76418))
+
 ## [0.4.1](https://github.com/cedricziel/signaldb/compare/acceptor-v0.4.0...acceptor-v0.4.1) (2026-09-23)
 
 
