@@ -1,5 +1,60 @@
 # Changelog
 
+## [0.3.0](https://github.com/cedricziel/signaldb/compare/mcp-server-v0.2.2...mcp-server-v0.3.0) (2026-10-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **traceql:** `Condition` has a new public `op` field, so code that constructs one must set it.
+* **mcp-server:** discover_attributes and discover_metrics return the Query IR metadata envelope (logical dotted names, levels, cost) instead of a Tempo tag list, a Loki/Prometheus {status,data} array, or Pyroscope {names}. scope narrows by attribute level rather than routing to the Tempo v2 endpoints, and tag values need a declared set, a statistics sketch, or sample: true.
+* `"from": "metrics_histogram"` is rejected as an unknown source. Use `"from": "metrics"`; add a `metric.type = histogram` filter where only histogram rows are wanted. `histogram_quantile` on `metrics` already reads histogram rows only.
+
+### Features
+
+* **cli,mcp:** follow a Query IR live tail through the IR endpoint ([#2150](https://github.com/cedricziel/signaldb/issues/2150)) ([1219d9d](https://github.com/cedricziel/signaldb/commit/1219d9d971107f485ffb7a4737bda901eceaedc0))
+* **cli,mcp:** page Query IR results through the IR endpoint ([#2144](https://github.com/cedricziel/signaldb/issues/2144)) ([9fc147d](https://github.com/cedricziel/signaldb/commit/9fc147d416a5329a31040af566424f40db3e5f6c))
+* **evals:** build eval sets from traces ([#1847](https://github.com/cedricziel/signaldb/issues/1847)) ([dfe9e60](https://github.com/cedricziel/signaldb/commit/dfe9e608f9629abee1a542f5020f164d193b8faf))
+* **evals:** list and compare eval runs from MCP and the CLI ([#1866](https://github.com/cedricziel/signaldb/issues/1866)) ([665f458](https://github.com/cedricziel/signaldb/commit/665f4588808aad9ae567df358c7732f70881aec9))
+* **evals:** upload eval results and gate CI on them ([#1857](https://github.com/cedricziel/signaldb/issues/1857)) ([175155a](https://github.com/cedricziel/signaldb/commit/175155a3a2d958d59e16a05961206c0b09f1e79a))
+* **mcp-server:** discover attributes and metrics through the Query IR ([#2077](https://github.com/cedricziel/signaldb/issues/2077)) ([37d58ea](https://github.com/cedricziel/signaldb/commit/37d58eac6e5ac2b3766b324e494f0c4901812a5a))
+* **mcp:** add a list_services tool ([#2180](https://github.com/cedricziel/signaldb/issues/2180)) ([1e048d5](https://github.com/cedricziel/signaldb/commit/1e048d5a2da962559256a17d5311bdcf26760450)), closes [#2172](https://github.com/cedricziel/signaldb/issues/2172)
+* **mcp:** serve the query-ir reference as fetchable sections ([#2179](https://github.com/cedricziel/signaldb/issues/2179)) ([afc4ff2](https://github.com/cedricziel/signaldb/commit/afc4ff28e47bd8b69c227fc35cb8a556e8482527)), closes [#2173](https://github.com/cedricziel/signaldb/issues/2173)
+* **processors:** diff Test panel output against the server's decoded input ([#1883](https://github.com/cedricziel/signaldb/issues/1883)) ([7711bc5](https://github.com/cedricziel/signaldb/commit/7711bc5bca22d010fb83766449d52ccdd44291e0))
+* **querier:** add the exemplars IR source over metric_exemplars ([#1946](https://github.com/cedricziel/signaldb/issues/1946)) ([5c2c348](https://github.com/cedricziel/signaldb/commit/5c2c3484fc7e4f25219ab05e0813ca0b9c4e3c0c))
+* recognise AI agents as the gen_ai.agent entity ([#1803](https://github.com/cedricziel/signaldb/issues/1803)) ([e0fcaa0](https://github.com/cedricziel/signaldb/commit/e0fcaa0b3cd8133e23e0ccc8f9e28e43986c41f5))
+* remove the metrics_histogram IR source ([#1945](https://github.com/cedricziel/signaldb/issues/1945)) ([c16f82c](https://github.com/cedricziel/signaldb/commit/c16f82c100199ef0f297e366208c07d8242501c5))
+* **router:** eval sets API for offline agent evals ([#1837](https://github.com/cedricziel/signaldb/issues/1837)) ([b3ce35a](https://github.com/cedricziel/signaldb/commit/b3ce35a7fb9671494e4d78cd29b2673f20205531))
+* **router:** list discovery fields with their canonical authority type ([#2075](https://github.com/cedricziel/signaldb/issues/2075)) ([621aa46](https://github.com/cedricziel/signaldb/commit/621aa4674399a628470b73810e033963288a3866))
+* **router:** publish UI login/logout and the full whoami response in OpenAPI ([#2110](https://github.com/cedricziel/signaldb/issues/2110)) ([664c8fe](https://github.com/cedricziel/signaldb/commit/664c8fe52a51505ef5fc46a63293e1e35a1a1913))
+* **router:** type the Query IR request pipeline as IrStage ([#2095](https://github.com/cedricziel/signaldb/issues/2095)) ([414ed92](https://github.com/cedricziel/signaldb/commit/414ed92b136367e2650b1c8de8f0cd12250cce5b))
+* show span links in the Query IR, MCP get_trace and the trace view ([#2177](https://github.com/cedricziel/signaldb/issues/2177)) ([b873eab](https://github.com/cedricziel/signaldb/commit/b873eabee7f7e4e836a530a3fc75fe5261cafb49))
+* **traceql:** support !=, =~ and !~ and surface search errors over MCP ([#2178](https://github.com/cedricziel/signaldb/issues/2178)) ([ce929f5](https://github.com/cedricziel/signaldb/commit/ce929f5f321e5d826e2ba43edc67d7e26de67659))
+
+
+### Bug Fixes
+
+* **mcp:** name every missing field in query_ir document errors ([#1798](https://github.com/cedricziel/signaldb/issues/1798)) ([bcf8804](https://github.com/cedricziel/signaldb/commit/bcf8804e36438aee133171d11a16a46557d6eacf))
+* **mcp:** read get_trace over the Query IR ([#1810](https://github.com/cedricziel/signaldb/issues/1810)) ([8032175](https://github.com/cedricziel/signaldb/commit/8032175d56649cebfd078f9ce3a361f6e60c1d8f))
+* **mcp:** report profiles_for_trace durations and cover the tool end to end ([#2131](https://github.com/cedricziel/signaldb/issues/2131)) ([760bcbb](https://github.com/cedricziel/signaldb/commit/760bcbbe5c251560e4b3928d8949157ad942bded))
+* **mcp:** serve sessionless requests from clients that skip initialize ([#2198](https://github.com/cedricziel/signaldb/issues/2198)) ([b6387f5](https://github.com/cedricziel/signaldb/commit/b6387f58f4f8c9036f99a9bdfaf68d32351b76fc))
+* **query-ir:** resolve trace.id/span.id on traces and logs, name bad predicates over MCP ([#2206](https://github.com/cedricziel/signaldb/issues/2206)) ([b462073](https://github.com/cedricziel/signaldb/commit/b462073340a278c6ac5f4335afe4f18b5398ebce))
+* **router:** read data for sample:true and flag partial discovery statistics ([#2176](https://github.com/cedricziel/signaldb/issues/2176)) ([ab5dcf7](https://github.com/cedricziel/signaldb/commit/ab5dcf78f47567a6e2a8f8a10dcf5dfd06cdfed5))
+
+
+### Code Refactoring
+
+* **mcp-server:** compare profiles through the Query IR baseline ([#2103](https://github.com/cedricziel/signaldb/issues/2103)) ([153704e](https://github.com/cedricziel/signaldb/commit/153704eb82aa6955f197ec354f9abcb5bc0b3d7e))
+* **mcp-server:** complete prompt arguments through the Query IR ([#2097](https://github.com/cedricziel/signaldb/issues/2097)) ([3ab363d](https://github.com/cedricziel/signaldb/commit/3ab363d67579e4d75cb3bb551f5325ae270938bc))
+* **mcp-server:** discover profile types through the Query IR ([#2101](https://github.com/cedricziel/signaldb/issues/2101)) ([b6ff25a](https://github.com/cedricziel/signaldb/commit/b6ff25a19b4e4d0578231c9ceeec249d88237d35))
+* **mcp-server:** list a trace's profiles through the Query IR ([#2104](https://github.com/cedricziel/signaldb/issues/2104)) ([a351006](https://github.com/cedricziel/signaldb/commit/a351006e33b8cdba9c06c319c1fa5e53c26b6428))
+* **mcp-server:** search profiles through the Query IR flamegraph ([#2102](https://github.com/cedricziel/signaldb/issues/2102)) ([26db597](https://github.com/cedricziel/signaldb/commit/26db597571d076b420eb4011510e5189f3e2cfb8))
+
+
+### Build System
+
+* **deps:** bump object from 0.37.3 to 0.39.1 ([#2203](https://github.com/cedricziel/signaldb/issues/2203)) ([b6de77a](https://github.com/cedricziel/signaldb/commit/b6de77a4378388901382c517ed72e7a93c309c48))
+* fix the beta test leg for cargo's unused-dependency lints ([#2047](https://github.com/cedricziel/signaldb/issues/2047)) ([6867d69](https://github.com/cedricziel/signaldb/commit/6867d69dceb26f2e55ccfac31e60ae42aad76418))
+
 ## [0.2.2](https://github.com/cedricziel/signaldb/compare/mcp-server-v0.2.1...mcp-server-v0.2.2) (2026-09-23)
 
 

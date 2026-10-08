@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.3.2](https://github.com/cedricziel/signaldb/compare/grafana-plugin-v1.3.1...grafana-plugin-v1.3.2) (2026-10-08)
+
+
+### Build System
+
+* **deps-dev:** bump css-loader from 7.1.4 to 7.1.5 ([#2113](https://github.com/cedricziel/signaldb/issues/2113)) ([ce67b81](https://github.com/cedricziel/signaldb/commit/ce67b81f69864c0c39fb0680abfe69b1d7bfe033))
+* **deps-dev:** bump prettier from 3.9.6 to 3.9.9 ([#2116](https://github.com/cedricziel/signaldb/issues/2116)) ([12bb01e](https://github.com/cedricziel/signaldb/commit/12bb01e5276133f6c17c45d6818ed15c896b66bf))
+* **deps-dev:** bump the build-tools group across 1 directory with 2 updates ([#2215](https://github.com/cedricziel/signaldb/issues/2215)) ([6d68a65](https://github.com/cedricziel/signaldb/commit/6d68a654a86afc464006c51f08c240a71835be54))
+* **deps-dev:** bump the typescript-eslint group with 2 updates ([#2112](https://github.com/cedricziel/signaldb/issues/2112)) ([069d9a6](https://github.com/cedricziel/signaldb/commit/069d9a6b5194e608720209ca06890e7ee32a661f))
+* **deps-dev:** bump the typescript-eslint group with 2 updates ([#2214](https://github.com/cedricziel/signaldb/issues/2214)) ([4dd42e5](https://github.com/cedricziel/signaldb/commit/4dd42e5f43dca8716da12392b8cce43c67e2e6df))
+* **deps:** bump object from 0.37.3 to 0.39.1 ([#2203](https://github.com/cedricziel/signaldb/issues/2203)) ([b6de77a](https://github.com/cedricziel/signaldb/commit/b6de77a4378388901382c517ed72e7a93c309c48))
+* **deps:** bump the grafana-ecosystem group across 1 directory with 5 updates ([#2212](https://github.com/cedricziel/signaldb/issues/2212)) ([21807fd](https://github.com/cedricziel/signaldb/commit/21807fd7d87d0e858ad898d97ec294e850548e2e))
+* **deps:** bump thiserror in /src/grafana-plugin/backend ([#1906](https://github.com/cedricziel/signaldb/issues/1906)) ([10412a5](https://github.com/cedricziel/signaldb/commit/10412a575b7192f2dab164837da8100efe16cbc1))
+* **deps:** bump tokio in /src/grafana-plugin/backend ([#2199](https://github.com/cedricziel/signaldb/issues/2199)) ([312cfc1](https://github.com/cedricziel/signaldb/commit/312cfc129bb1592b461f0e4a67caa67c3676f028))
+
 ## [1.3.1](https://github.com/cedricziel/signaldb/compare/grafana-plugin-v1.3.0...grafana-plugin-v1.3.1) (2026-09-23)
 
 
