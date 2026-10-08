@@ -26,7 +26,7 @@
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/api-logs": "^0.222.0",
-    "@opentelemetry/auto-instrumentations-web": "^0.66.0",
+    "@opentelemetry/auto-instrumentations-web": "^0.67.0",
     "@opentelemetry/browser-instrumentation": "^0.7.0",
     "@opentelemetry/context-zone": "^2.10.0",
     "@opentelemetry/core": "^2.10.0",
@@ -66,7 +66,7 @@
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^9.39.5",
     "jsdom": "^30.0.1",
-    "sharp": "^0.35.4",
+    "sharp": "^0.35.5",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.70.1",
     "vite": "^8.3.0",
@@ -79,9 +79,9 @@
     "@storybook/addon-a11y": "^10.6.0",
     "@storybook/addon-docs": "^10.6.0",
     "@storybook/addon-mcp": "^10.6.0",
-    "eslint-plugin-storybook": "^10.6.0",
+    "eslint-plugin-storybook": "^10.6.1",
     "@vitest/browser-playwright": "4.1.11",
-    "playwright": "latest",
+    "playwright": "^1.63.0",
     "workbox-precaching": "7.4.1",
     "workbox-routing": "7.4.1"
   }
