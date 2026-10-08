@@ -4361,7 +4361,7 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "logql-parser"
-version = "0.1.5"
+version = "0.1.4"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -8733,7 +8733,7 @@ checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
 
 [[package]]
 name = "traceql-parser"
-version = "0.3.0"
+version = "0.2.0"
 dependencies = [
  "thiserror 2.0.21",
 ]
