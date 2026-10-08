@@ -266,7 +266,7 @@ hyper-util = { version = "0.1", default-features = false, features = ["client-pr
 libc = { version = "0.2", features = ["extra_traits", "use_std"] }
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 mio = { version = "1", features = ["net", "os-ext"] }
-object = { version = "0.39", default-features = false, features = ["read", "std"] }
+object = { version = "0.37", default-features = false, features = ["read", "std"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 pyroscope = { version = "2", features = ["backend-jemalloc", "backend-pprof-rs"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
@@ -287,7 +287,7 @@ hyper-util = { version = "0.1", default-features = false, features = ["client-pr
 libc = { version = "0.2", features = ["extra_traits", "use_std"] }
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 mio = { version = "1", features = ["net", "os-ext"] }
-object = { version = "0.39", default-features = false, features = ["read", "std"] }
+object = { version = "0.37", default-features = false, features = ["read", "std"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 pyroscope = { version = "2", features = ["backend-jemalloc", "backend-pprof-rs"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
@@ -308,7 +308,7 @@ hyper-util = { version = "0.1", default-features = false, features = ["client-pr
 libc = { version = "0.2", features = ["extra_traits", "use_std"] }
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 mio = { version = "1", features = ["net", "os-ext"] }
-object = { version = "0.39", default-features = false, features = ["read", "std"] }
+object = { version = "0.37", default-features = false, features = ["read", "std"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 pyroscope = { version = "2", features = ["backend-jemalloc", "backend-pprof-rs"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
@@ -329,7 +329,7 @@ hyper-util = { version = "0.1", default-features = false, features = ["client-pr
 libc = { version = "0.2", features = ["extra_traits", "use_std"] }
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 mio = { version = "1", features = ["net", "os-ext"] }
-object = { version = "0.39", default-features = false, features = ["read", "std"] }
+object = { version = "0.37", default-features = false, features = ["read", "std"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 pyroscope = { version = "2", features = ["backend-jemalloc", "backend-pprof-rs"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
@@ -350,7 +350,7 @@ hyper-util = { version = "0.1", default-features = false, features = ["client-pr
 libc = { version = "0.2", features = ["extra_traits", "use_std"] }
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 mio = { version = "1", features = ["net", "os-ext"] }
-object = { version = "0.39", default-features = false, features = ["read", "std"] }
+object = { version = "0.37", default-features = false, features = ["read", "std"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 pyroscope = { version = "2", features = ["backend-jemalloc", "backend-pprof-rs"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
@@ -371,7 +371,7 @@ hyper-util = { version = "0.1", default-features = false, features = ["client-pr
 libc = { version = "0.2", features = ["extra_traits", "use_std"] }
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 mio = { version = "1", features = ["net", "os-ext"] }
-object = { version = "0.39", default-features = false, features = ["read", "std"] }
+object = { version = "0.37", default-features = false, features = ["read", "std"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 pyroscope = { version = "2", features = ["backend-jemalloc", "backend-pprof-rs"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
@@ -392,7 +392,7 @@ hyper-util = { version = "0.1", default-features = false, features = ["client-pr
 libc = { version = "0.2", features = ["extra_traits", "use_std"] }
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 mio = { version = "1", features = ["net", "os-ext"] }
-object = { version = "0.39", default-features = false, features = ["read", "std"] }
+object = { version = "0.37", default-features = false, features = ["read", "std"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 pyroscope = { version = "2", features = ["backend-jemalloc", "backend-pprof-rs"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
@@ -413,7 +413,7 @@ hyper-util = { version = "0.1", default-features = false, features = ["client-pr
 libc = { version = "0.2", features = ["extra_traits", "use_std"] }
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 mio = { version = "1", features = ["net", "os-ext"] }
-object = { version = "0.39", default-features = false, features = ["read", "std"] }
+object = { version = "0.37", default-features = false, features = ["read", "std"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 pyroscope = { version = "2", features = ["backend-jemalloc", "backend-pprof-rs"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
@@ -435,7 +435,7 @@ hyper-util = { version = "0.1", default-features = false, features = ["client-pr
 libc = { version = "0.2", features = ["extra_traits", "use_std"] }
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 mio = { version = "1", features = ["net", "os-ext"] }
-object = { version = "0.39", default-features = false, features = ["read", "std"] }
+object = { version = "0.37", default-features = false, features = ["read", "std"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 pyroscope = { version = "2", features = ["backend-jemalloc", "backend-pprof-rs"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
@@ -457,7 +457,7 @@ hyper-util = { version = "0.1", default-features = false, features = ["client-pr
 libc = { version = "0.2", features = ["extra_traits", "use_std"] }
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 mio = { version = "1", features = ["net", "os-ext"] }
-object = { version = "0.39", default-features = false, features = ["read", "std"] }
+object = { version = "0.37", default-features = false, features = ["read", "std"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 pyroscope = { version = "2", features = ["backend-jemalloc", "backend-pprof-rs"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
