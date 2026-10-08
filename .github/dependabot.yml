@@ -100,6 +100,10 @@ updates:
           - "jest*"
           - "@testing-library/*"
           - "@playwright/*"
+          # playwright must match @playwright/test exactly; two copies
+          # break the runner ("did not expect test() to be called here").
+          - "playwright"
+          - "playwright-core"
       typescript-eslint:
         patterns:
           - "@typescript-eslint/*"

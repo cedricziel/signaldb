@@ -331,7 +331,7 @@ importers:
         specifier: ^30.0.1
         version: 30.0.1
       playwright:
-        specifier: latest
+        specifier: ^1.63.0
         version: 1.63.0
       sharp:
         specifier: ^0.35.4
