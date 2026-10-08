@@ -81,7 +81,7 @@
     "@storybook/addon-mcp": "^10.6.0",
     "eslint-plugin-storybook": "^10.6.0",
     "@vitest/browser-playwright": "4.1.11",
-    "playwright": "latest",
+    "playwright": "^1.63.0",
     "workbox-precaching": "7.4.1",
     "workbox-routing": "7.4.1"
   }
