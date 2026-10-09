@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.3.0](https://github.com/cedricziel/signaldb/compare/traceql-parser-v0.2.0...traceql-parser-v0.3.0) (2026-10-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **traceql:** `Condition` has a new public `op` field, so code that constructs one must set it.
+
+### Features
+
+* **traceql:** support !=, =~ and !~ and surface search errors over MCP ([#2178](https://github.com/cedricziel/signaldb/issues/2178)) ([ce929f5](https://github.com/cedricziel/signaldb/commit/ce929f5f321e5d826e2ba43edc67d7e26de67659))
+
+
+### Build System
+
+* **deps:** bump object from 0.37.3 to 0.39.1 ([#2203](https://github.com/cedricziel/signaldb/issues/2203)) ([b6de77a](https://github.com/cedricziel/signaldb/commit/b6de77a4378388901382c517ed72e7a93c309c48))
+* fix the beta test leg for cargo's unused-dependency lints ([#2047](https://github.com/cedricziel/signaldb/issues/2047)) ([6867d69](https://github.com/cedricziel/signaldb/commit/6867d69dceb26f2e55ccfac31e60ae42aad76418))
+
 ## [0.2.0](https://github.com/cedricziel/signaldb/compare/traceql-parser-v0.1.0...traceql-parser-v0.2.0) (2026-08-26)
 
 
