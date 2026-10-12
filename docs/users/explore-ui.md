@@ -1372,7 +1372,10 @@ Lists the tenant's [OTTL telemetry processors](processors.md): name, signal,
 dataset, enabled state, priority, status (`ok`/`invalid`), and last update, a
 disabled processor visually distinct from an enabled one. Tenant admins can
 create, edit, enable/disable, and delete processors here; other members see
-the page read-only. The editor takes name, description, signal, a dataset
+the page read-only. If no processors are configured, the page explains that
+telemetry has no tenant OTTL transformations. Admins can choose **New**;
+read-only viewers can ask a tenant admin to add a transformation if needed.
+The editor takes name, description, signal, a dataset
 picker (the tenant's datasets, plus "all datasets"), enabled, priority, error
 mode, and statements (one per line); on blur, or an explicit **Validate**
 action, it calls `:validate` and annotates each failing line with its
