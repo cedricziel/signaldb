@@ -65,7 +65,6 @@ export function ProcessorList() {
       {processors.isSuccess && processors.data.length === 0 && (
         <div className="processors-note" role="status">
           <h2>No processors configured</h2>
-          <p>Telemetry is stored without tenant OTTL transformations.</p>
           <p>
             {isTenantAdmin
               ? "Choose New to add an ingest transformation."
