@@ -91,3 +91,31 @@ describe("ProcessorList", () => {
     ).toBeInTheDocument();
   });
 });
+
+it("explains an empty processor list to a read-only viewer", async () => {
+  stubFetchRoutes([
+    { match: "/api/v1/whoami", body: WHOAMI_MEMBER },
+    { match: "/api/v1/processors", body: { processors: [] } },
+  ]);
+  renderList();
+  expect(
+    await screen.findByText("No processors configured"),
+  ).toBeInTheDocument();
+  expect(screen.getByText(/Ask a tenant admin/)).toBeInTheDocument();
+  expect(screen.queryByRole("table")).toBeNull();
+});
+
+it("offers creation guidance to an admin with no processors", async () => {
+  stubFetchRoutes([
+    { match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN },
+    { match: "/api/v1/processors", body: { processors: [] } },
+  ]);
+  renderList();
+  expect(
+    await screen.findByText("Choose New to add an ingest transformation."),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "New" })).toHaveAttribute(
+    "href",
+    "/processors/new",
+  );
+});
