@@ -50,7 +50,7 @@
     "zone.js": "^0.16.2"
   },
   "devDependencies": {
-    "@axe-core/playwright": "4.11.1",
+    "@axe-core/playwright": "4.13.0",
     "@eslint/js": "^10.0.1",
     "@hey-api/client-fetch": "^0.13.1",
     "@hey-api/openapi-ts": "^0.99.0",

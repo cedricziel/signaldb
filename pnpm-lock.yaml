@@ -52,7 +52,7 @@ importers:
         version: 10.0.0(@stylistic/eslint-plugin@5.10.0(eslint@9.39.5(jiti@2.7.0)))(@typescript-eslint/eslint-plugin@8.71.0(@typescript-eslint/parser@8.71.0(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3))(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3))(@typescript-eslint/parser@8.71.0(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3))(eslint-config-prettier@10.1.8(eslint@9.39.5(jiti@2.7.0)))(eslint-plugin-jsdoc@65.1.0(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3))(eslint-plugin-react-hooks@7.1.1(eslint@9.39.5(jiti@2.7.0)))(eslint-plugin-react@7.37.5(eslint@9.39.5(jiti@2.7.0)))(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3)
       '@grafana/plugin-e2e':
         specifier: ^3.14.0
-        version: 3.14.0(@axe-core/playwright@4.11.1(playwright-core@1.63.0))(@playwright/test@1.63.0)
+        version: 3.14.0(@axe-core/playwright@4.13.0(playwright-core@1.63.0))(@playwright/test@1.63.0)
       '@grafana/tsconfig':
         specifier: ^2.2.0
         version: 2.2.0
@@ -259,8 +259,8 @@ importers:
         version: 0.16.2
     devDependencies:
       '@axe-core/playwright':
-        specifier: 4.11.1
-        version: 4.11.1(playwright-core@1.63.0)
+        specifier: 4.13.0
+        version: 4.13.0(playwright-core@1.63.0)
       '@chromatic-com/storybook':
         specifier: latest
         version: 5.4.0(storybook@10.6.0(@types/react@19.3.0)(prettier@3.9.9)(react@19.3.0))
@@ -383,8 +383,8 @@ packages:
     resolution: {integrity: sha512-93Z1N+BQNXysodoicpOIyNh2drHfz/CTf9nnT0FEx72GJcIiwgydD7tGAr78j41LsYn3hlRn+LdGPuBLn1Bl8Q==}
     engines: {node: ^22.13.0 || >=24.0.0}
 
-  '@axe-core/playwright@4.11.1':
-    resolution: {integrity: sha512-mKEfoUIB1MkVTht0BGZFXtSAEKXMJoDkyV5YZ9jbBmZCcWDz71tegNsdTkIN8zc/yMi5Gm2kx7Z5YQ9PfWNAWw==}
+  '@axe-core/playwright@4.13.0':
+    resolution: {integrity: sha512-6YLx+kxXu5GJceG4ozFg+33a2EMTdjYwWGloJ3sb9Kta5pp+ZNS53uxGVog5JetIY8s++P5UrtX+cri+u0VAVg==}
     peerDependencies:
       playwright-core: '>= 1.0.0'
 
@@ -3987,6 +3987,10 @@ packages:
     resolution: {integrity: sha512-KunSNx+TVpkAw/6ULfhnx+HWRecjqZGTOyquAoWHYLRSdK1tB5Ihce1ZW+UY3fj33bYAFWPu7W/GRSmmrCGuxA==}
     engines: {node: '>=4'}
 
+  axe-core@4.13.0:
+    resolution: {integrity: sha512-UzGt8zg7Ny8djbYMhxl2zuEevVa7r2gJjYY5Lwr1xM7+XU2nd6CkIWFTVcCIbAP63vSz71NaVyyuSk9lHKcy0A==}
+    engines: {node: '>=4'}
+
   babel-jest@30.5.2:
     resolution: {integrity: sha512-ES8WeJ2fNWPEDunyAtUfJ12nHyaWUloCHdkfK2oW5uSoQSUmjNKdWiGaXJITJwvFEWoD/evHEg/QoCXAvLaQqQ==}
     engines: {node: ^18.14.0 || ^20.0.0 || ^22.0.0 || >=24.0.0}
@@ -5959,6 +5963,10 @@ packages:
     resolution: {integrity: sha512-kQK9LGGFiHtrWiNhZtA7Qbw17AQz+dmsEKODRIVTXA9+e5MS/2gZEBhYJt13GrAz5/IOZKddH/0Z3TP/Zgo+yw==}
     engines: {node: '>=18'}
 
+  node-releases@2.0.58:
+    resolution: {integrity: sha512-BdiKAgbfRlvfMq/XzO/AF9NPmaA8a+YpLAyAFTVFBj3gARrAIfWvNq7Q7NE4se3KgFu0KkrvQMxTS0XVnsGzHg==}
+    engines: {node: '>=18'}
+
   normalize-path@3.0.0:
     resolution: {integrity: sha512-6eZs5Ls3WtCisHWp9S2GUy8dqkpGi4BVSz3GaqiE6ezub0512ESztXUwUB6C6IKbQkY2Pnb/mD4WYojCRwcwLA==}
     engines: {node: '>=0.10.0'}
@@ -7879,9 +7887,9 @@ snapshots:
       is-potential-custom-element-name: 1.0.1
       lru-cache: 11.5.2
 
-  '@axe-core/playwright@4.11.1(playwright-core@1.63.0)':
+  '@axe-core/playwright@4.13.0(playwright-core@1.63.0)':
     dependencies:
-      axe-core: 4.11.4
+      axe-core: 4.13.0
       playwright-core: 1.63.0
 
   '@babel/code-frame@7.29.7':
@@ -9264,13 +9272,13 @@ snapshots:
       - supports-color
       - typescript
 
-  '@grafana/plugin-e2e@3.14.0(@axe-core/playwright@4.11.1(playwright-core@1.63.0))(@playwright/test@1.63.0)':
+  '@grafana/plugin-e2e@3.14.0(@axe-core/playwright@4.13.0(playwright-core@1.63.0))(@playwright/test@1.63.0)':
     dependencies:
       '@grafana/e2e-selectors': 13.2.0-30594044109
       '@playwright/test': 1.63.0
       yaml: 2.9.1
     optionalDependencies:
-      '@axe-core/playwright': 4.11.1(playwright-core@1.63.0)
+      '@axe-core/playwright': 4.13.0(playwright-core@1.63.0)
 
   '@grafana/react-data-grid@7.0.0-beta.57(react-dom@19.3.0(react@19.3.0))(react@19.3.0)':
     dependencies:
@@ -11925,6 +11933,8 @@ snapshots:
 
   axe-core@4.11.4: {}
 
+  axe-core@4.13.0: {}
+
   babel-jest@30.5.2(@babel/core@7.29.7):
     dependencies:
       '@babel/core': 7.29.7
@@ -12056,7 +12066,7 @@ snapshots:
       baseline-browser-mapping: 2.11.27
       caniuse-lite: 1.0.30001815
       electron-to-chromium: 1.5.451
-      node-releases: 2.0.57
+      node-releases: 2.0.58
       update-browserslist-db: 1.3.4(browserslist@4.29.3)
 
   bser@2.1.1:
@@ -14218,6 +14228,8 @@ snapshots:
   node-int64@0.4.0: {}
 
   node-releases@2.0.57: {}
+
+  node-releases@2.0.58: {}
 
   normalize-path@3.0.0: {}
 
