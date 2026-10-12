@@ -8,6 +8,8 @@ import {
   F,
   fetchAgentSpans,
   fetchEvaluators,
+  fetchStats,
+  fetchMeanSeries,
   fetchRunCases,
   fetchRuns,
   fetchTraceVersions,
@@ -583,4 +585,27 @@ describe("fetchAgentSpans", () => {
       output: null,
     });
   });
+});
+
+describe("uninstrumented evaluation datasets", () => {
+  it.each([
+    ["stats", () => fetchStats(RANGE, {}, [F.name]), new Map()],
+    ["runs", () => fetchRuns(RANGE, {}), []],
+    ["means", () => fetchMeanSeries(RANGE, {}, "1d"), []],
+  ] as const)(
+    "returns empty %s without numeric aggregation",
+    async (_name, load, empty) => {
+      mockRunIrQuery.mockImplementation(async (doc) => {
+        if ("pipeline" in doc && doc.pipeline?.some((s) => "aggregate" in s)) {
+          throw new Error("numeric score field unavailable");
+        }
+        return {
+          result: "rows",
+          window: { start_ns: 0, end_ns: 0 },
+          rows: [],
+        } as QueryIrResponse;
+      });
+      expect(await load()).toEqual(empty);
+    },
+  );
 });

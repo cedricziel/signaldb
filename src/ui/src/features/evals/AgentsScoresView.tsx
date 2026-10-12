@@ -380,7 +380,7 @@ export function AgentsScoresView(shell: ShellContext) {
                 </tbody>
               </table>
             </div>
-            {!loaded && <EmptyState title="Loading evaluators…" />}
+            {!loaded && !error && <EmptyState title="Loading evaluators…" />}
           </div>
         </>
       )}

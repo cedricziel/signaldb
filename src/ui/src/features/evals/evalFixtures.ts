@@ -483,6 +483,10 @@ function answer(raw: unknown): unknown {
   const wherePred = (field: string) =>
     pipe.find((s) => s.where?.field === field)?.where;
 
+  if (doc.from === "logs" && doc.fields?.includes("event_name")) {
+    return { result: "rows", rows: [["gen_ai.evaluation.result"]] };
+  }
+
   // fetchTraces (CaseView): every span of the case's traces.
   if (doc.from === "traces" && doc.fields?.includes("span.attributes")) {
     const pred = wherePred("trace_id");
