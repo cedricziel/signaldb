@@ -62,7 +62,18 @@ export function ProcessorList() {
         </p>
       )}
 
-      {processors.data && (
+      {processors.isSuccess && processors.data.length === 0 && (
+        <div className="processors-note" role="status">
+          <h2>No processors configured</h2>
+          <p>
+            {isTenantAdmin
+              ? "Choose New to add an ingest transformation."
+              : "Ask a tenant admin to add an ingest transformation if needed."}
+          </p>
+        </div>
+      )}
+
+      {processors.data && processors.data.length > 0 && (
         <div className="table-scroll">
           <table className="processors-table">
             <thead>
