@@ -218,3 +218,36 @@ describe("setupSteps", () => {
     });
   });
 });
+
+it("recognizes profile coverage when the profile service lacks a trace namespace", () => {
+  const traced = entity("api", 10, 0, 10);
+  traced.values = ["api", "production"];
+  const profiles = entity("api", 0, 0, 0, ["profiles"]);
+  const steps = setupSteps({
+    rows: serviceRows([traced, profiles], 60),
+    githubLinked: false,
+    memberCount: undefined,
+    canManage: false,
+  });
+  expect(steps.find((s) => s.id === "profiles")).toMatchObject({
+    done: true,
+    detail: "1 of 1 services send profiles",
+  });
+});
+
+it("keeps profile coverage separate for explicit service namespaces", () => {
+  const traced = entity("api", 10, 0, 10);
+  traced.values = ["api", "production"];
+  const profiles = entity("api", 0, 0, 0, ["profiles"]);
+  profiles.values = ["api", "staging"];
+  const steps = setupSteps({
+    rows: serviceRows([traced, profiles], 60),
+    githubLinked: false,
+    memberCount: undefined,
+    canManage: false,
+  });
+  expect(steps.find((s) => s.id === "profiles")).toMatchObject({
+    done: false,
+    detail: "0 of 1 services send profiles",
+  });
+});
