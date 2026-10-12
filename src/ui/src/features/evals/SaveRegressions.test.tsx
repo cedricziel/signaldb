@@ -182,6 +182,8 @@ describe("Save regressed cases as eval set", () => {
 
   it("is disabled when the runs name no set", async () => {
     mockIr((doc) => {
+      if (doc.result === "rows" && doc.fields?.includes("event_name"))
+        return { result: "rows", rows: [["gen_ai.evaluation.result"]] };
       const res = evalsIrResponse(doc) as { rows?: unknown[][] };
       if (!aggBy(doc).includes(F.set)) return res;
       // Blank out the set column (index 1) of every run row.

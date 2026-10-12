@@ -148,6 +148,20 @@ export function resultsWhere(scope: ResultScope = {}): IrStage[] {
   return preds.map((p) => ({ where: p }));
 }
 
+async function hasResults(
+  range: ResolvedRange,
+  scope: ResultScope,
+): Promise<boolean> {
+  // Empty datasets lack score type authority; numeric aggregates fail validation.
+  const res = await runIrQuery(
+    irDoc("logs", "rows", range, [...resultsWhere(scope), { limit: 1 }], {
+      irVersion: 1,
+      fields: ["event_name"],
+    }),
+  );
+  return (res.rows?.length ?? 0) > 0;
+}
+
 const STAT_AGGS: IrAgg[] = [
   COUNT_N,
   {
@@ -214,6 +228,7 @@ export async function fetchStats(
   scope: ResultScope,
   by: string[],
 ): Promise<Map<string, EvalStats>> {
+  if (!(await hasResults(range, scope))) return new Map();
   return decodeStats(await runIrQuery(buildStatsDoc(range, scope, by)), by);
 }
 
@@ -250,6 +265,7 @@ export async function fetchMeanSeries(
   scope: ResultScope,
   step: string,
 ): Promise<DailyMean[]> {
+  if (!(await hasResults(range, scope))) return [];
   const res = await runIrQuery(
     irDoc("logs", "series", range, [
       ...resultsWhere(scope),
@@ -398,6 +414,7 @@ export async function fetchRuns(
   range: ResolvedRange,
   scope: ResultScope,
 ): Promise<EvalRun[]> {
+  if (!(await hasResults(range, { ...scope, source: "offline" }))) return [];
   const [runsRes, casesRes] = await Promise.all([
     runIrQuery(buildRunsDoc(range, scope)),
     // The IR has no distinct count, so cases are counted from the

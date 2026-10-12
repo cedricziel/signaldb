@@ -90,6 +90,8 @@ function spanRows(traceId: string, tools: string[]) {
 
 function mockCaseView() {
   mockIr((doc) => {
+    if (doc.result === "rows" && doc.fields?.includes("event_name"))
+      return { result: "rows", rows: [["gen_ai.evaluation.result"]] };
     const by = aggBy(doc);
 
     if (doc.from === "traces") {

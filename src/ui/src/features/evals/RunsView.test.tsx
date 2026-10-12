@@ -45,6 +45,8 @@ interface RunFixture {
  * stats `passRateOf(run.stats)` reads) and the per-run case counts. */
 function mockRuns(runs: RunFixture[]) {
   mockIr((doc) => {
+    if (doc.result === "rows" && doc.fields?.includes("event_name"))
+      return { result: "rows", rows: [["gen_ai.evaluation.result"]] };
     const by = aggBy(doc);
     if (by.length === 2 && by.includes(F.agent)) return table([]); // fetchAgents
     if (by.includes(F.set)) return table(runs.flatMap(runRows));
