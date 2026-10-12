@@ -149,7 +149,9 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   spotting what changed. A **Collapse** selector folds below-threshold
   frames into a muted `(other)` bucket to cut visual noise, and a
   **Top functions** view swaps the tree for a sortable flat table ranked by
-  self time. See [Comparing and filtering profiles](#comparing-and-filtering-profiles)
+  self time. At narrow widths, numeric values keep their units on one line.
+  Focus the Top functions or trace-group table scroll region and use the
+  arrow keys to reach off-screen columns. See [Comparing and filtering profiles](#comparing-and-filtering-profiles)
   and [Reading a noisy profile](#reading-a-noisy-profile).
 - **Errors** — exceptions grouped by type, message, service, and whether
   they were handled, sortable by count (default) or by last-seen recency.
