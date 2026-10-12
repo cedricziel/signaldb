@@ -30,6 +30,10 @@ to the traces of the replay and does the comparing. Offline evaluation
 (before release) comes first; results sent from production traffic show up
 under the **Production** source on the same pages.
 
+If the selected window has no evaluation results, Agents & scores and Runs
+show their first-use guidance. Widen the time range or send evaluator results
+before comparing scores.
+
 ## What to send
 
 Your agent is traced as usual with the OpenTelemetry GenAI conventions: an
