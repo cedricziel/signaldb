@@ -565,7 +565,12 @@ export function FlamePane({
           )}
         </>
       ) : (
-        <div className="flame-top">
+        <div
+          className="flame-top table-scroll"
+          role="region"
+          aria-label="Top functions, scroll for more columns"
+          tabIndex={0}
+        >
           <table className="flame-top-table">
             <thead>
               <tr>

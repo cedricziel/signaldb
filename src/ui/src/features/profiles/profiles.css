@@ -366,3 +366,8 @@
   color: var(--faint);
   font-size: 10.5px;
 }
+
+.flame-top-table .num,
+.flame-top-table th {
+  white-space: nowrap;
+}
