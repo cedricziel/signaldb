@@ -275,7 +275,6 @@ rustls-webpki = { version = "0.103", default-features = false, features = ["aws-
 stable_deref_trait = { version = "1" }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
-tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
@@ -296,7 +295,6 @@ rustls-webpki = { version = "0.103", default-features = false, features = ["aws-
 stable_deref_trait = { version = "1" }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
-tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 
 [target.x86_64-unknown-linux-musl.dependencies]
@@ -317,7 +315,6 @@ rustls-webpki = { version = "0.103", default-features = false, features = ["aws-
 stable_deref_trait = { version = "1" }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
-tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 
 [target.x86_64-unknown-linux-musl.build-dependencies]
@@ -338,7 +335,6 @@ rustls-webpki = { version = "0.103", default-features = false, features = ["aws-
 stable_deref_trait = { version = "1" }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
-tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 
 [target.aarch64-unknown-linux-gnu.dependencies]
@@ -359,7 +355,6 @@ rustls-webpki = { version = "0.103", default-features = false, features = ["aws-
 stable_deref_trait = { version = "1" }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
-tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 
 [target.aarch64-unknown-linux-gnu.build-dependencies]
@@ -380,7 +375,6 @@ rustls-webpki = { version = "0.103", default-features = false, features = ["aws-
 stable_deref_trait = { version = "1" }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
-tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 
 [target.aarch64-unknown-linux-musl.dependencies]
@@ -401,7 +395,6 @@ rustls-webpki = { version = "0.103", default-features = false, features = ["aws-
 stable_deref_trait = { version = "1" }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
-tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 
 [target.aarch64-unknown-linux-musl.build-dependencies]
@@ -422,7 +415,6 @@ rustls-webpki = { version = "0.103", default-features = false, features = ["aws-
 stable_deref_trait = { version = "1" }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
-tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 
 [target.aarch64-apple-darwin.dependencies]
@@ -444,7 +436,6 @@ rustls-webpki = { version = "0.103", default-features = false, features = ["aws-
 stable_deref_trait = { version = "1" }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
-tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 
 [target.aarch64-apple-darwin.build-dependencies]
@@ -466,7 +457,6 @@ rustls-webpki = { version = "0.103", default-features = false, features = ["aws-
 stable_deref_trait = { version = "1" }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
-tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 
 [target.x86_64-pc-windows-msvc.dependencies]
@@ -478,7 +468,6 @@ hyper-util = { version = "0.1", default-features = false, features = ["client-pr
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "aws_lc_rs"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
-tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 winapi = { version = "0.3", default-features = false, features = ["cfg", "consoleapi", "evntrace", "handleapi", "impl-default", "in6addr", "inaddr", "minwinbase", "ntsecapi", "processenv", "synchapi", "sysinfoapi", "winbase", "windef", "winerror", "winioctl", "winuser"] }
 windows-sys-b21d60becc0929df = { package = "windows-sys", version = "0.52", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Storage_FileSystem"] }
@@ -494,7 +483,6 @@ hyper-util = { version = "0.1", default-features = false, features = ["client-pr
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "aws_lc_rs"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
-tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 winapi = { version = "0.3", default-features = false, features = ["cfg", "consoleapi", "evntrace", "handleapi", "impl-default", "in6addr", "inaddr", "minwinbase", "ntsecapi", "processenv", "synchapi", "sysinfoapi", "winbase", "windef", "winerror", "winioctl", "winuser"] }
 windows-sys-b21d60becc0929df = { package = "windows-sys", version = "0.52", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Storage_FileSystem"] }
