@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1791779694395,
+  "lastUpdate": 1791865362626,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -16191,6 +16191,454 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 1097329,
             "range": "± 13911",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cedric Ziel",
+            "username": "cedricziel",
+            "email": "mail@cedric-ziel.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "0c4582c43cb5483af78fb418709fefc77e99df92",
+          "message": "fix(ui): handle empty evaluation datasets (#2229)\n\n* fix(ui): handle empty evaluation datasets\n\n* docs(ui): document eval empty datasets",
+          "timestamp": "2026-10-12T23:57:09Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/0c4582c43cb5483af78fb418709fefc77e99df92"
+        },
+        "date": 1791865361194,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 905584,
+            "range": "± 15637",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 537134,
+            "range": "± 19619",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 391417,
+            "range": "± 19467",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 721539,
+            "range": "± 15726",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 333232,
+            "range": "± 14157",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 958976,
+            "range": "± 39003",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 603095,
+            "range": "± 18763",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/evaluator",
+            "value": 12071654,
+            "range": "± 326598",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/ancestry",
+            "value": 4044313,
+            "range": "± 109410",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/decode(a)",
+            "value": 1845329,
+            "range": "± 158043",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/decode(b)",
+            "value": 2247957,
+            "range": "± 72275",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/materialize",
+            "value": 186182,
+            "range": "± 6700",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/evaluator",
+            "value": 1545626,
+            "range": "± 31822",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/ancestry",
+            "value": 18258795,
+            "range": "± 662856",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/decode(a)",
+            "value": 701330,
+            "range": "± 17596",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/decode(b)",
+            "value": 17822306,
+            "range": "± 416975",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/materialize",
+            "value": 12968649,
+            "range": "± 287700",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/evaluator",
+            "value": 10377479,
+            "range": "± 440158",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/ancestry",
+            "value": 8094357,
+            "range": "± 383287",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/decode(a)",
+            "value": 3202742,
+            "range": "± 123061",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/decode(b)",
+            "value": 3790780,
+            "range": "± 170377",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/materialize",
+            "value": 327425,
+            "range": "± 16184",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/evaluator",
+            "value": 12467898,
+            "range": "± 232757",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/ancestry",
+            "value": 16401866,
+            "range": "± 347170",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/decode(a)",
+            "value": 4449527,
+            "range": "± 98673",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/decode(b)",
+            "value": 12679088,
+            "range": "± 203948",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/materialize",
+            "value": 5756002,
+            "range": "± 876770",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.1MB",
+            "value": 1674118,
+            "range": "± 66695",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.5MB",
+            "value": 2852019,
+            "range": "± 83588",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_5.3MB",
+            "value": 14086289,
+            "range": "± 356983",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_46.7MB",
+            "value": 142131844,
+            "range": "± 1995437",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 4354164,
+            "range": "± 98108",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 8280351,
+            "range": "± 178050",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 15410041,
+            "range": "± 161179",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 31197526,
+            "range": "± 524466",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 714550,
+            "range": "± 11907",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 2916752,
+            "range": "± 74162",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 4941689,
+            "range": "± 164242",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 8946541,
+            "range": "± 327106",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/1000",
+            "value": 57178,
+            "range": "± 889",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/1000",
+            "value": 77591,
+            "range": "± 1254",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/10000",
+            "value": 471619,
+            "range": "± 63717",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/10000",
+            "value": 787566,
+            "range": "± 23174",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/100000",
+            "value": 4942441,
+            "range": "± 48529",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/100000",
+            "value": 18513873,
+            "range": "± 597423",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 1050782,
+            "range": "± 23674",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 18559720,
+            "range": "± 387186",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 16757412,
+            "range": "± 545966",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 15810471,
+            "range": "± 1616248",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 15284107,
+            "range": "± 703425",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 16373781,
+            "range": "± 990683",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 4189401,
+            "range": "± 387130",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 9572302,
+            "range": "± 395149",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 15106926,
+            "range": "± 614088",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested",
+            "value": 4791554,
+            "range": "± 495861",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested_split_off",
+            "value": 4829950,
+            "range": "± 265767",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/unattested",
+            "value": 4755230,
+            "range": "± 150414",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested",
+            "value": 4117208,
+            "range": "± 83348",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested_split_off",
+            "value": 4308499,
+            "range": "± 157543",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/unattested",
+            "value": 4981524,
+            "range": "± 188142",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested",
+            "value": 8598378,
+            "range": "± 1061379",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested_split_off",
+            "value": 11789253,
+            "range": "± 1079528",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/unattested",
+            "value": 8426549,
+            "range": "± 418980",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 13180309,
+            "range": "± 1432057",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 3251842,
+            "range": "± 73674",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 46697951,
+            "range": "± 2032015",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 107628734,
+            "range": "± 3596530",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 77707540,
+            "range": "± 4757020",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 693302,
+            "range": "± 40434",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 685771,
+            "range": "± 30320",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 724248,
+            "range": "± 50567",
             "unit": "ns/iter"
           }
         ]
