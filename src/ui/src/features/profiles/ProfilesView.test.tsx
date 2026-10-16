@@ -543,6 +543,20 @@ describe("ProfilesView", () => {
     });
   });
 
+  it("does not call failed profile comparisons empty", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/query", body: {}, status: 500 },
+      ...DISCOVERY_ROUTES,
+    ]);
+    renderWithClient(
+      <ProfilesView state={state({ profileCompare: true })} update={vi.fn()} />,
+    );
+    expect((await screen.findAllByRole("alert")).length).toBeGreaterThan(0);
+    expect(
+      screen.queryByText("No profiles in this range"),
+    ).not.toBeInTheDocument();
+  });
+
   it("renders baseline and comparison panes in compare mode", async () => {
     stubFetchRoutes([
       { match: "/api/v1/query", body: FLAMEGRAPH },

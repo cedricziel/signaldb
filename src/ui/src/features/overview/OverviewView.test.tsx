@@ -139,6 +139,46 @@ function renderOverview(search = "?tenant=acme&dataset=prod") {
 }
 
 describe("OverviewView", () => {
+  it("does not report zero services or no deploys while requests are pending", async () => {
+    vi.mocked(catalogApi.fetchCatalogEntities).mockReturnValue(
+      new Promise(() => {}),
+    );
+    vi.mocked(overviewApi.fetchVersionSightings).mockReturnValue(
+      new Promise(() => {}),
+    );
+    renderOverview();
+    expect(await screen.findByText("Loading services…")).toBeInTheDocument();
+    expect(screen.queryByText(/0 services/)).not.toBeInTheDocument();
+    expect(screen.queryByText("0 healthy")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Setup checklist/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No deploys in this window"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Loading deploys…")).toBeInTheDocument();
+  });
+
+  it("reports deploy and ingest failures without presenting empty results", async () => {
+    vi.mocked(overviewApi.fetchVersionSightings).mockRejectedValue(
+      new Error("Deploy service unavailable"),
+    );
+    vi.mocked(overviewApi.fetchIngestVolume).mockRejectedValue(
+      new Error("Ingest service unavailable"),
+    );
+    renderOverview();
+    expect(
+      await screen.findByText(/Could not load deploys/),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Could not load ingest volume/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("No deploys in this window"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("0 total")).not.toBeInTheDocument();
+  });
+
   it("shows the KPIs, the services worst-first and the deploy they carry", async () => {
     renderOverview();
     expect(await screen.findByText("0.83")).toBeInTheDocument();
