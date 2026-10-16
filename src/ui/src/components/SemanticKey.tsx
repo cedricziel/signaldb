@@ -152,13 +152,22 @@ function tipStyle(
 ): { style: CSSProperties; placement: Placement } {
   const preferRight = anchor.left + TIP_MAX_WIDTH > window.innerWidth;
   const rawLeft = preferRight ? anchor.right - width : anchor.left;
-  const maxLeft = Math.max(TIP_EDGE_MARGIN, window.innerWidth - width - TIP_EDGE_MARGIN);
+  const maxLeft = Math.max(
+    TIP_EDGE_MARGIN,
+    window.innerWidth - width - TIP_EDGE_MARGIN,
+  );
   const left = Math.min(Math.max(rawLeft, TIP_EDGE_MARGIN), maxLeft);
   const placement: Placement =
     anchor.bottom + TIP_GAP + height > window.innerHeight ? "above" : "below";
   const style: CSSProperties = {
     position: "fixed",
     left,
+    // Shrink-to-fit width depends on left; measuring it to update left can loop.
+    width: Math.min(
+      TIP_MAX_WIDTH,
+      Math.max(0, window.innerWidth - 2 * TIP_EDGE_MARGIN),
+    ),
+    minWidth: 0,
     // The clamped `left` alone doesn't stop the tip's own CSS max-width
     // (`.sem-tip`, 360px) from running past a viewport narrower than that.
     maxWidth: `calc(100vw - ${2 * TIP_EDGE_MARGIN}px)`,
@@ -183,7 +192,9 @@ function HoverBridge({ placement }: { placement: Placement }) {
     left: 0,
     right: 0,
     height: TIP_GAP + 2,
-    ...(placement === "above" ? { bottom: -(TIP_GAP + 2) } : { top: -(TIP_GAP + 2) }),
+    ...(placement === "above"
+      ? { bottom: -(TIP_GAP + 2) }
+      : { top: -(TIP_GAP + 2) }),
   };
   return <span aria-hidden="true" style={style} />;
 }
