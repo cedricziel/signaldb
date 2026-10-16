@@ -27,7 +27,7 @@ const COLLAPSED_KEY = "sdb.sidebar.collapsed";
 /** Below this viewport width the sidebar gives way to the mobile top bar. */
 export const NARROW_QUERY = "(max-width: 719px)";
 /** Below this the sidebar starts collapsed, unless the user chose. */
-const TABLET_QUERY = "(max-width: 1023px)";
+const TABLET_QUERY = "(max-width: 959px)";
 
 function loadCollapsedChoice(): boolean | null {
   try {
