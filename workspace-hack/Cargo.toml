@@ -125,7 +125,7 @@ rmcp = { version = "3", features = ["client", "transport-io", "transport-streama
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
-serde_json = { version = "1", features = ["alloc", "raw_value"] }
+serde_json = { version = "1", features = ["alloc", "preserve_order", "raw_value"] }
 sha2 = { version = "0.10", features = ["oid"] }
 slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
@@ -229,7 +229,7 @@ rmcp = { version = "3", features = ["client", "transport-io", "transport-streama
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
-serde_json = { version = "1", features = ["alloc", "raw_value"] }
+serde_json = { version = "1", features = ["alloc", "preserve_order", "raw_value"] }
 sha2 = { version = "0.10", features = ["oid"] }
 slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
