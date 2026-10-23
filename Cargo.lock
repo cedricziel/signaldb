@@ -9811,7 +9811,7 @@ dependencies = [
  "sha2 0.10.9",
  "slab",
  "smallvec",
- "spin 0.9.9",
+ "spin 0.12.2",
  "sqlparser",
  "stable_deref_trait",
  "subtle",
