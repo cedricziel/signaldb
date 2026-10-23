@@ -6443,10 +6443,10 @@
           "deprecated": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/DeprecatedInfo"
               },
               {
-                "$ref": "#/components/schemas/DeprecatedInfo"
+                "type": "null"
               }
             ]
           },
@@ -6567,10 +6567,10 @@
           "primary": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/AttributeHit"
               },
               {
-                "$ref": "#/components/schemas/AttributeHit"
+                "type": "null"
               }
             ]
           }
@@ -6751,10 +6751,10 @@
           "mcp": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ConnectionMcp"
               },
               {
-                "$ref": "#/components/schemas/ConnectionMcp"
+                "type": "null"
               }
             ]
           },
@@ -7317,11 +7317,11 @@
           "cardinality": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/CardinalityEstimate",
                 "description": "An approximate distinct-value count, when statistics exist."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -7344,11 +7344,11 @@
           "level": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/AttributeLevel",
                 "description": "The OTel attribute level, when known. Statistics carry no level, so an\nobserved key the type authority has not typed reports `null` rather\nthan a guess."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -7422,11 +7422,11 @@
           "analyzed": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/StatisticsCoverage",
                 "description": "What the statistics behind the answer were built from, when\nstatistics contributed to it."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -7497,10 +7497,10 @@
           "deprecated": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/DeprecatedInfo"
               },
               {
-                "$ref": "#/components/schemas/DeprecatedInfo"
+                "type": "null"
               }
             ]
           },
@@ -7604,10 +7604,10 @@
           "primary": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/EntityHit"
               },
               {
-                "$ref": "#/components/schemas/EntityHit"
+                "type": "null"
               }
             ]
           }
@@ -7865,40 +7865,40 @@
           "append_cases": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Link"
               },
               {
-                "$ref": "#/components/schemas/Link"
+                "type": "null"
               }
             ]
           },
           "append_cases_from_traces": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Link"
               },
               {
-                "$ref": "#/components/schemas/Link"
+                "type": "null"
               }
             ]
           },
           "delete": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Link"
               },
               {
-                "$ref": "#/components/schemas/Link"
+                "type": "null"
               }
             ]
           },
           "replace": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Link"
               },
               {
-                "$ref": "#/components/schemas/Link"
+                "type": "null"
               }
             ]
           },
@@ -7917,10 +7917,10 @@
           "create": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Link"
               },
               {
-                "$ref": "#/components/schemas/Link"
+                "type": "null"
               }
             ]
           },
@@ -8272,10 +8272,10 @@
             "items": {
               "oneOf": [
                 {
-                  "type": "null"
+                  "$ref": "#/components/schemas/FrameLocation"
                 },
                 {
-                  "$ref": "#/components/schemas/FrameLocation"
+                  "type": "null"
                 }
               ]
             },
@@ -8678,11 +8678,11 @@
           "across": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/IrAggFn",
                 "description": "For a per-series range function (`rate`/`increase`/`irate`/\n`*_over_time`), the reducer that folds each `by` group's per-series\nvalues into one value per step. Defaults to `sum` (the historical\n`rate`/`increase` behaviour). `irVersion` 7."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -8719,11 +8719,11 @@
           "where": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/IrPredicate",
                 "description": "An optional predicate scoping which records this aggregate consumes,\nso one grouped query can report a total and a subset measure over the\nsame groups (`count` of everything beside `count` of just the errors).\n\nIt is the same grammar, resolver and evaluation semantics as the `where`\nstage — deliberately the shared [`Predicate`], not a second grammar —\nand it narrows only this aggregate. Grouping happens once regardless."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -8808,10 +8808,10 @@
           "group": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/IrBinopGroup"
               },
               {
-                "$ref": "#/components/schemas/IrBinopGroup"
+                "type": "null"
               }
             ]
           },
@@ -8951,10 +8951,10 @@
           "on": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/IrCorrelateKey"
               },
               {
-                "$ref": "#/components/schemas/IrCorrelateKey"
+                "type": "null"
               }
             ]
           },
@@ -8972,10 +8972,10 @@
           "window": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/IrCorrelateWindow"
               },
               {
-                "$ref": "#/components/schemas/IrCorrelateWindow"
+                "type": "null"
               }
             ]
           }
@@ -10500,22 +10500,22 @@
           "demo": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/DemoLoginConfig",
                 "description": "Always serialized, `null` unless `[demo].enabled` is true (change:\ndemo-mode) — not an omittable field."
+              },
+              {
+                "type": "null"
               }
             ]
           },
           "oidc": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/OidcLoginConfig",
                 "description": "Always serialized, `null` until an OIDC provider is configured — not\nan omittable field."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -10890,10 +10890,10 @@
           "deprecated": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/DeprecatedInfo"
               },
               {
-                "$ref": "#/components/schemas/DeprecatedInfo"
+                "type": "null"
               }
             ]
           },
@@ -10976,10 +10976,10 @@
           "primary": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/MetricHit"
               },
               {
-                "$ref": "#/components/schemas/MetricHit"
+                "type": "null"
               }
             ]
           }
@@ -11503,11 +11503,11 @@
           "baseline": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/QueryRange",
                 "description": "`flamegraph` only (irVersion 13+): a second window the same `where`\nstages are read over, turning the result into a differential\nflamegraph of `baseline` against `range`."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -11557,11 +11557,11 @@
           "page": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/IrPage",
                 "description": "Walk a `rows`/`trace` result in pages (irVersion 14+): resend the\nsame document with `page.cursor` set to the previous\n`page.next_cursor` to continue."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -11591,11 +11591,11 @@
           "tail": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/IrTail",
                 "description": "Follow the result forward in time (irVersion 15+, `range.to` must be\n`now`): resend the same document with `tail.cursor` set to the\nprevious response's `tail.cursor`. `page.size` bounds each call."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -11636,22 +11636,22 @@
           "flamegraph": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/FlamegraphResult",
                 "description": "Present iff `result == \"flamegraph\"` — `Some` even when zero profiles\nmatched, so an empty match set stays distinguishable from \"this\nresponse has no flamegraph at all\" (i.e. a different envelope)."
+              },
+              {
+                "type": "null"
               }
             ]
           },
           "graph": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/ServiceGraph",
                 "description": "Present iff `result == \"graph\"` — the service dependency graph."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -11661,11 +11661,11 @@
           "metadata": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/MetadataResult",
                 "description": "Present iff `result == \"metadata\"` — what a `describe` document asked\nabout, with the provenance and cost of the answer."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -11680,11 +11680,11 @@
           "page": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/QueryPage",
                 "description": "Present iff the request carried `page` (`rows`/`trace` only)."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -11706,11 +11706,11 @@
           "retention": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/QueryRetention",
                 "description": "How far back this answer can reach. Present for a single-document\nquery against a signal source (`traces`, `logs`, `metrics`,\n`profiles`); omitted for a formula document and for sources that are\nnot signals. The window is never clamped to it."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -11737,11 +11737,11 @@
           "tail": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/QueryTail",
                 "description": "Present iff the request carried `tail` (`rows`/`trace` only)."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -12033,10 +12033,10 @@
           "timeline": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/Timeline"
               },
               {
-                "$ref": "#/components/schemas/Timeline"
+                "type": "null"
               }
             ]
           }
@@ -12346,22 +12346,22 @@
           "reason": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/UnavailableReason",
                 "description": "Why no snippet was served; present only when `status` is\n`\"unavailable\"`."
+              },
+              {
+                "type": "null"
               }
             ]
           },
           "snippet": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/SourceSnippet",
                 "description": "The resolved snippet; present only when `status` is `\"available\"`."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -13189,11 +13189,11 @@
           "user": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/WhoamiUser",
                 "description": "The signed-in human user; absent for API key credentials."
+              },
+              {
+                "type": "null"
               }
             ]
           },
