@@ -130,7 +130,7 @@ sha2 = { version = "0.10", features = ["oid"] }
 slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
 spin = { version = "0.9" }
-sqlparser = { version = "0.62", features = ["visitor"] }
+sqlparser = { version = "0.63", features = ["visitor"] }
 subtle = { version = "2" }
 syn-7b89eefb6aaa9bf3 = { package = "syn", version = "3", features = ["extra-traits", "full", "visit-mut"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
@@ -234,7 +234,7 @@ sha2 = { version = "0.10", features = ["oid"] }
 slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
 spin = { version = "0.9" }
-sqlparser = { version = "0.62", features = ["visitor"] }
+sqlparser = { version = "0.63", features = ["visitor"] }
 subtle = { version = "2" }
 syn-7b89eefb6aaa9bf3 = { package = "syn", version = "3", features = ["extra-traits", "full", "visit-mut"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
