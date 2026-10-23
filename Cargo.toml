@@ -184,7 +184,10 @@ flate2 = "1.1"
 zstd = "0.14"
 
 serde = { version = "1.0.219", features = ["derive"] }
-serde_json = "1.0.145"
+# preserve_order: IR documents that pass through `serde_json::Value` keep key
+# order (a `match` stage's spansets are ordered by declaration). Was only on by
+# accident of feature unification until DataFusion 55.2 stopped enabling it.
+serde_json = { version = "1.0.145", features = ["preserve_order"] }
 # CBOR codec for the typed-attribute residue column (native byte strings,
 # unlike JSON's base64-in-text carrier).
 ciborium = "0.2"
