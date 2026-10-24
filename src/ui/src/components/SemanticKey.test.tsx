@@ -49,9 +49,7 @@ describe("SemanticKeyLabel", () => {
     );
     const struck = screen.getByText("http.status_code", { selector: "s" });
     expect(struck.closest(".semkey-name")).not.toBeNull();
-    expect(
-      screen.getByText("→ http.response.status_code"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("→ http.response.status_code")).toBeInTheDocument();
   });
 
   it("tags the tenant's definition as primary and offers otel in the tooltip", async () => {
@@ -68,7 +66,10 @@ describe("SemanticKeyLabel", () => {
       brief: "Logical name of the service.",
     });
     render(
-      <SemanticKeyLabel name="service.name" semantics={semOf([custom, otel])} />,
+      <SemanticKeyLabel
+        name="service.name"
+        semantics={semOf([custom, otel])}
+      />,
     );
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
 
@@ -100,7 +101,10 @@ describe("SemanticKeyLabel", () => {
     const otel = hit({ key: "service.name" });
     render(
       <MemoryRouter>
-        <SemanticKeyLabel name="service.name" semantics={semOf([custom, otel])} />
+        <SemanticKeyLabel
+          name="service.name"
+          semantics={semOf([custom, otel])}
+        />
       </MemoryRouter>,
     );
     await userEvent.hover(
@@ -159,6 +163,38 @@ describe("SemanticInfo", () => {
 });
 
 describe("SemanticInfo tooltip placement", () => {
+  it("settles tooltip layout when the trigger is next to the right viewport edge", async () => {
+    const width = vi
+      .spyOn(HTMLElement.prototype, "offsetWidth", "get")
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.getAttribute("role") !== "tooltip") return 20;
+        return this.style.width
+          ? Number.parseFloat(this.style.width)
+          : Math.min(
+              900,
+              window.innerWidth - Number.parseFloat(this.style.left),
+            );
+      });
+    try {
+      render(<SemanticInfo name="k8s.pod.uid" semantics={semOf([hit()])} />);
+      const glyph = screen.getByLabelText("About k8s.pod.uid");
+      const trigger = glyph.parentElement as HTMLElement;
+      trigger.getBoundingClientRect = () =>
+        ({
+          left: window.innerWidth - 21,
+          right: window.innerWidth - 1,
+          top: 100,
+          bottom: 116,
+          width: 20,
+          height: 16,
+        }) as DOMRect;
+      await userEvent.hover(glyph);
+      expect(await screen.findByRole("tooltip")).toBeInTheDocument();
+    } finally {
+      width.mockRestore();
+    }
+  });
+
   it("renders the tooltip in a body portal, positioned from the trigger", async () => {
     // Facet sidebars and attribute tables scroll (`overflow: auto`), which
     // would clip a tooltip positioned inside them at the pane edge — so the
@@ -234,7 +270,14 @@ describe("SemanticInfo tooltip placement", () => {
     // Near the left edge, but right-alignment still kicks in because the
     // tip's max-width alone exceeds this viewport.
     trigger.getBoundingClientRect = () =>
-      ({ left: 10, right: 30, top: 100, bottom: 116, width: 20, height: 16 }) as DOMRect;
+      ({
+        left: 10,
+        right: 30,
+        top: 100,
+        bottom: 116,
+        width: 20,
+        height: 16,
+      }) as DOMRect;
 
     await userEvent.hover(glyph);
     const tip = await screen.findByRole("tooltip");
@@ -249,7 +292,14 @@ describe("SemanticInfo tooltip placement", () => {
     const glyph = screen.getByLabelText("About k8s.pod.uid");
     const trigger = glyph.parentElement as HTMLElement;
     trigger.getBoundingClientRect = () =>
-      ({ left: 10, right: 30, top: 100, bottom: 116, width: 20, height: 16 }) as DOMRect;
+      ({
+        left: 10,
+        right: 30,
+        top: 100,
+        bottom: 116,
+        width: 20,
+        height: 16,
+      }) as DOMRect;
 
     await userEvent.hover(glyph);
     const tip = await screen.findByRole("tooltip");
@@ -266,7 +316,10 @@ describe("SemanticInfo tooltip placement", () => {
     const otel = hit({ key: "service.name" });
     render(
       <MemoryRouter>
-        <SemanticKeyLabel name="service.name" semantics={semOf([custom, otel])} />
+        <SemanticKeyLabel
+          name="service.name"
+          semantics={semOf([custom, otel])}
+        />
       </MemoryRouter>,
     );
     const trigger = screen.getByText("service.name", {
