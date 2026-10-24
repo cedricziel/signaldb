@@ -1,4 +1,4 @@
-import { logs } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api";
 import {
   ATTR_EXCEPTION_MESSAGE,
   ATTR_EXCEPTION_STACKTRACE,

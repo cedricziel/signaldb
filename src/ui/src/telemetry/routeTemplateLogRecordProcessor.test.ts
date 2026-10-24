@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { SdkLogRecord } from "@opentelemetry/sdk-logs";
+import type { ReadWriteLogRecord } from "@opentelemetry/sdk-logs";
 import {
   RouteTemplateLogRecordProcessor,
   setRouteTemplate,
@@ -9,9 +9,9 @@ afterEach(() => {
   setRouteTemplate(undefined);
 });
 
-/** Minimal SdkLogRecord stand-in that records the attributes set on it. */
+/** Minimal ReadWriteLogRecord stand-in that records the attributes set on it. */
 function fakeLogRecord(): {
-  logRecord: SdkLogRecord;
+  logRecord: ReadWriteLogRecord;
   attrs: Record<string, unknown>;
 } {
   const attrs: Record<string, unknown> = {};
@@ -20,7 +20,7 @@ function fakeLogRecord(): {
       attrs[key] = value;
       return this;
     },
-  } as unknown as SdkLogRecord;
+  } as unknown as ReadWriteLogRecord;
   return { logRecord, attrs };
 }
 

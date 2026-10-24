@@ -20,7 +20,7 @@
 // dangle; a link to an unexported span is harmless.
 
 import { TraceFlags, type Context } from "@opentelemetry/api";
-import type { Span, SpanProcessor } from "@opentelemetry/sdk-trace-base";
+import type { Span, SpanProcessor } from "@opentelemetry/sdk-trace";
 import {
   serverTraceContextFromEntry,
   type EntryWithServerTiming,
