@@ -1948,7 +1948,7 @@ dependencies = [
  "object_store",
  "parking_lot",
  "parquet",
- "sqlparser",
+ "sqlparser 0.62.0",
  "tempfile",
  "tokio",
  "url",
@@ -2026,7 +2026,7 @@ dependencies = [
  "object_store",
  "parquet",
  "recursive",
- "sqlparser",
+ "sqlparser 0.62.0",
  "tokio",
  "uuid",
  "web-time",
@@ -2234,7 +2234,7 @@ dependencies = [
  "recursive",
  "serde",
  "serde_json",
- "sqlparser",
+ "sqlparser 0.62.0",
 ]
 
 [[package]]
@@ -2571,7 +2571,7 @@ dependencies = [
  "log",
  "recursive",
  "regex",
- "sqlparser",
+ "sqlparser 0.62.0",
  "stacker",
 ]
 
@@ -3754,7 +3754,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "smallvec",
- "sqlparser",
+ "sqlparser 0.62.0",
  "thiserror 2.0.21",
  "thrift",
  "tokio",
@@ -7571,7 +7571,18 @@ checksum = "13c6d1b651dc4edf07eead2a0c6c78016ce971bc2c10da5266861b13f25e7cec"
 dependencies = [
  "log",
  "recursive",
- "sqlparser_derive",
+ "sqlparser_derive 0.5.0",
+]
+
+[[package]]
+name = "sqlparser"
+version = "0.63.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3679862809bd1f92e563cf6fd820e28f39135303668001c10331d5027183e8b4"
+dependencies = [
+ "log",
+ "recursive",
+ "sqlparser_derive 0.6.0",
 ]
 
 [[package]]
@@ -7583,6 +7594,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "sqlparser_derive"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2905ae8e8148d8f7f5748ea95d1e949fa4fc1d7f5161547b758ad118b2e4b0aa"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -9812,7 +9834,7 @@ dependencies = [
  "slab",
  "smallvec",
  "spin 0.9.9",
- "sqlparser",
+ "sqlparser 0.63.0",
  "stable_deref_trait",
  "subtle",
  "syn 2.0.119",
