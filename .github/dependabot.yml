@@ -97,9 +97,12 @@ updates:
       opentelemetry:
         patterns:
           - "@opentelemetry/*"
-        # The SDK packages ship coordinated majors with breaking changes;
-        # those stay as individual PRs.
+        # Majors stay in the group: the 0.x exporters pin the stable SDK
+        # major exactly, so the SDK and exporters must move together. The
+        # contrib instrumentations lag a major behind and still pull the
+        # previous SDK line until they release against the new one.
         update-types:
+          - "major"
           - "minor"
           - "patch"
       storybook:
