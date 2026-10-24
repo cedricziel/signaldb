@@ -91,6 +91,36 @@ updates:
         update-types:
           - "minor"
           - "patch"
+      # Groups claim a dependency in file order, so these sit above
+      # typescript-eslint, whose "eslint*" would otherwise take
+      # eslint-plugin-storybook.
+      opentelemetry:
+        patterns:
+          - "@opentelemetry/*"
+        # The SDK packages ship coordinated majors with breaking changes;
+        # those stay as individual PRs.
+        update-types:
+          - "minor"
+          - "patch"
+      storybook:
+        patterns:
+          - "storybook"
+          - "@storybook/*"
+          - "eslint-plugin-storybook"
+      vitest:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
+      vite:
+        patterns:
+          - "vite"
+          - "vite-plugin-*"
+      tanstack:
+        patterns:
+          - "@tanstack/*"
+      hey-api:
+        patterns:
+          - "@hey-api/*"
       react:
         patterns:
           - "react*"
