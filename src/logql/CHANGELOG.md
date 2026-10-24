@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.1.5](https://github.com/cedricziel/signaldb/compare/logql-parser-v0.1.4...logql-parser-v0.1.5) (2026-10-08)
+## [0.1.5](https://github.com/cedricziel/signaldb/compare/logql-parser-v0.1.4...logql-parser-v0.1.5) (2026-10-12)
 
 
 ### Build System
