@@ -4,7 +4,10 @@
 // `routes.tsx` imports this module.
 
 import type { Context } from "@opentelemetry/api";
-import type { LogRecordProcessor, SdkLogRecord } from "@opentelemetry/sdk-logs";
+import type {
+  LogRecordProcessor,
+  ReadWriteLogRecord,
+} from "@opentelemetry/sdk-logs";
 
 let template: string | undefined;
 
@@ -17,7 +20,7 @@ export function currentRouteTemplate(): string | undefined {
 }
 
 export class RouteTemplateLogRecordProcessor implements LogRecordProcessor {
-  onEmit(logRecord: SdkLogRecord, _context?: Context): void {
+  onEmit(logRecord: ReadWriteLogRecord, _context?: Context): void {
     const current = currentRouteTemplate();
     if (current !== undefined) logRecord.setAttribute("url.template", current);
   }

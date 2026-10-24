@@ -184,7 +184,7 @@ export type Attribute = {
  */
 export type AttributeDef = {
     brief: string;
-    deprecated?: null | DeprecatedInfo;
+    deprecated?: DeprecatedInfo | null;
     enum_members?: Array<EnumMember>;
     examples?: Array<unknown>;
     group_display_name?: string | null;
@@ -235,7 +235,7 @@ export type AttributeResolution = {
     canonical_types?: Array<AttributeTypeRecord>;
     hits: Array<AttributeHit>;
     key: string;
-    primary?: null | AttributeHit;
+    primary?: AttributeHit | null;
 };
 
 export type AttributeSearchResponse = {
@@ -317,7 +317,7 @@ export type ConnectionInfoResponse = {
     dataset_id: string;
     headers: ConnectionHeaders;
     ingest: ConnectionIngest;
-    mcp?: null | ConnectionMcp;
+    mcp?: ConnectionMcp | null;
     /**
      * Operator guidance, e.g. that `[public]` is unset and URLs are
      * localhost fallbacks. Empty when everything is configured.
@@ -669,7 +669,7 @@ export type DiscoveredField = {
      * The registry's one-line description, when a registry defines it.
      */
     brief?: string | null;
-    cardinality?: null | CardinalityEstimate;
+    cardinality?: CardinalityEstimate | null;
     /**
      * The fraction of the tenant's records carrying it, when statistics
      * exist. Absent means unknown — never defaulted to a number that could be
@@ -685,7 +685,7 @@ export type DiscoveredField = {
      * not hidden).
      */
     filterable: boolean;
-    level?: null | AttributeLevel;
+    level?: AttributeLevel | null;
     /**
      * The logical, dotted OTel-native name — directly usable in a predicate.
      */
@@ -733,7 +733,7 @@ export type DiscoveredValue = {
  * What a discovery answer cost and how far it can be trusted.
  */
 export type DiscoveryCost = {
-    analyzed?: null | StatisticsCoverage;
+    analyzed?: StatisticsCoverage | null;
     /**
      * Whether the answer is approximate — a bounded sketch of the most
      * frequent values rather than the exact set. A declared value set is
@@ -781,7 +781,7 @@ export type EntityAttribute = {
  */
 export type EntityDef = {
     brief: string;
-    deprecated?: null | DeprecatedInfo;
+    deprecated?: DeprecatedInfo | null;
     descriptive: Array<EntityAttribute>;
     /**
      * Entity this one extends (bare name), if any.
@@ -817,7 +817,7 @@ export type EntityHit = EntityDef & {
 export type EntityResolution = {
     hits: Array<EntityHit>;
     key: string;
-    primary?: null | EntityHit;
+    primary?: EntityHit | null;
 };
 
 export type EntitySearchResponse = {
@@ -924,10 +924,10 @@ export type EvalResultsUploadResponse = UploadSummary & {
  * may write.
  */
 export type EvalSetLinks = {
-    append_cases?: null | Link;
-    append_cases_from_traces?: null | Link;
-    delete?: null | Link;
-    replace?: null | Link;
+    append_cases?: Link | null;
+    append_cases_from_traces?: Link | null;
+    delete?: Link | null;
+    replace?: Link | null;
     self: Link;
 };
 
@@ -935,7 +935,7 @@ export type EvalSetLinks = {
  * Links on the eval-set collection.
  */
 export type EvalSetListLinks = {
-    create?: null | Link;
+    create?: Link | null;
     self: Link;
 };
 
@@ -1124,7 +1124,7 @@ export type FlamegraphResult = {
      * (or the array is shorter than `names`) where unknown. See
      * `common::profile::Flamegraph::locations`.
      */
-    locations: Array<null | FrameLocation>;
+    locations: Array<FrameLocation | null>;
     /**
      * Largest self value of any block, used for color scaling.
      */
@@ -1355,7 +1355,7 @@ export type IrAbsent = {
  * A single named aggregate output.
  */
 export type IrAgg = {
-    across?: null | IrAggFn;
+    across?: IrAggFn | null;
     /**
      * A numeric argument (e.g. the quantile in `[0,1]`).
      */
@@ -1379,7 +1379,7 @@ export type IrAgg = {
      * The field being aggregated (a logical name). Omitted for `count`.
      */
     of?: string | null;
-    where?: null | IrPredicate;
+    where?: IrPredicate | null;
     /**
      * For a per-series range function, the lookback window: each step's
      * value uses samples in `(t - window, t]`. A duration string like
@@ -1423,7 +1423,7 @@ export type IrBinop = {
      * Comparison ops only: yield 0/1 instead of filtering.
      */
     bool?: boolean;
-    group?: null | IrBinopGroup;
+    group?: IrBinopGroup | null;
     ignoring?: Array<string> | null;
     on?: Array<string> | null;
     op: IrBinopOp;
@@ -1478,14 +1478,14 @@ export type IrCorrelate = {
      */
     fanout?: number | null;
     kind: IrJoinKind;
-    on?: null | IrCorrelateKey;
+    on?: IrCorrelateKey | null;
     pipeline?: Array<IrStage>;
     /**
      * `"parent"` for the span's parent span, or the name of another signal
      * source.
      */
     to: string;
-    window?: null | IrCorrelateWindow;
+    window?: IrCorrelateWindow | null;
 };
 
 /**
@@ -2115,8 +2115,8 @@ export type LogicalType = 'string' | 'bool' | 'int64' | 'float64' | 'timestamp_n
  * may offer. `oidc` is `null` until an OIDC provider is configured.
  */
 export type LoginConfigResponse = {
-    demo: null | DemoLoginConfig;
-    oidc: null | OidcLoginConfig;
+    demo: DemoLoginConfig | null;
+    oidc: OidcLoginConfig | null;
     password_enabled: boolean;
 };
 
@@ -2283,7 +2283,7 @@ export type MetricDef = {
     aliases?: Array<string>;
     attributes: Array<MetricAttribute>;
     brief: string;
-    deprecated?: null | DeprecatedInfo;
+    deprecated?: DeprecatedInfo | null;
     /**
      * Entity type names this metric describes.
      */
@@ -2308,7 +2308,7 @@ export type MetricHit = MetricDef & {
 export type MetricResolution = {
     hits: Array<MetricHit>;
     key: string;
-    primary?: null | MetricHit;
+    primary?: MetricHit | null;
 };
 
 export type MetricSearchResponse = {
@@ -2543,7 +2543,7 @@ export type QueryFormula = {
  * unsupported stage by name.
  */
 export type QueryIrRequest = {
-    baseline?: null | QueryRange;
+    baseline?: QueryRange | null;
     /**
      * The value of the `constant` pseudo-source (irVersion 10+).
      */
@@ -2570,7 +2570,7 @@ export type QueryIrRequest = {
      * IR document version (the server accepts a bounded range).
      */
     irVersion: number;
-    page?: null | IrPage;
+    page?: IrPage | null;
     /**
      * Ordered transform stages.
      */
@@ -2588,7 +2588,7 @@ export type QueryIrRequest = {
      * the `time`/`constant` pseudo-sources (irVersion 10+).
      */
     step?: string | null;
-    tail?: null | IrTail;
+    tail?: IrTail | null;
     /**
      * `graph` only: restrict to the services and calls of one trace.
      */
@@ -2611,10 +2611,10 @@ export type QueryIrRequestBody = MultiQueryIrRequest | QueryIrRequest;
  */
 export type QueryIrResponse = {
     columns?: Array<ResultColumn>;
-    flamegraph?: null | FlamegraphResult;
-    graph?: null | ServiceGraph;
+    flamegraph?: FlamegraphResult | null;
+    graph?: ServiceGraph | null;
     heatmap?: HeatmapResult;
-    metadata?: null | MetadataResult;
+    metadata?: MetadataResult | null;
     /**
      * The earliest event timestamp, in unix nanoseconds, that the source's
      * table holds for the caller's tenant and dataset, regardless of the
@@ -2626,7 +2626,7 @@ export type QueryIrResponse = {
      * lookup fails or takes too long.
      */
     oldest_data_ns?: number | null;
-    page?: null | QueryPage;
+    page?: QueryPage | null;
     /**
      * Present iff `result == "scalar"`: one `[t_ns, value]` point per
      * evaluation instant, with no labels (`null` is NaN or ±Inf).
@@ -2637,11 +2637,11 @@ export type QueryIrResponse = {
      * `graph`, `metadata`, `scalar`, or `trace`.
      */
     result: string;
-    retention?: null | QueryRetention;
+    retention?: QueryRetention | null;
     rows?: Array<Array<unknown>>;
     series?: Array<ResultSeries>;
     step_ns?: number | null;
-    tail?: null | QueryTail;
+    tail?: QueryTail | null;
     /**
      * Present iff `result == "trace"` — the result rows grouped per trace, in
      * order of first appearance. `Some` even when no row matched.
@@ -2814,7 +2814,7 @@ export type RenderResponse = {
      * Total comparison ticks; present when `format` is `"double"`.
      */
     rightTicks?: number | null;
-    timeline?: null | Timeline;
+    timeline?: Timeline | null;
 };
 
 /**
@@ -2982,8 +2982,8 @@ export type SourceContextRequest = {
  * request, whether or not a snippet could be served.
  */
 export type SourceContextResponse = {
-    reason?: null | UnavailableReason;
-    snippet?: null | SourceSnippet;
+    reason?: UnavailableReason | null;
+    snippet?: SourceSnippet | null;
     /**
      * Whether a snippet was served.
      */
@@ -3453,7 +3453,7 @@ export type WhoamiIdentityResponse = {
      */
     memberships: Array<WhoamiMembership>;
     tenant: WhoamiTenant;
-    user?: null | WhoamiUser;
+    user?: WhoamiUser | null;
     /**
      * Authenticated human user ID. Empty for API key credentials.
      */

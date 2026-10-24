@@ -196,8 +196,9 @@ The two OpenAPI-derived clients:
   OpenAPI 3.0, so xtask downconverts _its input only_ (`downconvert_nullable_types`
   in `xtask/src/main.rs`), handling both 3.1 nullable encodings utoipa emits:
   nullable `type` arrays (`["string","null"]`) become `type` + `nullable:
-true`; `"oneOf": [{"type": "null"}, X]` (emitted for `Option<T>` where `T`
-  is a `$ref` — a struct or enum DTO) has the null branch dropped and `X`'s
+true`; `"oneOf": [X, {"type": "null"}]` (emitted for `Option<T>` where `T`
+  is a `$ref` — a struct or enum DTO; the null branch is found in either
+  position) has the null branch dropped and `X`'s
   fields merged onto the parent object plus `nullable: true`. The IR version
   is pinned to `3.0.3`. The served spec and `signaldb-api.json` stay 3.1.
 - **TypeScript client** (`src/ui/src/api/gen`, consumed by the web UI) via
@@ -273,7 +274,8 @@ job, and the `codegen` job runs `cargo xtask check` to gate the clients.
   `Predicate` has custom serde.
 - **A nullable `$ref` (struct or enum) used to break the Rust SDK
   generator.** `Option<T>` where `T` derives `ToSchema` makes utoipa emit
-  `"oneOf": [{"type": "null"}, {"$ref": "..."}]`, which progenitor's
+  `"oneOf": [{"$ref": "..."}, {"type": "null"}]` (utoipa 5 put the null
+  branch first), which progenitor's
   schema-to-Rust generator panicked on (`not yet implemented: invalid type:
 null`, in `to_schema.rs`) — the panic was in client generation, so
   `cargo xtask check`'s spec-golden-test analog passed even though codegen
