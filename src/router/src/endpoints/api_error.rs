@@ -223,7 +223,7 @@ impl<'r> utoipa::ToResponse<'r> for RateLimited {
             .header(
                 "Retry-After",
                 HeaderBuilder::new()
-                    .schema(Object::with_type(Type::Integer))
+                    .schema(Some(Object::with_type(Type::Integer)))
                     .description(Some(
                         "Whole seconds (rounded up, at least 1) until the request would be admitted",
                     ))
@@ -232,7 +232,7 @@ impl<'r> utoipa::ToResponse<'r> for RateLimited {
             .header(
                 "X-RateLimit-Limit",
                 HeaderBuilder::new()
-                    .schema(Object::with_type(Type::Integer))
+                    .schema(Some(Object::with_type(Type::Integer)))
                     .description(Some(
                         "The tenant's per-second budget for the rejected dimension",
                     ))
@@ -241,7 +241,7 @@ impl<'r> utoipa::ToResponse<'r> for RateLimited {
             .header(
                 "X-RateLimit-Burst",
                 HeaderBuilder::new()
-                    .schema(Object::with_type(Type::Integer))
+                    .schema(Some(Object::with_type(Type::Integer)))
                     .description(Some(
                         "The tenant's burst allowance for the rejected dimension",
                     ))

@@ -21,7 +21,7 @@
 // `RootErrorBoundary` calling this directly, once, is the single source of
 // truth for boundary-caught errors.
 
-import { logs, SeverityNumber } from "@opentelemetry/api-logs";
+import { logs, SeverityNumber } from "@opentelemetry/api";
 import {
   ATTR_EXCEPTION_MESSAGE,
   ATTR_EXCEPTION_STACKTRACE,

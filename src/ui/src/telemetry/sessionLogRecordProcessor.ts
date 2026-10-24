@@ -13,14 +13,17 @@
 // reload.
 
 import type { Context } from "@opentelemetry/api";
-import type { LogRecordProcessor, SdkLogRecord } from "@opentelemetry/sdk-logs";
+import type {
+  LogRecordProcessor,
+  ReadWriteLogRecord,
+} from "@opentelemetry/sdk-logs";
 import { getTenantContext } from "../api/http";
 import type { SessionManager } from "./session";
 
 export class SessionLogRecordProcessor implements LogRecordProcessor {
   constructor(private readonly session: SessionManager) {}
 
-  onEmit(logRecord: SdkLogRecord, _context?: Context): void {
+  onEmit(logRecord: ReadWriteLogRecord, _context?: Context): void {
     logRecord.setAttribute("session.id", this.session.getId());
     const { tenant, dataset } = getTenantContext();
     if (tenant) logRecord.setAttribute("tenant.id", tenant);
