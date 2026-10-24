@@ -4,12 +4,12 @@
 // rather than replacing any of it. See the `frontend-instrumentation` skill
 // for which instrumentations are enabled and why.
 //
-// Called from `initTelemetry()` once the trace `WebTracerProvider` is
+// Called from `initTelemetry()` once the trace `TracerProvider` is
 // registered, so the global `ZoneContextManager` it installs is already in
 // place — log records emitted from async handlers (clicks, errors) pick up
 // the active span's context for free, no separate wiring needed here.
 
-import { logs } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api";
 import { registerInstrumentations } from "@opentelemetry/instrumentation";
 import { ConsoleInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/console";
 import { ErrorsInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/errors";
