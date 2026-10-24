@@ -25,7 +25,7 @@
 // point (`main.tsx`) — never from test or library code.
 import "zone.js";
 
-import { context as apiContext, trace } from "@opentelemetry/api";
+import { context as apiContext, propagation, trace } from "@opentelemetry/api";
 import {
   CompositePropagator,
   W3CBaggagePropagator,
@@ -42,8 +42,8 @@ import {
   SimpleSpanProcessor,
   type SpanExporter,
   type SpanProcessor,
-} from "@opentelemetry/sdk-trace-base";
-import { WebTracerProvider } from "@opentelemetry/sdk-trace-web";
+  TracerProvider,
+} from "@opentelemetry/sdk-trace";
 import { getDefaultSessionManager } from "./session";
 import { initBrowserLogs } from "./logs";
 import { NavigationSpanProcessor } from "./navigationSpanProcessor";
@@ -118,24 +118,25 @@ export function initTelemetry(): void {
     // Console feedback should be immediate; real export is batched.
     processors.push(
       exporter instanceof ConsoleSpanExporter
-        ? new SimpleSpanProcessor(exporter)
-        : new BatchSpanProcessor(exporter),
+        ? new SimpleSpanProcessor({ exporter })
+        : new BatchSpanProcessor({ exporter }),
     );
   }
 
-  const provider = new WebTracerProvider({
+  const provider = new TracerProvider({
     resource,
     spanProcessors: processors,
   });
-  provider.register({
-    contextManager: new ZoneContextManager(),
-    propagator: new CompositePropagator({
+  trace.setGlobalTracerProvider(provider);
+  propagation.setGlobalPropagator(
+    new CompositePropagator({
       propagators: [
         new W3CTraceContextPropagator(),
         new W3CBaggagePropagator(),
       ],
     }),
-  });
+  );
+  apiContext.setGlobalContextManager(new ZoneContextManager().enable());
 
   registerInstrumentations({
     tracerProvider: provider,
@@ -179,9 +180,8 @@ export function initTelemetry(): void {
   });
 
   // Log-record instrumentation (Web Vitals, navigation/resource timing,
-  // exception capture, ...) — see logs.ts. Runs after provider.register()
-  // above so its ZoneContextManager is already the global context manager;
-  // log records emitted from async handlers pick up the active span's
+  // exception capture, ...) — see logs.ts. Runs after the global
+  // ZoneContextManager is installed above, so log records emitted from async handlers pick up the active span's
   // context automatically.
   initBrowserLogs();
 }
