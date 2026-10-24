@@ -170,7 +170,7 @@ export function LogsView({ state, update }: Props) {
             <span className="logs-rowcount-n">
               {rows ? `${rows.length} rows` : "…"}
               {rows && rows.length === state.limit
-                ? ` (at the ${state.limit}-row limit)`
+                ? ` (latest ${state.limit}; narrow the time range or add filters to find older logs)`
                 : ""}
             </span>
             {logs.isFetching && <span className="histo-note">updating…</span>}

@@ -33,7 +33,7 @@ describe("ThrottleBanner", () => {
       await vi.advanceTimersByTimeAsync(10);
     });
     expect(screen.getByRole("status")).toHaveTextContent(
-      "Some requests are being retried after throttling… (waiting 1 s)",
+      "Some panels are delayed. Retrying automatically…",
     );
 
     await act(async () => {

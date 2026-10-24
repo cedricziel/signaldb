@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
 import { rangeScopeKey, resolveRange } from "../../lib/time";
+import { QueryError } from "../../components/QueryError";
 import { EmptyState } from "../../components/EmptyState";
 import { RefreshButton } from "../../components/RefreshButton";
 import { TimeRangePicker } from "../../components/TimeRangePicker";
@@ -88,7 +89,7 @@ export function RealUsersView({
     });
   }
 
-  const noAppsYet = !apps.isPending && appList.length === 0;
+  const noAppsYet = apps.isSuccess && appList.length === 0;
   const envVersion =
     current?.env && current?.version
       ? `${current.env} · ${current.version}`
@@ -102,7 +103,7 @@ export function RealUsersView({
     <div className="rum-body">
       <div className="rum-header">
         <div className="rum-header-left">
-          {!noAppsYet && (
+          {apps.isSuccess && !noAppsYet && (
             <AppSwitcher
               apps={appList}
               selected={selectedApp}
@@ -140,6 +141,12 @@ export function RealUsersView({
       <div className="rum-main">
         {tab === "setup" ? (
           <SetupTab app={selectedApp} scope={scope} />
+        ) : apps.isError ? (
+          <QueryError what="frontend apps" error={apps.error} />
+        ) : apps.isPending ? (
+          <div className="rum-placeholder" role="status">
+            Loading frontend apps…
+          </div>
         ) : noAppsYet ? (
           <EmptyState title="No frontend app has sent real-user data yet">
             Instrument a browser app with the OpenTelemetry SDK to see sessions,

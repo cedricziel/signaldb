@@ -135,7 +135,7 @@ export function OverviewView({ state, update }: Props) {
   const envOptions = [
     ...new Set([...(envs.data ?? []), ...(state.env ? [state.env] : [])]),
   ].sort();
-  const external = map.data?.external ?? 0;
+  const external = map.data?.external;
   const allDone = steps.every((s) => s.done);
 
   return (
@@ -146,8 +146,8 @@ export function OverviewView({ state, update }: Props) {
             <span className="overview-title-group">
               <span className="catalog-title">Overview</span>
               <span className="catalog-sub">
-                {rows.length} services · {external} external ·{" "}
-                {state.env || "all environments"}
+                {services.data ? rows.length : "–"} services · {external ?? "–"}{" "}
+                external · {state.env || "all environments"}
               </span>
             </span>
             <div className="overview-controls">
@@ -170,7 +170,7 @@ export function OverviewView({ state, update }: Props) {
                 range={state.range}
                 onChange={(r) => update({ range: r })}
               />
-              {!allDone && (
+              {services.isSuccess && !allDone && (
                 <SetupButton steps={steps} onOpen={() => setSetupOpen(true)} />
               )}
             </div>
@@ -188,22 +188,46 @@ export function OverviewView({ state, update }: Props) {
             {figures.map((k) => (
               <KpiSparkCard
                 key={k.label}
-                figure={k}
+                figure={
+                  k.label === "Error rate" && !services.data
+                    ? {
+                        ...k,
+                        detail: services.isError
+                          ? "Service health unavailable"
+                          : "Loading service health…",
+                      }
+                    : k
+                }
                 markers={markers}
+                unavailable={
+                  k.label === "Ingest" ? ingest.isError : kpis.isError
+                }
                 loading={
                   k.label === "Ingest" ? ingest.isPending : kpis.isPending
                 }
               />
             ))}
-            <ServicesCard rows={rows} external={external} state={state} />
+            <ServicesCard
+              rows={services.data ? rows : undefined}
+              external={external}
+              state={state}
+            />
           </div>
           {kpis.isError && <QueryError what="system KPIs" error={kpis.error} />}
 
-          <DeploysLane
-            deploys={deploys}
-            range={range}
-            title={`Deploys · ${formatRangeLabel(state.range).toLowerCase()}`}
-          />
+          {deploysQ.isError ? (
+            <QueryError what="deploys" error={deploysQ.error} />
+          ) : deploysQ.isPending ? (
+            <div className="overview-placeholder" role="status">
+              Loading deploys…
+            </div>
+          ) : (
+            <DeploysLane
+              deploys={deploys}
+              range={range}
+              title={`Deploys · ${formatRangeLabel(state.range).toLowerCase()}`}
+            />
+          )}
 
           <div className="overview-body">
             <div className="overview-main-col">
@@ -338,10 +362,12 @@ function KpiSparkCard({
   figure,
   markers,
   loading,
+  unavailable,
 }: {
   figure: KpiFigure;
   markers: SparklineMarker[];
   loading: boolean;
+  unavailable: boolean;
 }) {
   return (
     <div className="overview-kpi">
@@ -359,12 +385,12 @@ function KpiSparkCard({
         <span
           className={`overview-kpi-value${figure.valueTone === "error" ? " error" : ""}`}
         >
-          {loading ? "–" : figure.value}
+          {loading || unavailable ? "–" : figure.value}
         </span>
         <span className="overview-kpi-unit">{figure.unit}</span>
       </div>
       <div className="overview-kpi-detail">
-        {loading ? "loading…" : figure.detail}
+        {unavailable ? "Unavailable" : loading ? "loading…" : figure.detail}
       </div>
       <div className="overview-kpi-spark">
         <Sparkline
@@ -395,12 +421,12 @@ function ServicesCard({
   external,
   state,
 }: {
-  rows: ServiceRow[];
-  external: number;
+  rows: ServiceRow[] | undefined;
+  external: number | undefined;
   state: ExploreState;
 }) {
-  const counts = healthCounts(rows);
-  const total = rows.length || 1;
+  const counts = healthCounts(rows ?? []);
+  const total = rows?.length || 1;
   return (
     <div className="overview-kpi">
       <div className="overview-kpi-top">
@@ -410,11 +436,11 @@ function ServicesCard({
         </Link>
       </div>
       <div className="overview-kpi-value-row">
-        <span className="overview-kpi-value">{rows.length}</span>
+        <span className="overview-kpi-value">{rows?.length ?? "–"}</span>
         <span className="overview-kpi-unit">reporting</span>
       </div>
       <div className="overview-kpi-detail">
-        {external} external dependencies
+        {external ?? "–"} external dependencies
       </div>
       <div className="overview-health-bar" aria-hidden="true">
         {(["healthy", "degraded", "critical"] as Health[]).map((h) => (
@@ -430,15 +456,15 @@ function ServicesCard({
       <div className="overview-health-legend">
         <span>
           <i style={{ background: HEALTH_VAR.healthy }} />
-          {counts.healthy} healthy
+          {rows ? counts.healthy : "–"} healthy
         </span>
         <span>
           <i style={{ background: HEALTH_VAR.degraded }} />
-          {counts.degraded} degraded
+          {rows ? counts.degraded : "–"} degraded
         </span>
         <span className={counts.critical > 0 ? "critical" : undefined}>
           <i style={{ background: HEALTH_VAR.critical }} />
-          {counts.critical} critical
+          {rows ? counts.critical : "–"} critical
         </span>
       </div>
     </div>
@@ -581,7 +607,9 @@ function IngestCard({
           <span className="catalog-title">Ingest volume</span>
           <span className="catalog-sub">records accepted per signal</span>
         </span>
-        <span className="overview-total">{compactCount(sum)} total</span>
+        <span className="overview-total">
+          {series ? compactCount(sum) : "–"} total
+        </span>
       </div>
       <div className="overview-ingest-legend">
         {totals.map((t) => (
@@ -596,7 +624,7 @@ function IngestCard({
             />
             {t.key}
             <span className="overview-ingest-total">
-              {compactCount(t.total)}
+              {series ? compactCount(t.total) : "–"}
             </span>
             <span className="overview-ingest-share">
               {sum > 0 ? `${Math.round((t.total / sum) * 100)}%` : "–"}

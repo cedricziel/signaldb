@@ -372,7 +372,7 @@ describe("App", () => {
     await user.click(navLink("Traces"));
     await screen.findByLabelText("Trace ID");
     await user.click(navLink("Metrics"));
-    await screen.findByText("Pick a metric above, then Run to chart it.");
+    await screen.findByText(/Pick a metric above, then Run to chart it\./);
     expect(window.location.pathname).toBe("/metrics");
 
     window.history.back();

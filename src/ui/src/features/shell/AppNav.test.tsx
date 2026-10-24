@@ -163,6 +163,13 @@ describe("breadcrumb", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows navigation labels at a standard browser panel width", () => {
+    stubViewport(1000);
+    stubShell();
+    renderApp();
+    expect(sidebar()).not.toHaveClass("collapsed");
+  });
+
   it("starts collapsed on a tablet until the user chooses", () => {
     stubViewport(900);
     stubShell();

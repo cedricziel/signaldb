@@ -289,6 +289,18 @@ function SingleRangeView({ state, update }: Props) {
   return (
     <div className="profilesview">
       <SelectorControls state={state} update={update} selectors={selectors} />
+      {selectors.labelNamesQuery.isError && (
+        <QueryError
+          what="profile attributes"
+          error={selectors.labelNamesQuery.error}
+        />
+      )}
+      {selectors.labelValuesQuery.isError && (
+        <QueryError
+          what="profile attribute values"
+          error={selectors.labelValuesQuery.error}
+        />
+      )}
 
       {(typesQuery.isError || servicesQuery.isError || renderQuery.isError) && (
         <QueryError
@@ -304,12 +316,15 @@ function SingleRangeView({ state, update }: Props) {
           types to pick from), which used to render this note *alongside*
           the error alert above — a confusing "here's why, also here's a
           totally different reason" pairing. */}
-      {selectedType === "" && typesQuery.isSuccess && (
-        <EmptyState title="No profiles yet">
-          Enable <code>[self_monitoring].profiles_enabled</code> to have
-          SignalDB profile itself, or send profiles over OTLP.
-        </EmptyState>
-      )}
+      {selectedType === "" &&
+        typesQuery.isSuccess &&
+        !servicesQuery.isError && (
+          <EmptyState title="No profile types in this range">
+            Enable <code>[self_monitoring].profiles_enabled</code> to have
+            SignalDB profile itself, or send profiles over OTLP. Try a wider
+            time range if you expect existing profiles.
+          </EmptyState>
+        )}
 
       {renderQuery.isFetching && !renderQuery.data && (
         <SkeletonLines lines={12} />
@@ -322,7 +337,24 @@ function SingleRangeView({ state, update }: Props) {
         </div>
       )}
 
-      {isEmpty && <EmptyState title="No profiles in this range" />}
+      {isEmpty && (
+        <EmptyState title="No profiles in this range">
+          Try a wider time range or clear the service and attribute filters.
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() =>
+              update({
+                profileService: "",
+                profileMatcherLabel: "",
+                profileMatcherValue: "",
+              })
+            }
+          >
+            Clear profile filters
+          </button>
+        </EmptyState>
+      )}
 
       {renderQuery.data && !isEmpty && (
         <FlameGraph
@@ -365,15 +397,23 @@ function CompareView({ state, update }: Props) {
     enabled: selectedType !== "",
   });
 
-  const error =
-    typesQuery.error ??
-    servicesQuery.error ??
-    baselineQuery.error ??
-    comparisonQuery.error;
+  const error = typesQuery.error ?? servicesQuery.error;
 
   return (
     <div className="profilesview">
       <SelectorControls state={state} update={update} selectors={selectors} />
+      {selectors.labelNamesQuery.isError && (
+        <QueryError
+          what="profile attributes"
+          error={selectors.labelNamesQuery.error}
+        />
+      )}
+      {selectors.labelValuesQuery.isError && (
+        <QueryError
+          what="profile attribute values"
+          error={selectors.labelValuesQuery.error}
+        />
+      )}
       <div className="profiles-controls profiles-compare-ranges">
         <label className="profiles-field">
           Baseline
@@ -389,17 +429,22 @@ function CompareView({ state, update }: Props) {
 
       {typesQuery.isPending && <SkeletonLines lines={12} />}
 
-      {selectedType === "" && typesQuery.isSuccess && (
-        <EmptyState title="No profiles yet">
-          Enable <code>[self_monitoring].profiles_enabled</code> to have
-          SignalDB profile itself, or send profiles over OTLP.
-        </EmptyState>
-      )}
+      {selectedType === "" &&
+        typesQuery.isSuccess &&
+        !servicesQuery.isError && (
+          <EmptyState title="No profile types in this range">
+            Enable <code>[self_monitoring].profiles_enabled</code> to have
+            SignalDB profile itself, or send profiles over OTLP. Try a wider
+            time range if you expect existing profiles.
+          </EmptyState>
+        )}
 
-      <div className="profiles-compare">
-        <ComparePane title="Baseline" query={baselineQuery} unit={unit} />
-        <ComparePane title="Comparison" query={comparisonQuery} unit={unit} />
-      </div>
+      {selectedType !== "" && (
+        <div className="profiles-compare">
+          <ComparePane title="Baseline" query={baselineQuery} unit={unit} />
+          <ComparePane title="Comparison" query={comparisonQuery} unit={unit} />
+        </div>
+      )}
     </div>
   );
 }
@@ -418,6 +463,13 @@ function ComparePane({
   const fb = query.data?.render.flamebearer;
   const levels = useMemo(() => (fb ? decodeFlamebearer(fb) : []), [fb]);
 
+  if (query.isError)
+    return (
+      <QueryError
+        what={`${title.toLowerCase()} profiles`}
+        error={query.error}
+      />
+    );
   if (query.isFetching && !query.data) {
     return (
       <div className="profiles-compare-pane">
@@ -426,7 +478,8 @@ function ComparePane({
       </div>
     );
   }
-  if (!query.data || query.data.render.flamebearer.numTicks === 0) {
+  if (!query.data) return null;
+  if (query.data.render.flamebearer.numTicks === 0) {
     return (
       <div className="profiles-compare-pane">
         <div className="flame-title">{title}</div>

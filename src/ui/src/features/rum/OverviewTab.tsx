@@ -230,8 +230,14 @@ export function OverviewTab({
         >
           {isMobilePlatform(platform) ? (
             <EmptyState title="Mobile vitals aren't supported yet" />
+          ) : vitals.isPending ? (
+            <div className="rum-placeholder" role="status">
+              Loading Web Vitals…
+            </div>
           ) : vitals.isError ? (
             <QueryError what="Web Vitals" error={vitals.error} />
+          ) : !vitals.data?.size ? (
+            <EmptyState title="No Web Vitals in this window" />
           ) : (
             <div className="rum-vitals">
               {VITAL_NAMES.map((name) => {
@@ -390,6 +396,7 @@ export function VitalCell({
 }) {
   const good = figure.shares.find((s) => s.rating === "good");
   const goodPct = good ? Math.round(good.share * 100) : 0;
+  const hasSamples = figure.shares.some((share) => share.count > 0);
   return (
     <div className="rum-vital">
       <div className="rum-vital-head">
@@ -409,7 +416,9 @@ export function VitalCell({
       </div>
       <div className="rum-vital-dist-wrap">
         <VitalDist name={name} figure={figure} />
-        <div className="mono faint rum-vital-goodpct">{goodPct}% good</div>
+        <div className="mono faint rum-vital-goodpct">
+          {hasSamples ? `${goodPct}% good` : "No samples"}
+        </div>
       </div>
     </div>
   );
