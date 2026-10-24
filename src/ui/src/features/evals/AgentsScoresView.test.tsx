@@ -33,6 +33,8 @@ const series = {
  */
 function mockView(statsRows: (doc: IrDoc) => unknown[][]) {
   mockIr((doc) => {
+    if (doc.result === "rows" && doc.fields?.includes("event_name"))
+      return { result: "rows", rows: [["gen_ai.evaluation.result"]] };
     const by = aggBy(doc);
     if (doc.from === "traces") return table(by.length === 0 ? [[10]] : []);
     if (by.includes(F.agent)) return table([["support-triage", null, 10]]);
@@ -121,4 +123,15 @@ describe("AgentsScoresView", () => {
     ).toBeInTheDocument();
     expect(screen.getAllByText(/errored/).length).toBeGreaterThan(0);
   });
+});
+
+it("clears evaluator loading when the stats query fails", async () => {
+  mockIr(() => {
+    throw new Error("evaluation request failed");
+  });
+  renderView();
+  expect(
+    await screen.findByText(/Could not load evaluation results/),
+  ).toBeInTheDocument();
+  expect(screen.queryByText("Loading evaluators…")).toBeNull();
 });

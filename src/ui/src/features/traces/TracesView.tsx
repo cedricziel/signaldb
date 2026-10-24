@@ -732,7 +732,12 @@ function GroupList({
       {result.isError && (
         <QueryError what="trace groups" error={result.error} />
       )}
-      <div className="table-scroll">
+      <div
+        className="table-scroll"
+        role="region"
+        aria-label="Trace groups, scroll for more columns"
+        tabIndex={0}
+      >
         <table className="trace-table" aria-busy={pending}>
           <thead>
             <tr>

@@ -149,7 +149,9 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   spotting what changed. A **Collapse** selector folds below-threshold
   frames into a muted `(other)` bucket to cut visual noise, and a
   **Top functions** view swaps the tree for a sortable flat table ranked by
-  self time. See [Comparing and filtering profiles](#comparing-and-filtering-profiles)
+  self time. At narrow widths, numeric values keep their units on one line.
+  Focus the Top functions or trace-group table scroll region and use the
+  arrow keys to reach off-screen columns. See [Comparing and filtering profiles](#comparing-and-filtering-profiles)
   and [Reading a noisy profile](#reading-a-noisy-profile).
 - **Errors** — exceptions grouped by type, message, service, and whether
   they were handled, sortable by count (default) or by last-seen recency.
@@ -290,7 +292,9 @@ window, 30 buckets wide, and every row links into the view that explains it
 - **Setup checklist.** The **Setup** button opens the steps that add
   coverage to the page: traces, every service traced, logs and profiles
   from every traced service, GitHub source links, and (for admins) a second
-  member. The admin step stays listed while the member count loads, so
+  member. Profiling coverage matches by service name when traces or profiles
+  omit a service namespace. Explicitly different namespaces remain separate.
+  The admin step stays listed while the member count loads, so
   the count doesn't jump; it drops out only if the count can't be read. Coverage is read off the window shown. The button hides once every
   step is done; the palette's **Open setup checklist** opens it directly
   (`/overview?setup`).
@@ -1372,7 +1376,10 @@ Lists the tenant's [OTTL telemetry processors](processors.md): name, signal,
 dataset, enabled state, priority, status (`ok`/`invalid`), and last update, a
 disabled processor visually distinct from an enabled one. Tenant admins can
 create, edit, enable/disable, and delete processors here; other members see
-the page read-only. The editor takes name, description, signal, a dataset
+the page read-only. If no processors are configured, the page shows
+**No processors configured**. Admins can choose **New**;
+read-only viewers can ask a tenant admin to add a transformation if needed.
+The editor takes name, description, signal, a dataset
 picker (the tenant's datasets, plus "all datasets"), enabled, priority, error
 mode, and statements (one per line); on blur, or an explicit **Validate**
 action, it calls `:validate` and annotates each failing line with its

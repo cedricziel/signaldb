@@ -102,6 +102,8 @@ function agentSpanRows(traceId: string) {
 
 function mockCompare() {
   mockIr((doc) => {
+    if (doc.result === "rows" && doc.fields?.includes("event_name"))
+      return { result: "rows", rows: [["gen_ai.evaluation.result"]] };
     const by = aggBy(doc);
     if (doc.from === "traces") {
       // fetchAgentSpans: one call for every trace id in the `in` predicate.

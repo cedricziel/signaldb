@@ -288,7 +288,16 @@ export function setupSteps({
   const traced = rows.filter((r) => r.sources.has("traces"));
   const untraced = rows.filter((r) => !r.sources.has("traces"));
   const withLogs = traced.filter((r) => r.sources.has("logs"));
-  const withProfiles = traced.filter((r) => r.sources.has("profiles"));
+  const profiled = rows.filter((r) => r.sources.has("profiles"));
+  const withProfiles = traced.filter((r) =>
+    profiled.some(
+      (p) =>
+        p.name === r.name &&
+        (p.values[1] === r.values[1] ||
+          p.values[1] == null ||
+          r.values[1] == null),
+    ),
+  );
   const instrument = {
     label: "Send data",
     href: "/instrumentation",
