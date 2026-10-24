@@ -15,7 +15,7 @@
 // is in effect before the span is exported at end.
 
 import type { Context } from "@opentelemetry/api";
-import type { Span, SpanProcessor } from "@opentelemetry/sdk-trace-base";
+import type { Span, SpanProcessor } from "@opentelemetry/sdk-trace";
 
 const NAVIGATION_PREFIX = "Navigation: ";
 const NORMALIZED_NAME = "Navigation";
