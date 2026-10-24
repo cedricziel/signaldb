@@ -91,6 +91,39 @@ updates:
         update-types:
           - "minor"
           - "patch"
+      # Groups claim a dependency in file order, so these sit above
+      # typescript-eslint, whose "eslint*" would otherwise take
+      # eslint-plugin-storybook.
+      opentelemetry:
+        patterns:
+          - "@opentelemetry/*"
+        # Majors stay in the group: the 0.x exporters pin the stable SDK
+        # major exactly, so the SDK and exporters must move together. The
+        # contrib instrumentations lag a major behind and still pull the
+        # previous SDK line until they release against the new one.
+        update-types:
+          - "major"
+          - "minor"
+          - "patch"
+      storybook:
+        patterns:
+          - "storybook"
+          - "@storybook/*"
+          - "eslint-plugin-storybook"
+      vitest:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
+      vite:
+        patterns:
+          - "vite"
+          - "vite-plugin-*"
+      tanstack:
+        patterns:
+          - "@tanstack/*"
+      hey-api:
+        patterns:
+          - "@hey-api/*"
       react:
         patterns:
           - "react*"

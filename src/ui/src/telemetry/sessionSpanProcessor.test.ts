@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { Span } from "@opentelemetry/sdk-trace-base";
+import type { Span } from "@opentelemetry/sdk-trace";
 import { setTenantContext } from "../api/http";
 import { SessionSpanProcessor } from "./sessionSpanProcessor";
 import type { SessionManager } from "./session";

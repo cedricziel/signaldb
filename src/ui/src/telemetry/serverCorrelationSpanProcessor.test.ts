@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Link } from "@opentelemetry/api";
-import type { Span } from "@opentelemetry/sdk-trace-base";
+import type { Span } from "@opentelemetry/sdk-trace";
 import { ServerCorrelationSpanProcessor } from "./serverCorrelationSpanProcessor";
 
 const TRACE_ID = "0af7651916cd43dd8448eb211c80319c";
