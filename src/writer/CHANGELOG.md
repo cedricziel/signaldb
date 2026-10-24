@@ -1,5 +1,67 @@
 # Changelog
 
+## [0.5.0](https://github.com/cedricziel/signaldb/compare/writer-v0.4.1...writer-v0.5.0) (2026-10-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **tests-integration:** metric tables are recreated as metrics/metric_exemplars; pre-cutover metric data is dropped, not migrated.
+* metric tables are recreated as metrics/metric_exemplars; pre-cutover metric data is dropped, not migrated.
+
+### Features
+
+* **acceptor:** target the wide metrics table under the wide layout ([#1907](https://github.com/cedricziel/signaldb/issues/1907)) ([e6fb521](https://github.com/cedricziel/signaldb/commit/e6fb521164fa99ba4ebf987de022696576916cf9))
+* **common:** declare the typed metrics and metric_exemplars schemas ([#1886](https://github.com/cedricziel/signaldb/issues/1886)) ([9095c9f](https://github.com/cedricziel/signaldb/commit/9095c9f252f6bfead8ea76d7ee8f2c996caa69bd))
+* cut metrics over to the typed metrics layout ([#1928](https://github.com/cedricziel/signaldb/issues/1928)) ([e416d6f](https://github.com/cedricziel/signaldb/commit/e416d6f79029d36930b0b98a288517ac18a0b7ff))
+* **writer:** commit metric exemplars alongside their metrics batch ([#1895](https://github.com/cedricziel/signaldb/issues/1895)) ([5536644](https://github.com/cedricziel/signaldb/commit/55366442e01832a8f331f37797bc54aab543234f))
+* **writer:** drop legacy metric tables from the reconciler under the wide layout ([#1908](https://github.com/cedricziel/signaldb/issues/1908)) ([ed8a311](https://github.com/cedricziel/signaldb/commit/ed8a311d9d124e7a754f06c9503c61e75ed61896))
+* **writer:** surface off-type attribute values and type-pin conflicts ([#1829](https://github.com/cedricziel/signaldb/issues/1829)) ([b4bbfb4](https://github.com/cedricziel/signaldb/commit/b4bbfb464e9cb3e96c5afe82cc543b9f5beaf401))
+* **writer:** transform wire exemplars into metric_exemplars rows ([#1894](https://github.com/cedricziel/signaldb/issues/1894)) ([27ac405](https://github.com/cedricziel/signaldb/commit/27ac4054d78fa3464ac953c4682ec5030d421ed2))
+* **writer:** transform wire metrics into the typed metrics layout ([#1893](https://github.com/cedricziel/signaldb/issues/1893)) ([ef96961](https://github.com/cedricziel/signaldb/commit/ef969619aa00fb944cdafcfbedbc6a47a73c28fd))
+
+
+### Bug Fixes
+
+* **compactor:** advertise COMPACTOR_ADVERTISE_ADDR instead of the bind address ([#2107](https://github.com/cedricziel/signaldb/issues/2107)) ([2b8adb7](https://github.com/cedricziel/signaldb/commit/2b8adb7f23df02ee44a7d7f72dde53bcdd436254)), closes [#1844](https://github.com/cedricziel/signaldb/issues/1844)
+* **config:** merge a tenant's schema block over the global [schema] ([#2086](https://github.com/cedricziel/signaldb/issues/2086)) ([0832345](https://github.com/cedricziel/signaldb/commit/0832345521808cf865d627580dc1a0621692adcc))
+* **querier:** resolve label columns by their origin-key doc ([#2183](https://github.com/cedricziel/signaldb/issues/2183)) ([73768e9](https://github.com/cedricziel/signaldb/commit/73768e96e645b50157c04864dac913637f2d1068))
+* **telemetry:** namespace bare log fields flagged by weaver live-check ([#1879](https://github.com/cedricziel/signaldb/issues/1879)) ([90dbf09](https://github.com/cedricziel/signaldb/commit/90dbf09c31f7181f4f97c4a0bdb6c79f0f78aca3)), closes [#912](https://github.com/cedricziel/signaldb/issues/912)
+* **writer:** keep skipped exemplar ids in the metric_exemplars marker ([#1948](https://github.com/cedricziel/signaldb/issues/1948)) ([a36f3e6](https://github.com/cedricziel/signaldb/commit/a36f3e697552a72386c081668db50706f556c30c))
+* **writer:** retry the legacy metric table purge on converged datasets ([#1949](https://github.com/cedricziel/signaldb/issues/1949)) ([1ec8d3f](https://github.com/cedricziel/signaldb/commit/1ec8d3f9a87f165e2cf7e69bfbe2b4bcd145a1a5))
+
+
+### Performance Improvements
+
+* **acceptor:** send WAL IPC bytes to the writer without re-encoding ([#2192](https://github.com/cedricziel/signaldb/issues/2192)) ([be7e5ee](https://github.com/cedricziel/signaldb/commit/be7e5ee93f9f539ed86adf476e03fe044ee00768)), closes [#942](https://github.com/cedricziel/signaldb/issues/942)
+
+
+### Code Refactoring
+
+* **common:** let ServiceBootstrap resolve the advertised address ([#2121](https://github.com/cedricziel/signaldb/issues/2121)) ([6bef83b](https://github.com/cedricziel/signaldb/commit/6bef83b68b873ea7407d0f92981665a2b4cb420e))
+* drop the dead MetricsLayout switch and *_with_layout helpers ([#1961](https://github.com/cedricziel/signaldb/issues/1961)) ([4a98be3](https://github.com/cedricziel/signaldb/commit/4a98be3e108b2c67be847db23de0f768c1ad2a58))
+* **writer:** delete the gauge and sum metric transforms ([#1935](https://github.com/cedricziel/signaldb/issues/1935)) ([e920fc1](https://github.com/cedricziel/signaldb/commit/e920fc154792bddce29659c0ceb341590cbbf408))
+* **writer:** delete the gauge schema builder and move its fixtures onto the wire format ([#1934](https://github.com/cedricziel/signaldb/issues/1934)) ([bc74e50](https://github.com/cedricziel/signaldb/commit/bc74e50459199b3a2a38456efe845ec417e97bc8))
+* **writer:** delete the histogram, exponential-histogram, and summary metric transforms ([#1932](https://github.com/cedricziel/signaldb/issues/1932)) ([f7276e2](https://github.com/cedricziel/signaldb/commit/f7276e2832de355cc77912d2f683fe6e7252f4c2))
+* **writer:** delete the sum, histogram, exponential-histogram, and summary schema builders ([#1933](https://github.com/cedricziel/signaldb/issues/1933)) ([cd762cf](https://github.com/cedricziel/signaldb/commit/cd762cf8e93b068ee4dbbc97203523fb7e79bcec))
+
+
+### Tests
+
+* derive per-tenant table counts and switch metrics fixtures to wire-format batches ([#1927](https://github.com/cedricziel/signaldb/issues/1927)) ([dbeddc5](https://github.com/cedricziel/signaldb/commit/dbeddc5b78665446fbc7dc2c151816a3bd21feb6))
+* move metric fixtures off the legacy per-type tables ([#1966](https://github.com/cedricziel/signaldb/issues/1966)) ([4f239c7](https://github.com/cedricziel/signaldb/commit/4f239c7da68a4a7db76667044a724b19fe691127))
+* **tests-integration:** add an end-to-end metrics cutover test ([#1929](https://github.com/cedricziel/signaldb/issues/1929)) ([bb47677](https://github.com/cedricziel/signaldb/commit/bb4767732f40a82ca1af1e4eab88a8dc11580829))
+
+
+### Build System
+
+* **deps:** bump object from 0.37.3 to 0.39.1 ([#2203](https://github.com/cedricziel/signaldb/issues/2203)) ([b6de77a](https://github.com/cedricziel/signaldb/commit/b6de77a4378388901382c517ed72e7a93c309c48))
+* fix the beta test leg for cargo's unused-dependency lints ([#2047](https://github.com/cedricziel/signaldb/issues/2047)) ([6867d69](https://github.com/cedricziel/signaldb/commit/6867d69dceb26f2e55ccfac31e60ae42aad76418))
+
+
+### Continuous Integration
+
+* run every Criterion bench once on core PRs ([#2167](https://github.com/cedricziel/signaldb/issues/2167)) ([918f9c5](https://github.com/cedricziel/signaldb/commit/918f9c558ab655cc4b71071ce981d9ba5ed6ec8a))
+
 ## [0.4.1](https://github.com/cedricziel/signaldb/compare/writer-v0.4.0...writer-v0.4.1) (2026-09-23)
 
 
