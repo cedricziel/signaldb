@@ -53,6 +53,14 @@ describe("SetupTab", () => {
     );
   });
 
+  it("targets the OpenTelemetry JS 3.x SDK packages", async () => {
+    renderSetup();
+    const init = await screen.findByText(/LoggerProvider\(/);
+    const session = await screen.findByText(/class SessionProcessor/);
+    expect(init.textContent).toContain('from "@opentelemetry/sdk-trace"');
+    expect(session.textContent).toContain("ReadWriteLogRecord");
+  });
+
   it("registers the Web Vitals, navigation, resource-timing, errors and user-action instrumentations", async () => {
     renderSetup();
     const snippet = await screen.findByText(/WebVitalsInstrumentation/);

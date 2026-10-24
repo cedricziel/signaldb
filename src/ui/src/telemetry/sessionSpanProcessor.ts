@@ -12,7 +12,7 @@
 // switch tenant/dataset without a reload.
 
 import type { Context } from "@opentelemetry/api";
-import type { Span, SpanProcessor } from "@opentelemetry/sdk-trace-base";
+import type { Span, SpanProcessor } from "@opentelemetry/sdk-trace";
 import { getTenantContext } from "../api/http";
 import type { SessionManager } from "./session";
 
