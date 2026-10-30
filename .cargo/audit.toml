@@ -34,9 +34,10 @@ ignore = [
     "RUSTSEC-2026-0387",
     # zstd 0.13 / zstd-safe 7 are pinned by arrow-ipc and parquet 59 (and datafusion 55), which
     # require zstd ^0.13; the fixes are only in zstd 0.14.3 / zstd-safe 8.2. Our direct zstd 0.14
-    # use is on the fixed 0.14.3. Arrow/Parquet only use one-shot and streaming (de)compression,
-    # not `Seekable` or reused contexts across abandoned streams. Remove when DataFusion moves to an
-    # Arrow release on zstd 0.14. Mirrors deny.toml.
+    # use is on the fixed 0.14.3. Arrow IPC and Parquet reuse `zstd::bulk` contexts, but each bulk
+    # call (de)compresses a whole frame, so no stream is abandoned mid-way; neither uses `Seekable`
+    # or the streaming `with_context` constructors. Remove when DataFusion moves to an Arrow
+    # release on zstd 0.14. Mirrors deny.toml.
     "RUSTSEC-2026-0391",
     "RUSTSEC-2026-0398",
     "RUSTSEC-2026-0403",
