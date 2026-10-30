@@ -28,8 +28,8 @@ endpoint; your endpoint adds the key and forwards to SignalDB.
 ## 1. Install the SDK
 
 ```bash
-npm install @opentelemetry/api-logs @opentelemetry/sdk-trace-base \
-  @opentelemetry/sdk-trace-web @opentelemetry/sdk-logs \
+npm install @opentelemetry/api @opentelemetry/core \
+  @opentelemetry/sdk-trace @opentelemetry/sdk-logs \
   @opentelemetry/exporter-trace-otlp-http @opentelemetry/exporter-logs-otlp-http \
   @opentelemetry/resources @opentelemetry/semantic-conventions \
   @opentelemetry/instrumentation @opentelemetry/instrumentation-fetch \
@@ -37,8 +37,9 @@ npm install @opentelemetry/api-logs @opentelemetry/sdk-trace-base \
   @opentelemetry/browser-instrumentation
 ```
 
-`@opentelemetry/browser-instrumentation` (0.7) emits the log records the Real
-users page reads. The trace packages emit the page-load and fetch spans.
+`@opentelemetry/browser-instrumentation` (0.8) emits the log records the Real
+users page reads. The trace packages emit the page-load and fetch spans. The
+snippets target OpenTelemetry JS 3.x.
 
 ## 2. Initialize
 
@@ -51,12 +52,17 @@ Set the resource attributes first. The page identifies an app by them:
 | `deployment.environment.name` | Recommended. Tells production from staging.                                  |
 
 ```ts
-import { WebTracerProvider } from "@opentelemetry/sdk-trace-web";
+import { context, logs, propagation, trace } from "@opentelemetry/api";
+import { W3CTraceContextPropagator } from "@opentelemetry/core";
+import {
+  BatchSpanProcessor,
+  StackContextManager,
+  TracerProvider,
+} from "@opentelemetry/sdk-trace";
 import {
   LoggerProvider,
   BatchLogRecordProcessor,
 } from "@opentelemetry/sdk-logs";
-import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
@@ -64,7 +70,6 @@ import {
   ATTR_SERVICE_NAME,
   ATTR_SERVICE_VERSION,
 } from "@opentelemetry/semantic-conventions";
-import { logs } from "@opentelemetry/api-logs";
 import { registerInstrumentations } from "@opentelemetry/instrumentation";
 import { FetchInstrumentation } from "@opentelemetry/instrumentation-fetch";
 import { DocumentLoadInstrumentation } from "@opentelemetry/instrumentation-document-load";
@@ -84,15 +89,17 @@ const resource = resourceFromAttributes({
   "deployment.environment.name": "production",
 });
 
-const tracerProvider = new WebTracerProvider({
+const tracerProvider = new TracerProvider({
   resource,
   spanProcessors: [
-    new BatchSpanProcessor(
-      new OTLPTraceExporter({ url: `${COLLECTOR_URL}/v1/traces` }),
-    ),
+    new BatchSpanProcessor({
+      exporter: new OTLPTraceExporter({ url: `${COLLECTOR_URL}/v1/traces` }),
+    }),
   ],
 });
-tracerProvider.register();
+trace.setGlobalTracerProvider(tracerProvider);
+propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+context.setGlobalContextManager(new StackContextManager().enable());
 
 const loggerProvider = new LoggerProvider({
   resource,
@@ -143,10 +150,13 @@ processor, and the same on spans with a span processor if you want spans in
 the session too:
 
 ```ts
-import type { LogRecordProcessor, SdkLogRecord } from "@opentelemetry/sdk-logs";
+import type {
+  LogRecordProcessor,
+  ReadWriteLogRecord,
+} from "@opentelemetry/sdk-logs";
 
 class SessionProcessor implements LogRecordProcessor {
-  onEmit(record: SdkLogRecord): void {
+  onEmit(record: ReadWriteLogRecord): void {
     record.setAttribute("session.id", getSessionId()); // your session logic
     const userId = currentUserId(); // optional
     if (userId) record.setAttribute("user.id", userId);

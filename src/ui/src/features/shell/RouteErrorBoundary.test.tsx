@@ -7,7 +7,7 @@
 // test only exercises the `errorElement` path (the boundary itself), not
 // `main.tsx`'s `onUncaughtError` — that path only fires for a render error
 // with no boundary above it, which cannot happen through this route tree.
-import { logs } from "@opentelemetry/api-logs";
+import { logs } from "@opentelemetry/api";
 import { ATTR_EXCEPTION_MESSAGE } from "@opentelemetry/semantic-conventions";
 import {
   InMemoryLogRecordExporter,
