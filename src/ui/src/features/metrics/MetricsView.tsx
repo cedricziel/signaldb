@@ -173,7 +173,9 @@ export function MetricsView({ state, update }: Props) {
 
       {ran === null && (
         <div className="view-note">
-          Pick a metric above, then Run to chart it.
+          Pick a metric above, then Run to chart it. Search by metric name. For
+          counters, choose rate to see change per second; for gauges, start with
+          no function.
         </div>
       )}
       {chart.isError && <QueryError what="metrics" error={chart.error} />}

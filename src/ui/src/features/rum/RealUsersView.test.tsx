@@ -76,6 +76,45 @@ function renderRum(path: string) {
 }
 
 describe("RealUsersView", () => {
+  it("waits for app discovery before showing dashboard measurements", async () => {
+    stubFetchRoutes([]);
+    vi.mocked(rumApi.fetchRumApps).mockReturnValue(new Promise(() => {}));
+    renderRum("/rum/overview");
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Loading frontend apps…",
+    );
+    expect(screen.queryByText("Core Web Vitals")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/No frontend app has sent/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Select app/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("reports failed app discovery instead of asking the user to instrument an app", async () => {
+    stubFetchRoutes([]);
+    vi.mocked(rumApi.fetchRumApps).mockRejectedValue(
+      new Error("App discovery unavailable"),
+    );
+    renderRum("/rum/overview");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not load frontend apps",
+    );
+    expect(
+      screen.queryByText(/No frontend app has sent/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not render zero-percent vital measurements while vitals load", async () => {
+    stubFetchRoutes([]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([rumApp()]);
+    vi.mocked(rumApi.fetchVitals).mockReturnValueOnce(new Promise(() => {}));
+    renderRum("/rum/overview?app=storefront-web");
+    expect(await screen.findByText("Loading Web Vitals…")).toBeInTheDocument();
+    expect(screen.queryByText("LCP")).not.toBeInTheDocument();
+  });
+
   it("shows an empty state pointing to Setup when no app has sent RUM data", async () => {
     stubFetchRoutes([
       { match: "/api/v1/connection", body: connectionInfoBody() },
@@ -155,7 +194,9 @@ describe("RealUsersView", () => {
     renderRum("/rum/overview?app=storefront-web");
     // "Sessions" labels the KPI card, the sessions-over-time panel, and now
     // the Sessions tab in the tab strip.
-    expect(await screen.findAllByText("Sessions")).toHaveLength(3);
+    await waitFor(() =>
+      expect(screen.getAllByText("Sessions")).toHaveLength(3),
+    );
     expect(await screen.findByText("Core Web Vitals")).toBeInTheDocument();
   });
 
@@ -363,7 +404,9 @@ describe("Platform-aware labels", () => {
       await screen.findByRole("button", { name: "Pages" }),
     ).toBeInTheDocument();
     expect(await screen.findByText("Core Web Vitals")).toBeInTheDocument();
-    expect(await screen.findByText("LCP")).toBeInTheDocument();
+    expect(
+      await screen.findByText("No Web Vitals in this window"),
+    ).toBeInTheDocument();
   });
 
   it("hides the Resources panel in the Network tab for an iOS app", async () => {

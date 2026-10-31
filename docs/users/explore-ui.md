@@ -269,13 +269,18 @@ window, 30 buckets wide, and every row links into the view that explains it
   sparkline; the error rate turns red at 0.5%. **Ingest** is the number of
   records accepted across signals — spans, log records, metric points and
   profiles; the UI has no per-tenant byte counts to show. The **Services**
-  card counts the services reporting and their health split.
+  card counts the services reporting and their health split. A figure that
+  is still loading or whose query failed shows `–` (a failed KPI reads
+  **Unavailable**) rather than a zero, so an unknown never passes for an
+  empty system.
 - **Deploys.** There is no deploy event stream, so deploys are read off
   spans: a service's `service.version` whose first span in the window comes
   after another version of the same service was already reporting. The lane
   under the KPI strip places each one on the window's time axis; the same
   instants are dashed markers in the KPI sparklines (named in their
-  tooltips) and in that service's row.
+  tooltips) and in that service's row. While the deploy read is in flight
+  the lane reads "Loading deploys…"; if it fails, an error replaces it
+  instead of an empty lane.
 - **Service map.** The tenant's service graph (the catalog Map's query)
   with zoom buttons, ⌘/Ctrl + scroll to zoom at the pointer, and drag to
   pan. Edges flow and critical services pulse unless the system asks for
@@ -295,8 +300,9 @@ window, 30 buckets wide, and every row links into the view that explains it
   member. Profiling coverage matches by service name when traces or profiles
   omit a service namespace. Explicitly different namespaces remain separate.
   The admin step stays listed while the member count loads, so
-  the count doesn't jump; it drops out only if the count can't be read. Coverage is read off the window shown. The button hides once every
-  step is done; the palette's **Open setup checklist** opens it directly
+  the count doesn't jump; it drops out only if the count can't be read. Coverage is read off the window shown, so the button appears only once
+  the services query has answered (a pending or failed read would list every
+  step as undone). It hides once every step is done; the palette's **Open setup checklist** opens it directly
   (`/overview?setup`).
 
 ### Real users
@@ -1131,7 +1137,7 @@ header across the top of the main column.
   pages carry the current time range and tenant/dataset; filters and search
   stay with the page you left.
 - **Collapsing.** **Collapse** (or the `[` key, outside text fields) shrinks
-  the sidebar to icons. It starts collapsed below 1024px and expanded above;
+  the sidebar to icons. It starts collapsed below 960px and expanded above;
   once you toggle it, your choice is remembered in this browser at every
   width.
 - **Tenant/dataset switcher.** Lists your tenant memberships and the current
@@ -1419,7 +1425,7 @@ when the response carries one, or a jittered backoff otherwise (idempotent
 transient failures too): retries absorb a brief burst while the bounded
 retry budget lasts, so it usually doesn't flash an error. While a retry
 is pending the panel keeps loading and a thin banner under the
-page header reads "Some requests are being retried after throttling…"; leaving the
+page header reads "Some panels are delayed. Retrying automatically…"; leaving the
 page or superseding the query cancels the wait. Once the retry budget is
 spent, the panel's error reads `Rate limited — server asked to retry in N s`
 rather than a generic failure. A request that hangs rather than failing

@@ -130,7 +130,7 @@ server stated no wait) plus `http_status: 429`. See [MCP](mcp.md).
 The generated TypeScript client and the remaining hand-written callers share
 one `retryingFetch` (`src/ui/src/api/http.ts`). While a request is waiting to
 be retried, the panel stays in its loading state and the shell shows an
-unobtrusive banner ("Some requests are being retried after throttling…").
+unobtrusive banner ("Some panels are delayed. Retrying automatically…").
 Leaving a page or superseding a query aborts the request's `AbortSignal`,
 which cancels a pending wait. When retries are exhausted the panel's error
 reads `Rate limited — server asked to retry in 5 s` instead of a generic

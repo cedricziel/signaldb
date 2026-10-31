@@ -15,26 +15,16 @@ export function useThrottleState() {
   );
 }
 
-function formatWait(ms: number): string {
-  if (ms < 1000) return `${Math.round(ms)} ms`;
-  const s = ms / 1000;
-  return Number.isInteger(s) ? `${s} s` : `${s.toFixed(1)} s`;
-}
-
 export function ThrottleBanner() {
   const state = useThrottleState();
   if (state.pending === 0) return null;
-  const detail =
-    state.lastWaitMs == null
-      ? ""
-      : ` (waiting ${formatWait(state.lastWaitMs)})`;
   return (
     <div
       className="warn-callout throttle-banner"
       role="status"
       aria-live="polite"
     >
-      Some requests are being retried after throttling…{detail}
+      Some panels are delayed. Retrying automatically…
     </div>
   );
 }
