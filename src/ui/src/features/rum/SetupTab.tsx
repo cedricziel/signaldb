@@ -67,25 +67,29 @@ export function SetupTab({ app, scope }: Props) {
       ? Math.round(tracedShare.data.value * 100)
       : null;
 
-  const installSnippet = `npm install @opentelemetry/api-logs @opentelemetry/sdk-trace-base \\
-  @opentelemetry/sdk-trace-web @opentelemetry/sdk-logs \\
+  const installSnippet = `npm install @opentelemetry/api @opentelemetry/core \\
+  @opentelemetry/sdk-trace @opentelemetry/sdk-logs \\
   @opentelemetry/exporter-trace-otlp-http @opentelemetry/exporter-logs-otlp-http \\
   @opentelemetry/resources @opentelemetry/semantic-conventions \\
   @opentelemetry/instrumentation @opentelemetry/instrumentation-fetch \\
   @opentelemetry/instrumentation-document-load \\
   @opentelemetry/browser-instrumentation`;
 
-  const initSnippet = `import { WebTracerProvider } from "@opentelemetry/sdk-trace-web";
+  const initSnippet = `import { context, logs, propagation, trace } from "@opentelemetry/api";
+import { W3CTraceContextPropagator } from "@opentelemetry/core";
+import {
+  BatchSpanProcessor,
+  StackContextManager,
+  TracerProvider,
+} from "@opentelemetry/sdk-trace";
 import {
   LoggerProvider,
   BatchLogRecordProcessor,
 } from "@opentelemetry/sdk-logs";
-import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
-import { logs } from "@opentelemetry/api-logs";
 import { registerInstrumentations } from "@opentelemetry/instrumentation";
 import { FetchInstrumentation } from "@opentelemetry/instrumentation-fetch";
 import { DocumentLoadInstrumentation } from "@opentelemetry/instrumentation-document-load";
@@ -105,15 +109,17 @@ const resource = resourceFromAttributes({
   [ATTR_SERVICE_NAME]: "${serviceName}",
 });
 
-const tracerProvider = new WebTracerProvider({
+const tracerProvider = new TracerProvider({
   resource,
   spanProcessors: [
-    new BatchSpanProcessor(
-      new OTLPTraceExporter({ url: \`\${COLLECTOR_URL}/v1/traces\` }),
-    ),
+    new BatchSpanProcessor({
+      exporter: new OTLPTraceExporter({ url: \`\${COLLECTOR_URL}/v1/traces\` }),
+    }),
   ],
 });
-tracerProvider.register();
+trace.setGlobalTracerProvider(tracerProvider);
+propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+context.setGlobalContextManager(new StackContextManager().enable());
 
 const loggerProvider = new LoggerProvider({
   resource,
@@ -151,13 +157,13 @@ registerInstrumentations({
 
   const sessionSnippet = `import type {
   LogRecordProcessor,
-  SdkLogRecord,
+  ReadWriteLogRecord,
 } from "@opentelemetry/sdk-logs";
 
 // Sessions and Web Vitals are grouped by session.id on each record — the
 // Real users page shows nothing without it.
 export class SessionProcessor implements LogRecordProcessor {
-  onEmit(record: SdkLogRecord): void {
+  onEmit(record: ReadWriteLogRecord): void {
     record.setAttribute("session.id", getSessionId()); // your session logic
     const userId = currentUserId(); // optional
     if (userId) record.setAttribute("user.id", userId);

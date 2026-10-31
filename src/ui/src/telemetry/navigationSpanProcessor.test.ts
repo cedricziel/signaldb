@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Span } from "@opentelemetry/sdk-trace-base";
+import type { Span } from "@opentelemetry/sdk-trace";
 import { NavigationSpanProcessor } from "./navigationSpanProcessor";
 
 interface FakeSpan {

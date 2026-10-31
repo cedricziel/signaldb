@@ -27,4 +27,18 @@ ignore = [
     # no reachable path), so the archive-validation vulnerability is unexploitable. Fix requires
     # rust_decimal on rkyv 0.8.17+; remove when the iceberg-rust fork updates. Mirrors deny.toml.
     "RUSTSEC-2026-0235",
+    # crypto-bigint 0.5.5 comes via openidconnect 4.0.1 -> p256/p384 0.13 -> elliptic-curve 0.13.
+    # openidconnect only uses P-256/P-384 to verify ID-token signatures against the IdP's public
+    # keys, so no secret flows through the non-constant-time operations. The fix (0.7.6) needs
+    # elliptic-curve 0.14; remove when openidconnect moves to it. Mirrors deny.toml.
+    "RUSTSEC-2026-0387",
+    # zstd 0.13 / zstd-safe 7 are pinned by arrow-ipc and parquet 59 (and datafusion 55), which
+    # require zstd ^0.13; the fixes are only in zstd 0.14.3 / zstd-safe 8.2. Our direct zstd 0.14
+    # use is on the fixed 0.14.3. Arrow IPC and Parquet reuse `zstd::bulk` contexts, but each bulk
+    # call (de)compresses a whole frame, so no stream is abandoned mid-way; neither uses `Seekable`
+    # or the streaming `with_context` constructors. Remove when DataFusion moves to an Arrow
+    # release on zstd 0.14. Mirrors deny.toml.
+    "RUSTSEC-2026-0391",
+    "RUSTSEC-2026-0398",
+    "RUSTSEC-2026-0403",
 ]
