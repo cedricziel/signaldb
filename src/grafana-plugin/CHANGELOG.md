@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.3.2](https://github.com/cedricziel/signaldb/compare/grafana-plugin-v1.3.1...grafana-plugin-v1.3.2) (2026-10-31)
+
+
+### Build System
+
+* **deps-dev:** bump @grafana/plugin-e2e ([#2236](https://github.com/cedricziel/signaldb/issues/2236)) ([19a9b38](https://github.com/cedricziel/signaldb/commit/19a9b38701a1e905fd7345bdd365ceb68777fba3))
+* **deps-dev:** bump css-loader from 7.1.4 to 7.1.5 ([#2113](https://github.com/cedricziel/signaldb/issues/2113)) ([ce67b81](https://github.com/cedricziel/signaldb/commit/ce67b81f69864c0c39fb0680abfe69b1d7bfe033))
+* **deps-dev:** bump glob from 13.0.6 to 14.0.2 ([#2315](https://github.com/cedricziel/signaldb/issues/2315)) ([f255585](https://github.com/cedricziel/signaldb/commit/f25558537fa253b67c95a27f2792699cff065218))
+* **deps-dev:** bump prettier from 3.9.6 to 3.9.9 ([#2116](https://github.com/cedricziel/signaldb/issues/2116)) ([12bb01e](https://github.com/cedricziel/signaldb/commit/12bb01e5276133f6c17c45d6818ed15c896b66bf))
+* **deps-dev:** bump sass ([#2301](https://github.com/cedricziel/signaldb/issues/2301)) ([c2d99ec](https://github.com/cedricziel/signaldb/commit/c2d99ecb4c16d11699728353468747173ab26319))
+* **deps-dev:** bump the build-tools group across 1 directory with 2 updates ([#2215](https://github.com/cedricziel/signaldb/issues/2215)) ([6d68a65](https://github.com/cedricziel/signaldb/commit/6d68a654a86afc464006c51f08c240a71835be54))
+* **deps-dev:** bump the testing group across 1 directory with 3 updates ([#2243](https://github.com/cedricziel/signaldb/issues/2243)) ([bf4b2ee](https://github.com/cedricziel/signaldb/commit/bf4b2eed5f45dc101befa64299ac1ccf52f695bc))
+* **deps-dev:** bump the typescript-eslint group with 2 updates ([#2112](https://github.com/cedricziel/signaldb/issues/2112)) ([069d9a6](https://github.com/cedricziel/signaldb/commit/069d9a6b5194e608720209ca06890e7ee32a661f))
+* **deps-dev:** bump the typescript-eslint group with 2 updates ([#2214](https://github.com/cedricziel/signaldb/issues/2214)) ([4dd42e5](https://github.com/cedricziel/signaldb/commit/4dd42e5f43dca8716da12392b8cce43c67e2e6df))
+* **deps-dev:** bump the typescript-eslint group with 3 updates ([#2238](https://github.com/cedricziel/signaldb/issues/2238)) ([607eda8](https://github.com/cedricziel/signaldb/commit/607eda867c868f9557791757d58df9f9931c4dbd))
+* **deps:** batch JS dependabot updates ([#2272](https://github.com/cedricziel/signaldb/issues/2272)) ([bf26b62](https://github.com/cedricziel/signaldb/commit/bf26b6219472273924c2e32b4691f73162293ee7))
+* **deps:** bump object from 0.37.3 to 0.39.1 ([#2203](https://github.com/cedricziel/signaldb/issues/2203)) ([b6de77a](https://github.com/cedricziel/signaldb/commit/b6de77a4378388901382c517ed72e7a93c309c48))
+* **deps:** bump serde_json in /src/grafana-plugin/backend ([#2235](https://github.com/cedricziel/signaldb/issues/2235)) ([a49f1b4](https://github.com/cedricziel/signaldb/commit/a49f1b4586cf399a86d300e9f91bc939e676d0b2))
+* **deps:** bump the grafana-ecosystem group across 1 directory with 5 updates ([#2212](https://github.com/cedricziel/signaldb/issues/2212)) ([21807fd](https://github.com/cedricziel/signaldb/commit/21807fd7d87d0e858ad898d97ec294e850548e2e))
+* **deps:** bump the grafana-ecosystem group with 6 updates ([#2257](https://github.com/cedricziel/signaldb/issues/2257)) ([5993008](https://github.com/cedricziel/signaldb/commit/59930082eac9adccba397047f554591bd3468177))
+* **deps:** bump thiserror in /src/grafana-plugin/backend ([#1906](https://github.com/cedricziel/signaldb/issues/1906)) ([10412a5](https://github.com/cedricziel/signaldb/commit/10412a575b7192f2dab164837da8100efe16cbc1))
+* **deps:** bump tokio in /src/grafana-plugin/backend ([#2199](https://github.com/cedricziel/signaldb/issues/2199)) ([312cfc1](https://github.com/cedricziel/signaldb/commit/312cfc129bb1592b461f0e4a67caa67c3676f028))
+* **deps:** bump tokio in /src/grafana-plugin/backend ([#2255](https://github.com/cedricziel/signaldb/issues/2255)) ([7437164](https://github.com/cedricziel/signaldb/commit/74371647f152e1e505ae4c5768441cd2a1c2fe2b))
+* **deps:** bump tokio in /src/grafana-plugin/backend ([#2308](https://github.com/cedricziel/signaldb/issues/2308)) ([2c0ea82](https://github.com/cedricziel/signaldb/commit/2c0ea82c0a348d9be61e25cd8b438532a1d55458))
+* **deps:** bump tonic in /src/grafana-plugin/backend ([#2313](https://github.com/cedricziel/signaldb/issues/2313)) ([b587efd](https://github.com/cedricziel/signaldb/commit/b587efd21394f9669a07daa69b89bd332ad9fc28))
+
 ## [1.3.1](https://github.com/cedricziel/signaldb/compare/grafana-plugin-v1.3.0...grafana-plugin-v1.3.1) (2026-09-23)
 
 
