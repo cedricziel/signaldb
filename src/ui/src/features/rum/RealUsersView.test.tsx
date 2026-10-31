@@ -196,11 +196,13 @@ describe("RealUsersView", () => {
     ]);
     renderRum("/rum/overview?app=storefront-web");
     await screen.findByText("Core Web Vitals");
-    expect(vi.mocked(rumApi.fetchKpis)).toHaveBeenCalledWith(
-      "storefront-web",
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
+    await waitFor(() =>
+      expect(vi.mocked(rumApi.fetchKpis)).toHaveBeenCalledWith(
+        "storefront-web",
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+      ),
     );
     expect(vi.mocked(rumApi.fetchVitals)).toHaveBeenCalledWith(
       "storefront-web",
