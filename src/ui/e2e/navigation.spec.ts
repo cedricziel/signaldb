@@ -35,6 +35,17 @@ function navLink(page: import("@playwright/test").Page, name: string) {
 }
 
 test("/ lands on the Overview, current in the sidebar", async ({ page }) => {
+  // The setup checklist only shows once the services query has answered, so
+  // an empty IR envelope stands in for a tenant with nothing reporting yet.
+  await page.route("**/api/v1/query", (route) =>
+    json(route, {
+      result: "rows",
+      window: { start_ns: 0, end_ns: 0 },
+      columns: [],
+      rows: [],
+      series: [],
+    }),
+  );
   await page.goto("/");
   await expect(page).toHaveURL(/\/overview$/);
   await expect(navLink(page, "Overview")).toHaveAttribute(
