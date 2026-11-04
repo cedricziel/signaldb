@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793679260885,
+  "lastUpdate": 1793765572654,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -26047,6 +26047,454 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 1172840,
             "range": "± 59857",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]",
+            "email": "49699333+dependabot[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "f25558537fa253b67c95a27f2792699cff065218",
+          "message": "build(deps-dev): bump glob from 13.0.6 to 14.0.2 (#2315)\n\nBumps [glob](https://github.com/isaacs/node-glob) from 13.0.6 to 14.0.2.\n- [Changelog](https://github.com/isaacs/node-glob/blob/main/changelog.md)\n- [Commits](https://github.com/isaacs/node-glob/compare/v13.0.6...v14.0.2)\n\n---\nupdated-dependencies:\n- dependency-name: glob\n  dependency-version: 14.0.2\n  dependency-type: direct:development\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-10-31T08:10:20Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/f25558537fa253b67c95a27f2792699cff065218"
+        },
+        "date": 1793765571264,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 1740520,
+            "range": "± 27145",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 1080625,
+            "range": "± 17570",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 734977,
+            "range": "± 8174",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 1333365,
+            "range": "± 25335",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 630204,
+            "range": "± 4258",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 1749610,
+            "range": "± 16596",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 1145847,
+            "range": "± 19785",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/evaluator",
+            "value": 16479589,
+            "range": "± 102579",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/ancestry",
+            "value": 7104076,
+            "range": "± 474586",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/decode(a)",
+            "value": 3266723,
+            "range": "± 78040",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/decode(b)",
+            "value": 3915427,
+            "range": "± 121024",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/materialize",
+            "value": 658863,
+            "range": "± 27116",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/evaluator",
+            "value": 2868614,
+            "range": "± 107544",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/ancestry",
+            "value": 43161455,
+            "range": "± 2849038",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/decode(a)",
+            "value": 1317896,
+            "range": "± 85148",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/decode(b)",
+            "value": 42144067,
+            "range": "± 2516140",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/materialize",
+            "value": 79948288,
+            "range": "± 9217965",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/evaluator",
+            "value": 21032049,
+            "range": "± 1192172",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/ancestry",
+            "value": 15051859,
+            "range": "± 179087",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/decode(a)",
+            "value": 6282913,
+            "range": "± 110374",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/decode(b)",
+            "value": 7121990,
+            "range": "± 541079",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/materialize",
+            "value": 2069933,
+            "range": "± 53905",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/evaluator",
+            "value": 24427338,
+            "range": "± 1887032",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/ancestry",
+            "value": 29279093,
+            "range": "± 882874",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/decode(a)",
+            "value": 8267244,
+            "range": "± 114808",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/decode(b)",
+            "value": 22322200,
+            "range": "± 944442",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/materialize",
+            "value": 21903483,
+            "range": "± 890027",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.1MB",
+            "value": 2908030,
+            "range": "± 139527",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.5MB",
+            "value": 5163086,
+            "range": "± 41711",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_5.3MB",
+            "value": 26515373,
+            "range": "± 205503",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_46.7MB",
+            "value": 269362399,
+            "range": "± 7875516",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 8193968,
+            "range": "± 109916",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 16025185,
+            "range": "± 176970",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 28567835,
+            "range": "± 234343",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 57699431,
+            "range": "± 1001263",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 1216322,
+            "range": "± 12429",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 5082378,
+            "range": "± 91600",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 8119243,
+            "range": "± 149088",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 14591286,
+            "range": "± 221067",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/1000",
+            "value": 109020,
+            "range": "± 432",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/1000",
+            "value": 147160,
+            "range": "± 1255",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/10000",
+            "value": 906263,
+            "range": "± 5104",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/10000",
+            "value": 1527295,
+            "range": "± 17914",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/100000",
+            "value": 9324055,
+            "range": "± 82953",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/100000",
+            "value": 30197758,
+            "range": "± 3087138",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 1417714,
+            "range": "± 18015",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 27193709,
+            "range": "± 789165",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 28531922,
+            "range": "± 438419",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 27778823,
+            "range": "± 1471553",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 26962463,
+            "range": "± 227711",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 27223630,
+            "range": "± 428633",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 7783799,
+            "range": "± 178225",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 16976934,
+            "range": "± 341693",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 26451047,
+            "range": "± 512189",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested",
+            "value": 9151291,
+            "range": "± 242775",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested_split_off",
+            "value": 8885436,
+            "range": "± 174251",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/unattested",
+            "value": 8877739,
+            "range": "± 237734",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested",
+            "value": 7726534,
+            "range": "± 148787",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested_split_off",
+            "value": 8019963,
+            "range": "± 249942",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/unattested",
+            "value": 8678202,
+            "range": "± 142134",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested",
+            "value": 15362361,
+            "range": "± 209350",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested_split_off",
+            "value": 21125988,
+            "range": "± 290807",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/unattested",
+            "value": 15641656,
+            "range": "± 170296",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 27410042,
+            "range": "± 1814900",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 6195423,
+            "range": "± 209644",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 79465558,
+            "range": "± 1748291",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 179438444,
+            "range": "± 2570032",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 134983343,
+            "range": "± 1837740",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 1104636,
+            "range": "± 52093",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 1043114,
+            "range": "± 75937",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 1111322,
+            "range": "± 19965",
             "unit": "ns/iter"
           }
         ]
