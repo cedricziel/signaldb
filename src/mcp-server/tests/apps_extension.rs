@@ -8,7 +8,7 @@
 
 use rmcp::{
     ClientHandler, ServiceExt,
-    model::{ClientInfo, ExtensionCapabilities, ReadResourceRequestParams, ResourceContents},
+    model::{ClientConfig, ExtensionCapabilities, ReadResourceRequestParams, ResourceContents},
     service::RunningService,
 };
 
@@ -22,8 +22,8 @@ struct TestClient {
 }
 
 impl ClientHandler for TestClient {
-    fn get_info(&self) -> ClientInfo {
-        let mut info = ClientInfo::default();
+    fn get_info(&self) -> ClientConfig {
+        let mut info = ClientConfig::default();
         if self.supports_ui {
             let mut extensions = ExtensionCapabilities::new();
             extensions.insert(
