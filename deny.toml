@@ -322,6 +322,8 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # List of URLs for allowed Git repositories
 allow-git = [
     "https://github.com/JanKaul/iceberg-rust",
+    "https://github.com/cedricziel/iceberg-rust",
+    "https://github.com/launchbadge/sqlx",
 ]
 
 [sources.allow-org]
