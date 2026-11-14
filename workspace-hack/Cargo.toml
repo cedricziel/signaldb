@@ -44,6 +44,7 @@ ignored = [
     "tower-http", "tracing", "tracing-core", "tracing-log",
     "tracing-subscriber", "twox-hash", "url", "uuid", "winapi",
     "windows-sys", "windows-sys-c8eced492e86ede7", "zerocopy", "zeroize", "zstd", "zstd-safe",
+    "digest-93f6ce9d446188ac", "hashbrown", "md-5", "rand_chacha",
 ]
 
 # The parts of the file between the BEGIN HAKARI SECTION and END HAKARI SECTION comments
