@@ -7,7 +7,7 @@
 //! ordering) is covered end-to-end in `tests-integration`; nothing here dials
 //! the router.
 
-use rmcp::{ClientHandler, ServiceExt, model::ClientInfo, service::RunningService};
+use rmcp::{ClientHandler, ServiceExt, model::ClientConfig, service::RunningService};
 
 use mcp_server::server::McpServer;
 
@@ -15,8 +15,8 @@ use mcp_server::server::McpServer;
 struct TestClient;
 
 impl ClientHandler for TestClient {
-    fn get_info(&self) -> ClientInfo {
-        ClientInfo::default()
+    fn get_info(&self) -> ClientConfig {
+        ClientConfig::default()
     }
 }
 
