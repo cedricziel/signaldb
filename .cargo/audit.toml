@@ -38,6 +38,12 @@ ignore = [
     # binary links it. No 0.6.x fix exists and testcontainers 0.28.0 still uses 0.6.x. Remove when
     # testcontainers drops it. Expires 2027-02-07. Mirrors deny.toml.
     "RUSTSEC-2026-0440",
+    # thrift 0.17.0 (unbounded allocation in the binary protocol's read_bytes) comes only via the
+    # iceberg-rust git pin, which uses thrift solely to serialize Parquet metadata with the compact
+    # output protocol (`thrift_size`); it never reads untrusted thrift input, so the read path is
+    # unreachable. The fix (thrift 0.23) needs iceberg-rust to bump it; remove when the pin moves.
+    # Expires 2027-02-14. Mirrors deny.toml.
+    "RUSTSEC-2026-0435",
     # bincode 1.x / 2.x is unmaintained but widely used as a transitive dependency of datafusion and
     # other crates. No security issues reported. Mirrors deny.toml.
     "RUSTSEC-2025-0141",

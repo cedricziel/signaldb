@@ -5,11 +5,11 @@
 //! servers use) and as the `list_skills`/`get_skill` tools in
 //! [`crate::server`], for clients that don't read MCP resources on their
 //! own. Each skill's document is longer than belongs in
-//! [`ServerInfo::instructions`], which is sent on every session and should
+//! [`ServerConfig::instructions`], which is sent on every session and should
 //! stay short; a client reaches for one only when it decides the topic is
 //! relevant.
 //!
-//! [`ServerInfo::instructions`]: rmcp::model::ServerInfo
+//! [`ServerConfig::instructions`]: rmcp::model::ServerConfig
 
 use std::sync::LazyLock;
 

@@ -78,6 +78,7 @@ ignore = [
     { id = "RUSTSEC-2026-0440", reason = "astral-tokio-tar 0.6.4 is unmaintained (Astral ended maintenance on 2026-11-03) but has no known vulnerability. It is only pulled in by testcontainers 0.27 -> testcontainers-modules, enabled by the `testing-containers` feature of the common crate, which only tests-integration (a dev-dependency) turns on; no shipped binary links it. testcontainers 0.28.0 still depends on the 0.6.x line, so there is no upgrade path yet. Remove this exception when testcontainers moves to a non-astral tar implementation or to astral-tokio-tar 0.7+. Expires 2027-02-07." },
     { id = "RUSTSEC-2026-0235", reason = "rkyv 0.7 enters the lockfile as an inert optional dependency of rust_decimal (pinned by the iceberg-rust git pin). It is not compiled into any SignalDB target (`cargo tree -i rkyv` finds no reachable path), so the archive-validation vulnerability is unexploitable. The fix (rkyv 0.8.17) requires rust_decimal to move to rkyv 0.8; remove this exception when the iceberg-rust git pin updates rust_decimal past that." },
     { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 (timing variability in constant-time ops) comes via openidconnect 4.0.1 -> p256/p384 0.13 -> elliptic-curve 0.13. openidconnect only uses P-256/P-384 to verify ID-token signatures against the IdP's public keys, so no secret flows through the affected operations. The fix (crypto-bigint 0.7.6) needs elliptic-curve 0.14, and openidconnect 4.0.1 is the latest release; remove this exception when openidconnect moves to elliptic-curve 0.14." },
+    { id = "RUSTSEC-2026-0435", reason = "thrift 0.17.0 (unbounded memory allocation in the binary protocol's read_bytes) comes only via the iceberg-rust git pin, which uses thrift solely to serialize Parquet metadata with the compact output protocol (`thrift_size`) and never reads untrusted thrift input, so the vulnerable read path is unreachable. The fix (thrift 0.23) needs iceberg-rust to bump its dependency; remove this exception when the iceberg-rust pin moves past thrift 0.17. Expires 2027-02-14." },
     #"RUSTSEC-0000-0000",
     #{ id = "RUSTSEC-0000-0000", reason = "you can specify a reason the advisory is ignored" },
     #"a-crate-that-is-yanked@0.1.1", # you can also ignore yanked crate versions if you wish
@@ -321,6 +322,8 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # List of URLs for allowed Git repositories
 allow-git = [
     "https://github.com/JanKaul/iceberg-rust",
+    "https://github.com/cedricziel/iceberg-rust",
+    "https://github.com/launchbadge/sqlx",
 ]
 
 [sources.allow-org]

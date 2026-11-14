@@ -16,15 +16,15 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::Response;
 use futures::StreamExt;
-use rmcp::{ClientHandler, RoleClient, ServiceExt, model::ClientInfo, service::RunningService};
+use rmcp::{ClientHandler, RoleClient, ServiceExt, model::ClientConfig, service::RunningService};
 use std::time::Duration;
 
 #[derive(Clone)]
 pub struct TestClient;
 
 impl ClientHandler for TestClient {
-    fn get_info(&self) -> ClientInfo {
-        ClientInfo::default()
+    fn get_info(&self) -> ClientConfig {
+        ClientConfig::default()
     }
 }
 

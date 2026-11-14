@@ -137,7 +137,7 @@ use rmcp::{
         CacheScope, CallToolResult, CompleteRequestParams, CompleteResult, CompletionInfo,
         ContentBlock, GetPromptRequestParams, GetPromptResponse, ListPromptsResult,
         ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
-        ReadResourceResponse, ReadResourceResult, Reference, ServerCapabilities, ServerInfo,
+        ReadResourceResponse, ReadResourceResult, Reference, ServerCapabilities, ServerConfig,
     },
     tool, tool_handler, tool_router,
 };
@@ -5134,10 +5134,10 @@ fn client_supports_ui(context: &RequestContext<RoleServer>) -> bool {
 
 #[tool_handler]
 impl ServerHandler for McpServer {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         // `resources` covers both the MCP Apps UI documents (`ui://`) and the
         // longer-form skill documents (`skill://`) served over `resources/read`.
-        ServerInfo::new(
+        ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
