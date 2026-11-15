@@ -348,7 +348,7 @@ mod tests {
             .connect()
             .await
             .unwrap();
-        sqlx::query(&format!("PRAGMA {pragma}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("PRAGMA {pragma}")))
             .fetch_one(&mut conn)
             .await
             .unwrap()
