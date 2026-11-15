@@ -1,7 +1,7 @@
 //! Catalog persistence for tenant OTTL processors (`processors` table,
 //! change: tenant-ottl-processors, design D3).
 
-use sqlx::{Row, query};
+use sqlx::{AssertSqlSafe, Row, query};
 
 use crate::catalog::Catalog;
 use crate::processors::{ProcessorRecord, ProcessorSpec};
@@ -98,14 +98,14 @@ impl Catalog {
         let sql_sqlite = format!("SELECT {SELECT_COLS} FROM processors WHERE tenant_id = ?");
         let sql_pg = format!("SELECT {SELECT_COLS} FROM processors WHERE tenant_id = $1");
         let rows = match self {
-            Catalog::Sqlite(pool) => query(&sql_sqlite)
+            Catalog::Sqlite(pool) => query(AssertSqlSafe(sql_sqlite.as_str()))
                 .bind(tenant_id)
                 .fetch_all(pool)
                 .await?
                 .iter()
                 .map(row_to_record)
                 .collect::<Result<Vec<_>, _>>()?,
-            Catalog::Postgres(pool) => query(&sql_pg)
+            Catalog::Postgres(pool) => query(AssertSqlSafe(sql_pg.as_str()))
                 .bind(tenant_id)
                 .fetch_all(pool)
                 .await?
@@ -127,7 +127,7 @@ impl Catalog {
         let sql_pg =
             format!("SELECT {SELECT_COLS} FROM processors WHERE tenant_id = $1 AND name = $2");
         let row = match self {
-            Catalog::Sqlite(pool) => query(&sql_sqlite)
+            Catalog::Sqlite(pool) => query(AssertSqlSafe(sql_sqlite.as_str()))
                 .bind(tenant_id)
                 .bind(name)
                 .fetch_optional(pool)
@@ -135,7 +135,7 @@ impl Catalog {
                 .as_ref()
                 .map(row_to_record)
                 .transpose()?,
-            Catalog::Postgres(pool) => query(&sql_pg)
+            Catalog::Postgres(pool) => query(AssertSqlSafe(sql_pg.as_str()))
                 .bind(tenant_id)
                 .bind(name)
                 .fetch_optional(pool)
@@ -168,7 +168,7 @@ impl Catalog {
              AND (dataset IS NULL OR dataset = $3) {order}"
         );
         let rows = match self {
-            Catalog::Sqlite(pool) => query(&sql_sqlite)
+            Catalog::Sqlite(pool) => query(AssertSqlSafe(sql_sqlite.as_str()))
                 .bind(tenant_id)
                 .bind(signal)
                 .bind(dataset)
@@ -177,7 +177,7 @@ impl Catalog {
                 .iter()
                 .map(row_to_record)
                 .collect::<Result<Vec<_>, _>>()?,
-            Catalog::Postgres(pool) => query(&sql_pg)
+            Catalog::Postgres(pool) => query(AssertSqlSafe(sql_pg.as_str()))
                 .bind(tenant_id)
                 .bind(signal)
                 .bind(dataset)

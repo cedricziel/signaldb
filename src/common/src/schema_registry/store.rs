@@ -4,7 +4,7 @@
 //! resolver can load a tenant's registries without re-resolving.
 
 use schema_model::{RegistryDocument, ResolvedRegistry, ValidationError};
-use sqlx::{Row, query};
+use sqlx::{AssertSqlSafe, Row, query};
 
 use crate::catalog::Catalog;
 
@@ -73,14 +73,14 @@ impl Catalog {
         let sql_sqlite = format!("SELECT {SELECT_COLS} FROM schema_registries WHERE tenant_id = ?");
         let sql_pg = format!("SELECT {SELECT_COLS} FROM schema_registries WHERE tenant_id = $1");
         let rows = match self {
-            Catalog::Sqlite(pool) => query(&sql_sqlite)
+            Catalog::Sqlite(pool) => query(AssertSqlSafe(sql_sqlite.as_str()))
                 .bind(tenant_id)
                 .fetch_all(pool)
                 .await?
                 .iter()
                 .map(row_to_stored)
                 .collect::<Result<Vec<_>, _>>()?,
-            Catalog::Postgres(pool) => query(&sql_pg)
+            Catalog::Postgres(pool) => query(AssertSqlSafe(sql_pg.as_str()))
                 .bind(tenant_id)
                 .fetch_all(pool)
                 .await?
@@ -107,7 +107,7 @@ impl Catalog {
              WHERE tenant_id = $1 AND namespace = $2 AND version = $3"
         );
         let row = match self {
-            Catalog::Sqlite(pool) => query(&sql_sqlite)
+            Catalog::Sqlite(pool) => query(AssertSqlSafe(sql_sqlite.as_str()))
                 .bind(tenant_id)
                 .bind(namespace)
                 .bind(version)
@@ -116,7 +116,7 @@ impl Catalog {
                 .as_ref()
                 .map(row_to_stored)
                 .transpose()?,
-            Catalog::Postgres(pool) => query(&sql_pg)
+            Catalog::Postgres(pool) => query(AssertSqlSafe(sql_pg.as_str()))
                 .bind(tenant_id)
                 .bind(namespace)
                 .bind(version)
