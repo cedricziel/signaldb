@@ -32,13 +32,22 @@ ignore = [
     # keys, so no secret flows through the non-constant-time operations. The fix (0.7.6) needs
     # elliptic-curve 0.14; remove when openidconnect moves to it. Mirrors deny.toml.
     "RUSTSEC-2026-0387",
-    # zstd 0.13 / zstd-safe 7 are pinned by arrow-ipc and parquet 59 (and datafusion 55), which
-    # require zstd ^0.13; the fixes are only in zstd 0.14.3 / zstd-safe 8.2. Our direct zstd 0.14
-    # use is on the fixed 0.14.3. Arrow IPC and Parquet reuse `zstd::bulk` contexts, but each bulk
-    # call (de)compresses a whole frame, so no stream is abandoned mid-way; neither uses `Seekable`
-    # or the streaming `with_context` constructors. Remove when DataFusion moves to an Arrow
-    # release on zstd 0.14. Mirrors deny.toml.
-    "RUSTSEC-2026-0391",
-    "RUSTSEC-2026-0398",
-    "RUSTSEC-2026-0403",
+    # astral-tokio-tar 0.6.4 is unmaintained (Astral ended maintenance 2026-11-03) with no known
+    # vulnerability. Only reached via testcontainers -> testcontainers-modules, which tests-integration
+    # (a dev-dependency) enables through the common crate's `testing-containers` feature; no shipped
+    # binary links it. No 0.6.x fix exists and testcontainers 0.28.0 still uses 0.6.x. Remove when
+    # testcontainers drops it. Expires 2027-02-07. Mirrors deny.toml.
+    "RUSTSEC-2026-0440",
+    # thrift 0.17.0 (unbounded allocation in the binary protocol's read_bytes) comes only via the
+    # iceberg-rust git pin, which uses thrift solely to serialize Parquet metadata with the compact
+    # output protocol (`thrift_size`); it never reads untrusted thrift input, so the read path is
+    # unreachable. The fix (thrift 0.23) needs iceberg-rust to bump it; remove when the pin moves.
+    # Expires 2027-02-14. Mirrors deny.toml.
+    "RUSTSEC-2026-0435",
+    # bincode 1.x / 2.x is unmaintained but widely used as a transitive dependency of datafusion and
+    # other crates. No security issues reported. Mirrors deny.toml.
+    "RUSTSEC-2025-0141",
+    # paste 1.x is unmaintained but is a dependency of datafusion. No security issues reported.
+    # Mirrors deny.toml.
+    "RUSTSEC-2024-0436",
 ]
