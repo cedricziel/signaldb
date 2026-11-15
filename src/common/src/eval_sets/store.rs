@@ -10,7 +10,7 @@ use std::collections::HashSet;
 
 use chrono::{DateTime, SecondsFormat, SubsecRound, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{Row, query};
+use sqlx::{AssertSqlSafe, Row, query};
 
 use crate::catalog::{Catalog, parse_rfc3339};
 use crate::eval_sets::{
@@ -373,7 +373,7 @@ impl Catalog {
                 let sql = format!(
                     "{SUMMARY_SELECT} WHERE s.tenant_id = ? AND s.dataset = ? AND s.name = ?"
                 );
-                let Some(row) = query(&sql)
+                let Some(row) = query(AssertSqlSafe(sql.as_str()))
                     .bind(tenant_id)
                     .bind(dataset)
                     .bind(name)
@@ -386,7 +386,7 @@ impl Catalog {
                     "SELECT {CASE_COLS} FROM eval_cases \
                      WHERE tenant_id = ? AND dataset = ? AND set_name = ? ORDER BY position"
                 );
-                let cases = query(&sql)
+                let cases = query(AssertSqlSafe(sql.as_str()))
                     .bind(tenant_id)
                     .bind(dataset)
                     .bind(name)
@@ -407,7 +407,7 @@ impl Catalog {
                 let sql = format!(
                     "{SUMMARY_SELECT} WHERE s.tenant_id = $1 AND s.dataset = $2 AND s.name = $3"
                 );
-                let Some(row) = query(&sql)
+                let Some(row) = query(AssertSqlSafe(sql.as_str()))
                     .bind(tenant_id)
                     .bind(dataset)
                     .bind(name)
@@ -420,7 +420,7 @@ impl Catalog {
                     "SELECT {CASE_COLS} FROM eval_cases \
                      WHERE tenant_id = $1 AND dataset = $2 AND set_name = $3 ORDER BY position"
                 );
-                let cases = query(&sql)
+                let cases = query(AssertSqlSafe(sql.as_str()))
                     .bind(tenant_id)
                     .bind(dataset)
                     .bind(name)

@@ -44,6 +44,7 @@ ignored = [
     "tower-http", "tracing", "tracing-core", "tracing-log",
     "tracing-subscriber", "twox-hash", "url", "uuid", "winapi",
     "windows-sys", "windows-sys-c8eced492e86ede7", "zerocopy", "zeroize", "zstd", "zstd-safe",
+    "digest-93f6ce9d446188ac", "hashbrown", "md-5", "rand_chacha",
 ]
 
 # The parts of the file between the BEGIN HAKARI SECTION and END HAKARI SECTION comments
@@ -59,7 +60,7 @@ async-compression = { version = "0.4", default-features = false, features = ["bz
 axum = { version = "0.8" }
 axum-core = { version = "0.5", default-features = false, features = ["tracing"] }
 bigdecimal = { version = "0.4", features = ["serde"] }
-bitflags = { version = "2", default-features = false, features = ["serde", "std"] }
+bitflags = { version = "2", default-features = false, features = ["std"] }
 blake2 = { version = "0.10" }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env", "unstable-ext"] }
@@ -76,8 +77,9 @@ datafusion-optimizer = { version = "55", default-features = false, features = ["
 datafusion-physical-expr = { version = "55", default-features = false, features = ["recursive_protection"] }
 datafusion-physical-optimizer = { version = "55", default-features = false, features = ["recursive_protection"] }
 deranged = { version = "0.5", features = ["serde"] }
-digest = { version = "0.11", features = ["alloc", "mac", "oid"] }
-either = { version = "1", features = ["serde", "use_std"] }
+digest-93f6ce9d446188ac = { package = "digest", version = "0.10", features = ["mac", "oid", "std"] }
+digest-a6292c17cd707f01 = { package = "digest", version = "0.11", features = ["alloc", "mac", "oid"] }
+either = { version = "1", features = ["use_std"] }
 figment = { version = "0.10", default-features = false, features = ["env", "test", "toml"] }
 flate2 = { version = "1", features = ["zlib-rs"] }
 foldhash = { version = "0.2" }
@@ -90,14 +92,14 @@ futures-sink = { version = "0.3" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 futures-util = { version = "0.3", features = ["channel", "io", "sink"] }
 generic-array = { version = "0.14", default-features = false, features = ["more_lengths", "zeroize"] }
-hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
-hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17" }
+hashbrown = { version = "0.17" }
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "server-auto", "service"] }
 indexmap = { version = "2", features = ["serde"] }
 itertools = { version = "0.14" }
 lazy_static = { version = "1", default-features = false, features = ["spin_no_std"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
+md-5 = { version = "0.11" }
 memchr = { version = "2" }
 num-bigint = { version = "0.4", default-features = false, features = ["serde", "std"] }
 num-iter = { version = "0.1", default-features = false, features = ["i128", "std"] }
@@ -114,6 +116,7 @@ prost-types = { version = "0.14" }
 quote = { version = "1" }
 rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand-c38e5c1d305a1b54 = { package = "rand", version = "0.8" }
+rand_chacha = { version = "0.3", default-features = false, features = ["std"] }
 regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa-build", "dfa-onepass", "hybrid", "meta", "nfa-backtrack", "perf-inline", "perf-literal", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
@@ -125,9 +128,7 @@ rustls = { version = "0.23", default-features = false, features = ["logging", "r
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
-sha2 = { version = "0.10", features = ["oid"] }
 slab = { version = "0.4" }
-smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
 spin = { version = "0.9" }
 sqlparser = { version = "0.62", features = ["visitor"] }
 subtle = { version = "2" }
@@ -162,7 +163,7 @@ async-compression = { version = "0.4", default-features = false, features = ["bz
 axum = { version = "0.8" }
 axum-core = { version = "0.5", default-features = false, features = ["tracing"] }
 bigdecimal = { version = "0.4", features = ["serde"] }
-bitflags = { version = "2", default-features = false, features = ["serde", "std"] }
+bitflags = { version = "2", default-features = false, features = ["std"] }
 blake2 = { version = "0.10" }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env", "unstable-ext"] }
@@ -179,8 +180,9 @@ datafusion-optimizer = { version = "55", default-features = false, features = ["
 datafusion-physical-expr = { version = "55", default-features = false, features = ["recursive_protection"] }
 datafusion-physical-optimizer = { version = "55", default-features = false, features = ["recursive_protection"] }
 deranged = { version = "0.5", features = ["serde"] }
-digest = { version = "0.11", features = ["alloc", "mac", "oid"] }
-either = { version = "1", features = ["serde", "use_std"] }
+digest-93f6ce9d446188ac = { package = "digest", version = "0.10", features = ["mac", "oid", "std"] }
+digest-a6292c17cd707f01 = { package = "digest", version = "0.11", features = ["alloc", "mac", "oid"] }
+either = { version = "1", features = ["use_std"] }
 figment = { version = "0.10", default-features = false, features = ["env", "test", "toml"] }
 flate2 = { version = "1", features = ["zlib-rs"] }
 foldhash = { version = "0.2" }
@@ -193,14 +195,14 @@ futures-sink = { version = "0.3" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 futures-util = { version = "0.3", features = ["channel", "io", "sink"] }
 generic-array = { version = "0.14", default-features = false, features = ["more_lengths", "zeroize"] }
-hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
-hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17" }
+hashbrown = { version = "0.17" }
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "server-auto", "service"] }
 indexmap = { version = "2", features = ["serde"] }
 itertools = { version = "0.14" }
 lazy_static = { version = "1", default-features = false, features = ["spin_no_std"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
+md-5 = { version = "0.11" }
 memchr = { version = "2" }
 num-bigint = { version = "0.4", default-features = false, features = ["serde", "std"] }
 num-iter = { version = "0.1", default-features = false, features = ["i128", "std"] }
@@ -217,6 +219,7 @@ prost-types = { version = "0.14" }
 quote = { version = "1" }
 rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
 rand-c38e5c1d305a1b54 = { package = "rand", version = "0.8" }
+rand_chacha = { version = "0.3", default-features = false, features = ["std"] }
 regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa-build", "dfa-onepass", "hybrid", "meta", "nfa-backtrack", "perf-inline", "perf-literal", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
@@ -228,9 +231,7 @@ rustls = { version = "0.23", default-features = false, features = ["logging", "r
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
-sha2 = { version = "0.10", features = ["oid"] }
 slab = { version = "0.4" }
-smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
 spin = { version = "0.9" }
 sqlparser = { version = "0.62", features = ["visitor"] }
 subtle = { version = "2" }
@@ -260,7 +261,6 @@ zstd-safe = { version = "8", default-features = false, features = ["arrays", "le
 [target.x86_64-unknown-linux-gnu.dependencies]
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 libc = { version = "0.2", features = ["extra_traits", "use_std"] }
@@ -280,7 +280,6 @@ tower = { version = "0.5", default-features = false, features = ["retry", "timeo
 [target.x86_64-unknown-linux-gnu.build-dependencies]
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 libc = { version = "0.2", features = ["extra_traits", "use_std"] }
@@ -300,7 +299,6 @@ tower = { version = "0.5", default-features = false, features = ["retry", "timeo
 [target.x86_64-unknown-linux-musl.dependencies]
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 libc = { version = "0.2", features = ["extra_traits", "use_std"] }
@@ -320,7 +318,6 @@ tower = { version = "0.5", default-features = false, features = ["retry", "timeo
 [target.x86_64-unknown-linux-musl.build-dependencies]
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 libc = { version = "0.2", features = ["extra_traits", "use_std"] }
@@ -340,7 +337,6 @@ tower = { version = "0.5", default-features = false, features = ["retry", "timeo
 [target.aarch64-unknown-linux-gnu.dependencies]
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 libc = { version = "0.2", features = ["extra_traits", "use_std"] }
@@ -360,7 +356,6 @@ tower = { version = "0.5", default-features = false, features = ["retry", "timeo
 [target.aarch64-unknown-linux-gnu.build-dependencies]
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 libc = { version = "0.2", features = ["extra_traits", "use_std"] }
@@ -380,7 +375,6 @@ tower = { version = "0.5", default-features = false, features = ["retry", "timeo
 [target.aarch64-unknown-linux-musl.dependencies]
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 libc = { version = "0.2", features = ["extra_traits", "use_std"] }
@@ -400,7 +394,6 @@ tower = { version = "0.5", default-features = false, features = ["retry", "timeo
 [target.aarch64-unknown-linux-musl.build-dependencies]
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 libc = { version = "0.2", features = ["extra_traits", "use_std"] }
@@ -421,7 +414,6 @@ tower = { version = "0.5", default-features = false, features = ["retry", "timeo
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 errno = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 libc = { version = "0.2", features = ["extra_traits", "use_std"] }
@@ -442,7 +434,6 @@ tower = { version = "0.5", default-features = false, features = ["retry", "timeo
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 errno = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
-getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "native-tokio", "ring", "tls12", "webpki-tokio"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 libc = { version = "0.2", features = ["extra_traits", "use_std"] }

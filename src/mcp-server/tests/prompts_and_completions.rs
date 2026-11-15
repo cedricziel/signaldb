@@ -13,7 +13,7 @@
 use rmcp::{
     ClientHandler, ServiceExt,
     model::{
-        ArgumentInfo, CacheScope, ClientInfo, CompleteRequestParams, GetPromptRequestParams,
+        ArgumentInfo, CacheScope, ClientConfig, CompleteRequestParams, GetPromptRequestParams,
         Reference,
     },
     service::RunningService,
@@ -25,8 +25,8 @@ use mcp_server::server::McpServer;
 struct TestClient;
 
 impl ClientHandler for TestClient {
-    fn get_info(&self) -> ClientInfo {
-        ClientInfo::default()
+    fn get_info(&self) -> ClientConfig {
+        ClientConfig::default()
     }
 }
 

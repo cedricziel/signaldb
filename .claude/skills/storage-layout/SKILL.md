@@ -35,8 +35,9 @@ planning.
 ## Gotchas not fully covered by the docs
 
 - `iceberg-rust`/`datafusion_iceberg`/`iceberg-sql-catalog` are git-pinned to
-  an upstream JanKaul/iceberg-rust `main` rev (declared sort orders have no
-  crates.io release yet). Behaviors the docs attribute to a specific upstream
+  a `cedricziel/iceberg-rust` fork rev: an upstream JanKaul/iceberg-rust `main`
+  rev plus the sqlx 0.9 upgrade (declared sort orders have no crates.io release
+  yet, and upstream is still on sqlx 0.8). Behaviors the docs attribute to a specific upstream
   PR (WAL-mode pragmas, delete-after-commit, encoded-bytes file-size rolling,
   sort orders) — cross-check the rev in `Cargo.toml` before assuming a
   published `iceberg-rust` has them.
