@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794628910650,
+  "lastUpdate": 1794715621488,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -30975,6 +30975,454 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 777378,
             "range": "± 25934",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cedric Ziel",
+            "username": "cedricziel",
+            "email": "mail@cedric-ziel.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "711ef2772547b8e034b12f4a54701b18b07390ac",
+          "message": "build(deps): clear cargo-audit advisories (zstd, arrow, pulldown-cmark, sqlx 0.9, quinn, rustix, rmcp) (#2329)\n\n* build(deps): drop stale zstd advisory ignores and document audit ignores\n\n- Remove RUSTSEC-2026-0391, -0398 and -0403 from deny.toml and\n  .cargo/audit.toml. Their reasons said the fix was only in zstd 0.14.3 /\n  zstd-safe 8.2; the advisories list zstd ^0.13.4 and zstd-safe ^7.4.0 as\n  patched, which the bumped lockfile now uses.\n- Ignore RUSTSEC-2026-0440 (astral-tokio-tar 0.6.4, unmaintained, no\n  vulnerability) in deny.toml and mirror it in .cargo/audit.toml. It is\n  reached only through testcontainers in tests-integration (dev-only).\n  The exception expires 2027-02-07, recorded in the reason text because\n  cargo-deny 0.20 has no expiry key.\n- Mirror the bincode (RUSTSEC-2025-0141) and paste (RUSTSEC-2024-0436)\n  ignores into .cargo/audit.toml so both tools agree.\n\nRUSTSEC-2026-0435 (thrift) is intentionally not ignored; it needs a board\ndecision (see LAB-36).\n\nRefs: LAB-36, LAB-37\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n\n* build(deps): bump pulldown-cmark, zstd and arrow-data to patched versions\n\nLockfile-only, semver-compatible bumps to clear RustSec advisories that\nfail `cargo audit` and `cargo deny check advisories` in CI:\n- pulldown-cmark 0.13.5 -> 0.13.6 (RUSTSEC-2026-0433)\n- zstd 0.13.3 -> 0.13.4, which moves zstd-safe 7.2.4 -> 7.4.0\n  (RUSTSEC-2026-0391 on zstd; RUSTSEC-2026-0395/0396/0397/0398/0399/0400/\n  0401/0402/0403/0404/0405/0406 on zstd-safe)\n- arrow-* 59.3.0 -> 59.3.2 as one family, including arrow-data\n  (RUSTSEC-2026-0442). Kept in lockstep so the FDAP stack still resolves\n  to a single arrow version.\n\nProduced with three `cargo update --precise` calls from origin/main\n(pulldown-cmark, zstd@0.13.3, arrow-data), then reverting one unrelated\nedge cargo re-resolved (tempfile 3.27.0 -> getrandom 0.4.3). No Cargo.toml\nchanges. zstd 0.14.3 (direct dependency) is unchanged.\n\nRefs: LAB-36, LAB-37\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n\n* build(deps): clear all cargo-audit advisories (sqlx 0.9, quinn, rustix, rmcp) (#2335)\n\n* build(deps): patch quinn, rustix, rmcp and ignore iceberg-rust thrift advisory\n\n- cargo update quinn-proto 0.11.19, quinn-udp 0.5.16, rustix 1.1.6 and\n  rmcp 3.10.0 for RUSTSEC-2026-0523/0524/0538/0486/0457/0461/0462.\n- rmcp 3.10 deprecates ServerInfo/ClientInfo; switch to ServerConfig and\n  ClientConfig.\n- Ignore RUSTSEC-2026-0435 (thrift 0.17 via the iceberg-rust pin): the\n  pin only uses thrift's compact output protocol to size Parquet\n  metadata, never reads untrusted thrift input. Expires 2027-02-14.\n- Regenerate workspace-hack.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01NoPuyiJtvJF8n6FtaoNf1c\n\n* build(deps): upgrade sqlx to 0.9 to pick up patched libsqlite3-sys\n\nRUSTSEC-2026-0459 (bundled SQLite < 3.54, CVE-2026-119375) is fixed in\nlibsqlite3-sys 0.39. sqlx 0.8 pins 0.30 and sqlx 0.9.0 caps it below\n0.38, so:\n\n- Move the workspace to sqlx 0.9 (runtime-tokio-rustls split into\n  runtime-tokio + tls-rustls).\n- Patch sqlx to launchbadge/sqlx@987b8c5, which widens the range to\n  <0.40, and lock libsqlite3-sys 0.39.1. Drop the patch once a sqlx\n  release carries that range.\n- iceberg-rust also depends on sqlx 0.8 and libsqlite3-sys may appear\n  only once, so pin datafusion_iceberg, iceberg-rust and\n  iceberg-sql-catalog to cedricziel/iceberg-rust@2ad81c0 (our previous\n  rev 5820c16 plus the sqlx 0.9 upgrade). Allow both git sources in\n  deny.toml.\n- sqlx 0.9 rejects unaudited dynamic SQL. The catalog stores only\n  interpolate identifiers and column lists from constants or schema\n  introspection, values stay bound, so wrap them in AssertSqlSafe via a\n  trusted_sql! macro.\n- Regenerate workspace-hack.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01NoPuyiJtvJF8n6FtaoNf1c\n\n* docs(skills): note the iceberg-rust fork pin in storage-layout\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01NoPuyiJtvJF8n6FtaoNf1c\n\n* chore(workspace-hack): ignore new hakari aliases in cargo-machete\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01NoPuyiJtvJF8n6FtaoNf1c\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: cedricziel <418970+cedricziel@users.noreply.github.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-11-15T03:37:04Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/711ef2772547b8e034b12f4a54701b18b07390ac"
+        },
+        "date": 1794715619806,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 1290242,
+            "range": "± 112860",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 788115,
+            "range": "± 5451",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 549678,
+            "range": "± 4121",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 1050788,
+            "range": "± 14572",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 512597,
+            "range": "± 5673",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 1414386,
+            "range": "± 28396",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 944149,
+            "range": "± 26879",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/evaluator",
+            "value": 13802889,
+            "range": "± 960097",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/ancestry",
+            "value": 5479197,
+            "range": "± 115295",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/decode(a)",
+            "value": 2432724,
+            "range": "± 58231",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/decode(b)",
+            "value": 2976149,
+            "range": "± 43259",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/materialize",
+            "value": 297851,
+            "range": "± 58296",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/evaluator",
+            "value": 2153710,
+            "range": "± 63133",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/ancestry",
+            "value": 33630613,
+            "range": "± 4222966",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/decode(a)",
+            "value": 992971,
+            "range": "± 40990",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/decode(b)",
+            "value": 32265170,
+            "range": "± 3023249",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/materialize",
+            "value": 64993847,
+            "range": "± 2980596",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/evaluator",
+            "value": 15548105,
+            "range": "± 5133009",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/ancestry",
+            "value": 11837006,
+            "range": "± 582958",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/decode(a)",
+            "value": 4754053,
+            "range": "± 326774",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/decode(b)",
+            "value": 5464446,
+            "range": "± 206306",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/materialize",
+            "value": 624375,
+            "range": "± 262489",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/evaluator",
+            "value": 18127847,
+            "range": "± 655281",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/ancestry",
+            "value": 24566695,
+            "range": "± 1099103",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/decode(a)",
+            "value": 6505468,
+            "range": "± 334240",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/decode(b)",
+            "value": 18005054,
+            "range": "± 542904",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/materialize",
+            "value": 18044993,
+            "range": "± 724518",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.1MB",
+            "value": 2427016,
+            "range": "± 131750",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.5MB",
+            "value": 3875669,
+            "range": "± 187674",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_5.3MB",
+            "value": 20207078,
+            "range": "± 244697",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_46.7MB",
+            "value": 210714013,
+            "range": "± 10524683",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 5771245,
+            "range": "± 37737",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 11991293,
+            "range": "± 189916",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 22635141,
+            "range": "± 811789",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 46023744,
+            "range": "± 1555528",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 877145,
+            "range": "± 12813",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 3530886,
+            "range": "± 84522",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 5745618,
+            "range": "± 232270",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 10400994,
+            "range": "± 346678",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/1000",
+            "value": 95454,
+            "range": "± 2272",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/1000",
+            "value": 121724,
+            "range": "± 1062",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/10000",
+            "value": 798420,
+            "range": "± 22078",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/10000",
+            "value": 1271011,
+            "range": "± 19459",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/100000",
+            "value": 7908605,
+            "range": "± 278401",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/100000",
+            "value": 24120832,
+            "range": "± 2031887",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 1115323,
+            "range": "± 17094",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 21260765,
+            "range": "± 706737",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 21113722,
+            "range": "± 827045",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 19275216,
+            "range": "± 401951",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 19219397,
+            "range": "± 886122",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 19178670,
+            "range": "± 440338",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 5258756,
+            "range": "± 87450",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 11564217,
+            "range": "± 268363",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 19020357,
+            "range": "± 812588",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested",
+            "value": 6492774,
+            "range": "± 152221",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested_split_off",
+            "value": 6383204,
+            "range": "± 301204",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/unattested",
+            "value": 6297858,
+            "range": "± 100899",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested",
+            "value": 5488929,
+            "range": "± 68207",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested_split_off",
+            "value": 5578892,
+            "range": "± 54579",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/unattested",
+            "value": 6099985,
+            "range": "± 144533",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested",
+            "value": 10965136,
+            "range": "± 243413",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested_split_off",
+            "value": 14772515,
+            "range": "± 234651",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/unattested",
+            "value": 11297400,
+            "range": "± 312491",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 19592001,
+            "range": "± 1145733",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 4317582,
+            "range": "± 158553",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 58740541,
+            "range": "± 1651592",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 127077245,
+            "range": "± 2213462",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 95576064,
+            "range": "± 1344044",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 722808,
+            "range": "± 57528",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 722972,
+            "range": "± 6048",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 765687,
+            "range": "± 6843",
             "unit": "ns/iter"
           }
         ]
