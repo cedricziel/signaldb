@@ -4,7 +4,17 @@ use crate::flight::transport::ServiceCapability;
 use crate::service_bootstrap::ServiceType;
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use sqlx::{PgPool, Row, SqlitePool, query, query_scalar};
+use sqlx::{AssertSqlSafe, PgPool, Row, SqlitePool, query, query_scalar};
+
+/// Formats SQL whose interpolated parts are identifiers or column lists taken
+/// from compile-time constants or schema introspection, never request data;
+/// values always go through `.bind()`. sqlx 0.9 requires dynamic SQL to be
+/// marked as audited.
+macro_rules! trusted_sql {
+    ($($arg:tt)*) => {
+        AssertSqlSafe(format!($($arg)*))
+    };
+}
 use std::str::FromStr;
 use tracing::Instrument;
 use uuid::Uuid;
@@ -47,14 +57,14 @@ async fn ensure_sqlite_column(
     column: &str,
     declared_type: &str,
 ) -> Result<(), sqlx::Error> {
-    let columns = query(&format!("PRAGMA table_info({table})"))
+    let columns = query(trusted_sql!("PRAGMA table_info({table})"))
         .fetch_all(pool)
         .await?;
     let has_column = columns
         .iter()
         .any(|row| row.get::<String, _>("name") == column);
     if !has_column {
-        query(&format!(
+        query(trusted_sql!(
             "ALTER TABLE {table} ADD COLUMN {column} {declared_type}"
         ))
         .execute(pool)
@@ -331,7 +341,7 @@ async fn migrate_tenant_memberships_granted_by_postgres(pool: &PgPool) -> Result
     .await?
     .map(|r| r.get::<String, _>("constraint_name"));
     if let Some(name) = old_pk_name {
-        query(&format!(
+        query(trusted_sql!(
             r#"ALTER TABLE tenant_memberships DROP CONSTRAINT "{name}""#
         ))
         .execute(&mut *tx)
@@ -396,7 +406,7 @@ async fn rebuild_oauth_grant_table_sqlite_if_tenant_id_required(
     pool: &SqlitePool,
     table: &str,
 ) -> Result<(), sqlx::Error> {
-    let columns = query(&format!("PRAGMA table_info({table})"))
+    let columns = query(trusted_sql!("PRAGMA table_info({table})"))
         .fetch_all(pool)
         .await?;
     let tenant_id_not_null = columns
@@ -477,19 +487,19 @@ async fn rebuild_oauth_grant_table_sqlite_if_tenant_id_required(
     let new_table = format!("{table}_new");
 
     let mut tx = pool.begin().await?;
-    query(&format!("DROP TABLE IF EXISTS {new_table}"))
+    query(trusted_sql!("DROP TABLE IF EXISTS {new_table}"))
         .execute(&mut *tx)
         .await?;
     query(create_new_sql).execute(&mut *tx).await?;
-    query(&format!(
+    query(trusted_sql!(
         "INSERT INTO {new_table} ({columns_csv}) SELECT {columns_csv} FROM {table}"
     ))
     .execute(&mut *tx)
     .await?;
-    query(&format!("DROP TABLE {table}"))
+    query(trusted_sql!("DROP TABLE {table}"))
         .execute(&mut *tx)
         .await?;
-    query(&format!("ALTER TABLE {new_table} RENAME TO {table}"))
+    query(trusted_sql!("ALTER TABLE {new_table} RENAME TO {table}"))
         .execute(&mut *tx)
         .await?;
     // `DROP TABLE` drops any index defined on it; the access/refresh token
@@ -533,7 +543,7 @@ async fn backfill_oauth_grant_tenant_grants_sqlite(
     pool: &SqlitePool,
     table: &str,
 ) -> Result<(), sqlx::Error> {
-    let pending = query(&format!(
+    let pending = query(trusted_sql!(
         "SELECT rowid AS backfill_rowid, tenant_id, dataset_ids FROM {table} \
          WHERE tenant_id IS NOT NULL AND tenant_grants IS NULL"
     ))
@@ -551,7 +561,7 @@ async fn backfill_oauth_grant_tenant_grants_sqlite(
         .map_err(|e| {
             sqlx::Error::Protocol(format!("failed to serialize tenant_grants backfill: {e}"))
         })?;
-        query(&format!(
+        query(trusted_sql!(
             "UPDATE {table} SET tenant_grants = ? WHERE rowid = ? AND tenant_grants IS NULL"
         ))
         .bind(&grants_json)
@@ -570,7 +580,7 @@ async fn backfill_oauth_grant_tenant_grants_postgres(
     table: &str,
 ) -> Result<(), sqlx::Error> {
     let pk = oauth_grant_table_pk_column(table);
-    let pending = query(&format!(
+    let pending = query(trusted_sql!(
         "SELECT {pk} AS backfill_pk, tenant_id, dataset_ids FROM {table} \
          WHERE tenant_id IS NOT NULL AND tenant_grants IS NULL"
     ))
@@ -588,7 +598,7 @@ async fn backfill_oauth_grant_tenant_grants_postgres(
         .map_err(|e| {
             sqlx::Error::Protocol(format!("failed to serialize tenant_grants backfill: {e}"))
         })?;
-        query(&format!(
+        query(trusted_sql!(
             "UPDATE {table} SET tenant_grants = $1 WHERE {pk} = $2 AND tenant_grants IS NULL"
         ))
         .bind(&grants_json)
@@ -1877,12 +1887,12 @@ impl Catalog {
                 .execute(pool)
                 .await?;
                 for table in OAUTH_GRANT_TABLES {
-                    query(&format!(
+                    query(trusted_sql!(
                         "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS dataset_ids TEXT"
                     ))
                     .execute(pool)
                     .await?;
-                    query(&format!(
+                    query(trusted_sql!(
                         "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS tenant_grants TEXT"
                     ))
                     .execute(pool)
@@ -1890,7 +1900,7 @@ impl Catalog {
                     // Change: mcp-multi-tenant-oauth-grants (D2). Native and
                     // idempotent on Postgres, unlike the SQLite rebuild this
                     // needs below.
-                    query(&format!(
+                    query(trusted_sql!(
                         "ALTER TABLE {table} ALTER COLUMN tenant_id DROP NOT NULL"
                     ))
                     .execute(pool)
@@ -3743,7 +3753,7 @@ impl Catalog {
             Catalog::Sqlite(pool) => {
                 let mut tx = pool.begin().await?;
                 for table in TABLES {
-                    query(&format!(
+                    query(trusted_sql!(
                         "DELETE FROM {table} WHERE tenant_id = ? AND dataset_id = ? AND signal = ?"
                     ))
                     .bind(tenant_id)
@@ -3757,7 +3767,7 @@ impl Catalog {
             Catalog::Postgres(pool) => {
                 let mut tx = pool.begin().await?;
                 for table in TABLES {
-                    query(&format!(
+                    query(trusted_sql!(
                         "DELETE FROM {table} WHERE tenant_id = $1 AND dataset_id = $2 AND signal = $3"
                     ))
                     .bind(tenant_id)
@@ -4511,7 +4521,7 @@ impl Catalog {
                     "UPDATE api_keys SET {} WHERE id = ? AND revoked_at IS NULL",
                     set_clauses.join(", ")
                 );
-                let mut q = query(&sql).bind(&scopes_json);
+                let mut q = query(AssertSqlSafe(sql)).bind(&scopes_json);
                 if let Some(json) = &dataset_ids_bind {
                     q = q.bind(json);
                 }
@@ -4547,7 +4557,7 @@ impl Catalog {
                     "UPDATE api_keys SET {} WHERE id = ${param_idx} AND revoked_at IS NULL",
                     set_clauses.join(", ")
                 );
-                let mut q = query(&sql).bind(&scopes_json);
+                let mut q = query(AssertSqlSafe(sql)).bind(&scopes_json);
                 if let Some(json) = &dataset_ids_bind {
                     q = q.bind(json);
                 }
@@ -5313,17 +5323,21 @@ impl Catalog {
     pub async fn get_user(&self, user_id: &str) -> Result<Option<UserRecord>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                let row = query(&format!("SELECT {USER_COLUMNS} FROM users WHERE id = ?"))
-                    .bind(user_id)
-                    .fetch_optional(pool)
-                    .await?;
+                let row = query(trusted_sql!(
+                    "SELECT {USER_COLUMNS} FROM users WHERE id = ?"
+                ))
+                .bind(user_id)
+                .fetch_optional(pool)
+                .await?;
                 row.map(|r| user_from_sqlite_row(&r)).transpose()
             }
             Catalog::Postgres(pool) => {
-                let row = query(&format!("SELECT {USER_COLUMNS} FROM users WHERE id = $1"))
-                    .bind(user_id)
-                    .fetch_optional(pool)
-                    .await?;
+                let row = query(trusted_sql!(
+                    "SELECT {USER_COLUMNS} FROM users WHERE id = $1"
+                ))
+                .bind(user_id)
+                .fetch_optional(pool)
+                .await?;
                 Ok(row.map(|r| user_from_pg_row(&r)))
             }
         }
@@ -5337,14 +5351,16 @@ impl Catalog {
         let email = canonicalize_email(email);
         match self {
             Catalog::Sqlite(pool) => {
-                let row = query(&format!("SELECT {USER_COLUMNS} FROM users WHERE email = ?"))
-                    .bind(&email)
-                    .fetch_optional(pool)
-                    .await?;
+                let row = query(trusted_sql!(
+                    "SELECT {USER_COLUMNS} FROM users WHERE email = ?"
+                ))
+                .bind(&email)
+                .fetch_optional(pool)
+                .await?;
                 row.map(|r| user_from_sqlite_row(&r)).transpose()
             }
             Catalog::Postgres(pool) => {
-                let row = query(&format!(
+                let row = query(trusted_sql!(
                     "SELECT {USER_COLUMNS} FROM users WHERE email = $1"
                 ))
                 .bind(&email)
@@ -5367,7 +5383,7 @@ impl Catalog {
     ) -> Result<Option<UserRecord>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                let row = query(&format!(
+                let row = query(trusted_sql!(
                     "SELECT {USER_COLUMNS} FROM users WHERE oidc_issuer = ? AND oidc_subject = ?"
                 ))
                 .bind(issuer)
@@ -5377,7 +5393,7 @@ impl Catalog {
                 row.map(|r| user_from_sqlite_row(&r)).transpose()
             }
             Catalog::Postgres(pool) => {
-                let row = query(&format!(
+                let row = query(trusted_sql!(
                     "SELECT {USER_COLUMNS} FROM users WHERE oidc_issuer = $1 AND oidc_subject = $2"
                 ))
                 .bind(issuer)
@@ -5393,15 +5409,19 @@ impl Catalog {
     pub async fn list_users(&self) -> Result<Vec<UserRecord>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                let rows = query(&format!("SELECT {USER_COLUMNS} FROM users ORDER BY email"))
-                    .fetch_all(pool)
-                    .await?;
+                let rows = query(trusted_sql!(
+                    "SELECT {USER_COLUMNS} FROM users ORDER BY email"
+                ))
+                .fetch_all(pool)
+                .await?;
                 rows.iter().map(user_from_sqlite_row).collect()
             }
             Catalog::Postgres(pool) => {
-                let rows = query(&format!("SELECT {USER_COLUMNS} FROM users ORDER BY email"))
-                    .fetch_all(pool)
-                    .await?;
+                let rows = query(trusted_sql!(
+                    "SELECT {USER_COLUMNS} FROM users ORDER BY email"
+                ))
+                .fetch_all(pool)
+                .await?;
                 Ok(rows.iter().map(user_from_pg_row).collect())
             }
         }
@@ -5670,7 +5690,7 @@ impl Catalog {
     ) -> Result<Option<TenantMembershipRecord>, sqlx::Error> {
         let rows = match self {
             Catalog::Sqlite(pool) => {
-                query(&format!(
+                query(trusted_sql!(
                     "SELECT {MEMBERSHIP_COLUMNS} FROM tenant_memberships WHERE user_id = ? AND tenant_id = ?"
                 ))
                 .bind(user_id)
@@ -5682,7 +5702,7 @@ impl Catalog {
                 .collect::<Result<Vec<_>, _>>()?
             }
             Catalog::Postgres(pool) => {
-                query(&format!(
+                query(trusted_sql!(
                     "SELECT {MEMBERSHIP_COLUMNS} FROM tenant_memberships WHERE user_id = $1 AND tenant_id = $2"
                 ))
                 .bind(user_id)
@@ -5705,7 +5725,7 @@ impl Catalog {
     ) -> Result<Vec<TenantMembershipRecord>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                let rows = query(&format!(
+                let rows = query(trusted_sql!(
                     "SELECT {MEMBERSHIP_COLUMNS} FROM tenant_memberships WHERE user_id = ? ORDER BY tenant_id"
                 ))
                 .bind(user_id)
@@ -5714,7 +5734,7 @@ impl Catalog {
                 rows.iter().map(membership_from_sqlite_row).collect()
             }
             Catalog::Postgres(pool) => {
-                let rows = query(&format!(
+                let rows = query(trusted_sql!(
                     "SELECT {MEMBERSHIP_COLUMNS} FROM tenant_memberships WHERE user_id = $1 ORDER BY tenant_id"
                 ))
                 .bind(user_id)
@@ -5764,7 +5784,7 @@ impl Catalog {
     ) -> Result<Vec<TenantMembershipRecord>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                let rows = query(&format!(
+                let rows = query(trusted_sql!(
                     "SELECT {MEMBERSHIP_COLUMNS} FROM tenant_memberships WHERE tenant_id = ? ORDER BY user_id"
                 ))
                 .bind(tenant_id)
@@ -5773,7 +5793,7 @@ impl Catalog {
                 rows.iter().map(membership_from_sqlite_row).collect()
             }
             Catalog::Postgres(pool) => {
-                let rows = query(&format!(
+                let rows = query(trusted_sql!(
                     "SELECT {MEMBERSHIP_COLUMNS} FROM tenant_memberships WHERE tenant_id = $1 ORDER BY user_id"
                 ))
                 .bind(tenant_id)
@@ -6032,7 +6052,7 @@ impl Catalog {
         let sql = "SELECT id, client_name, redirect_uris, grant_types, scope, token_endpoint_auth_method, created_at FROM oauth_clients WHERE id = ";
         match self {
             Catalog::Sqlite(pool) => {
-                let row = query(&format!("{sql}?"))
+                let row = query(trusted_sql!("{sql}?"))
                     .bind(client_id)
                     .fetch_optional(pool)
                     .await?;
@@ -6050,7 +6070,7 @@ impl Catalog {
                 .transpose()
             }
             Catalog::Postgres(pool) => {
-                let row = query(&format!("{sql}$1"))
+                let row = query(trusted_sql!("{sql}$1"))
                     .bind(client_id)
                     .fetch_optional(pool)
                     .await?;
@@ -6179,7 +6199,7 @@ impl Catalog {
         let cols = "client_id, user_id, tenant_grants, scopes, redirect_uri, code_challenge, resource, created_at, expires_at";
         let record = match self {
             Catalog::Sqlite(pool) => {
-                let row = query(&format!(
+                let row = query(trusted_sql!(
                     "DELETE FROM oauth_authorization_codes WHERE code_hash = ? RETURNING {cols}"
                 ))
                 .bind(code_hash)
@@ -6201,7 +6221,7 @@ impl Catalog {
                 }
             }
             Catalog::Postgres(pool) => {
-                let row = query(&format!(
+                let row = query(trusted_sql!(
                     "DELETE FROM oauth_authorization_codes WHERE code_hash = $1 RETURNING {cols}"
                 ))
                 .bind(code_hash)
@@ -6386,7 +6406,7 @@ impl Catalog {
         };
         match self {
             Catalog::Sqlite(pool) => {
-                query(&format!(
+                query(trusted_sql!(
                     "INSERT INTO {table} (id, token_hash, client_id, user_id, tenant_grants, scopes, resource, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 ))
                 .bind(&id)
@@ -6402,7 +6422,7 @@ impl Catalog {
                 .await?;
             }
             Catalog::Postgres(pool) => {
-                query(&format!(
+                query(trusted_sql!(
                     "INSERT INTO {table} (id, token_hash, client_id, user_id, tenant_grants, scopes, resource, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
                 ))
                 .bind(&id)
@@ -6458,7 +6478,7 @@ impl Catalog {
             "id, client_id, user_id, tenant_grants, scopes, resource, created_at, expires_at";
         match self {
             Catalog::Sqlite(pool) => {
-                let row = query(&format!(
+                let row = query(trusted_sql!(
                     "SELECT {cols} FROM {table} WHERE token_hash = ? AND expires_at > ?"
                 ))
                 .bind(token_hash)
@@ -6480,7 +6500,7 @@ impl Catalog {
                 .transpose()
             }
             Catalog::Postgres(pool) => {
-                let row = query(&format!(
+                let row = query(trusted_sql!(
                     "SELECT {cols} FROM {table} WHERE token_hash = $1 AND expires_at > NOW()"
                 ))
                 .bind(token_hash)
@@ -6519,13 +6539,13 @@ impl Catalog {
     async fn delete_oauth_token(&self, table: &str, token_hash: &str) -> Result<(), sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                query(&format!("DELETE FROM {table} WHERE token_hash = ?"))
+                query(trusted_sql!("DELETE FROM {table} WHERE token_hash = ?"))
                     .bind(token_hash)
                     .execute(pool)
                     .await?;
             }
             Catalog::Postgres(pool) => {
-                query(&format!("DELETE FROM {table} WHERE token_hash = $1"))
+                query(trusted_sql!("DELETE FROM {table} WHERE token_hash = $1"))
                     .bind(token_hash)
                     .execute(pool)
                     .await?;
@@ -6725,7 +6745,7 @@ impl Catalog {
         let cols = "state_hash, tenant_id, user_id, created_at, expires_at, consumed_at";
         match self {
             Catalog::Sqlite(pool) => {
-                let row = query(&format!(
+                let row = query(trusted_sql!(
                     "SELECT {cols} FROM github_link_states WHERE state_hash = ?"
                 ))
                 .bind(state_hash)
@@ -6747,7 +6767,7 @@ impl Catalog {
                 .transpose()
             }
             Catalog::Postgres(pool) => {
-                let row = query(&format!(
+                let row = query(trusted_sql!(
                     "SELECT {cols} FROM github_link_states WHERE state_hash = $1"
                 ))
                 .bind(state_hash)
@@ -6809,20 +6829,22 @@ impl Catalog {
                 };
                 let tenant_id: String = consumed_row.get("tenant_id");
 
-                let row = query(&github_installation_upsert_sqlite_sql())
-                    .bind(&tenant_id)
-                    .bind(installation.installation_id)
-                    .bind(&installation.account_login)
-                    .bind(&installation.account_type)
-                    .bind(installation.account_id)
-                    .bind(&repositories_json)
-                    .bind(&now_str)
-                    .bind(&installation.linked_by_user_id)
-                    .bind(&installation.linked_by_github_login)
-                    .bind(&now_str)
-                    .bind(&now_str)
-                    .fetch_one(&mut *tx)
-                    .await?;
+                let row = query(AssertSqlSafe(
+                    github_installation_upsert_sqlite_sql().as_str(),
+                ))
+                .bind(&tenant_id)
+                .bind(installation.installation_id)
+                .bind(&installation.account_login)
+                .bind(&installation.account_type)
+                .bind(installation.account_id)
+                .bind(&repositories_json)
+                .bind(&now_str)
+                .bind(&installation.linked_by_user_id)
+                .bind(&installation.linked_by_github_login)
+                .bind(&now_str)
+                .bind(&now_str)
+                .fetch_one(&mut *tx)
+                .await?;
                 let record = github_installation_from_sqlite_row(row)?;
                 tx.commit().await?;
                 Ok(GitHubLinkOutcome::Linked(record))
@@ -6844,19 +6866,21 @@ impl Catalog {
                 };
                 let tenant_id: String = consumed_row.get("tenant_id");
 
-                let row = query(&github_installation_upsert_postgres_sql())
-                    .bind(&tenant_id)
-                    .bind(installation.installation_id)
-                    .bind(&installation.account_login)
-                    .bind(&installation.account_type)
-                    .bind(installation.account_id)
-                    .bind(&repositories_json)
-                    .bind(now)
-                    .bind(&installation.linked_by_user_id)
-                    .bind(&installation.linked_by_github_login)
-                    .bind(now)
-                    .fetch_one(&mut *tx)
-                    .await?;
+                let row = query(AssertSqlSafe(
+                    github_installation_upsert_postgres_sql().as_str(),
+                ))
+                .bind(&tenant_id)
+                .bind(installation.installation_id)
+                .bind(&installation.account_login)
+                .bind(&installation.account_type)
+                .bind(installation.account_id)
+                .bind(&repositories_json)
+                .bind(now)
+                .bind(&installation.linked_by_user_id)
+                .bind(&installation.linked_by_github_login)
+                .bind(now)
+                .fetch_one(&mut *tx)
+                .await?;
                 let record = github_installation_from_postgres_row(row)?;
                 tx.commit().await?;
                 Ok(GitHubLinkOutcome::Linked(record))
@@ -6890,36 +6914,40 @@ impl Catalog {
         match self {
             Catalog::Sqlite(pool) => {
                 let now_str = now.to_rfc3339();
-                let row = query(&github_installation_upsert_sqlite_sql())
-                    .bind(tenant_id)
-                    .bind(installation.installation_id)
-                    .bind(&installation.account_login)
-                    .bind(&installation.account_type)
-                    .bind(installation.account_id)
-                    .bind(&repositories_json)
-                    .bind(&now_str)
-                    .bind(&installation.linked_by_user_id)
-                    .bind(&installation.linked_by_github_login)
-                    .bind(&now_str)
-                    .bind(&now_str)
-                    .fetch_one(pool)
-                    .await?;
+                let row = query(AssertSqlSafe(
+                    github_installation_upsert_sqlite_sql().as_str(),
+                ))
+                .bind(tenant_id)
+                .bind(installation.installation_id)
+                .bind(&installation.account_login)
+                .bind(&installation.account_type)
+                .bind(installation.account_id)
+                .bind(&repositories_json)
+                .bind(&now_str)
+                .bind(&installation.linked_by_user_id)
+                .bind(&installation.linked_by_github_login)
+                .bind(&now_str)
+                .bind(&now_str)
+                .fetch_one(pool)
+                .await?;
                 github_installation_from_sqlite_row(row)
             }
             Catalog::Postgres(pool) => {
-                let row = query(&github_installation_upsert_postgres_sql())
-                    .bind(tenant_id)
-                    .bind(installation.installation_id)
-                    .bind(&installation.account_login)
-                    .bind(&installation.account_type)
-                    .bind(installation.account_id)
-                    .bind(&repositories_json)
-                    .bind(now)
-                    .bind(&installation.linked_by_user_id)
-                    .bind(&installation.linked_by_github_login)
-                    .bind(now)
-                    .fetch_one(pool)
-                    .await?;
+                let row = query(AssertSqlSafe(
+                    github_installation_upsert_postgres_sql().as_str(),
+                ))
+                .bind(tenant_id)
+                .bind(installation.installation_id)
+                .bind(&installation.account_login)
+                .bind(&installation.account_type)
+                .bind(installation.account_id)
+                .bind(&repositories_json)
+                .bind(now)
+                .bind(&installation.linked_by_user_id)
+                .bind(&installation.linked_by_github_login)
+                .bind(now)
+                .fetch_one(pool)
+                .await?;
                 github_installation_from_postgres_row(row)
             }
         }
@@ -6935,7 +6963,7 @@ impl Catalog {
     ) -> Result<Vec<GitHubInstallationRecord>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                let rows = query(&format!(
+                let rows = query(trusted_sql!(
                     "SELECT {GITHUB_INSTALLATION_COLUMNS} FROM github_installations WHERE tenant_id = ? \
                      ORDER BY account_login, installation_id"
                 ))
@@ -6947,7 +6975,7 @@ impl Catalog {
                     .collect()
             }
             Catalog::Postgres(pool) => {
-                let rows = query(&format!(
+                let rows = query(trusted_sql!(
                     "SELECT {GITHUB_INSTALLATION_COLUMNS} FROM github_installations WHERE tenant_id = $1 \
                      ORDER BY account_login, installation_id"
                 ))
@@ -6971,7 +6999,7 @@ impl Catalog {
     ) -> Result<Option<GitHubInstallationRecord>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                let row = query(&format!(
+                let row = query(trusted_sql!(
                     "SELECT {GITHUB_INSTALLATION_COLUMNS} FROM github_installations WHERE tenant_id = ? AND installation_id = ?"
                 ))
                 .bind(tenant_id)
@@ -6981,7 +7009,7 @@ impl Catalog {
                 row.map(github_installation_from_sqlite_row).transpose()
             }
             Catalog::Postgres(pool) => {
-                let row = query(&format!(
+                let row = query(trusted_sql!(
                     "SELECT {GITHUB_INSTALLATION_COLUMNS} FROM github_installations WHERE tenant_id = $1 AND installation_id = $2"
                 ))
                 .bind(tenant_id)
@@ -11266,7 +11294,7 @@ mod oauth_storage_tests {
             panic!("expected a SQLite catalog");
         };
         for table in OAUTH_GRANT_TABLES {
-            let columns = query(&format!("PRAGMA table_info({table})"))
+            let columns = query(trusted_sql!("PRAGMA table_info({table})"))
                 .fetch_all(pool)
                 .await
                 .unwrap();
@@ -11345,7 +11373,7 @@ mod oauth_storage_tests {
             panic!("expected a SQLite catalog");
         };
         for table in OAUTH_GRANT_TABLES {
-            let columns = query(&format!("PRAGMA table_info({table})"))
+            let columns = query(trusted_sql!("PRAGMA table_info({table})"))
                 .fetch_all(pool)
                 .await
                 .unwrap();
