@@ -109,10 +109,20 @@ fn sample_resources(sys: &mut sysinfo::System, pid: Option<sysinfo::Pid>) -> Res
 /// Used by the querier to size a default `[querier].memory_limit_mb`
 /// (issue #1359) without every caller repeating the `sysinfo` idiom
 /// [`sample_resources`] already owns.
+///
+/// Returns zero when `sysinfo` cannot read this platform, which the querier
+/// clamps to its memory-limit floor.
 pub fn total_system_memory_bytes() -> u64 {
-    let mut sys = sysinfo::System::new();
-    sys.refresh_memory();
-    sys.total_memory()
+    match sysinfo::System::new() {
+        Ok(mut sys) => {
+            sys.refresh_memory();
+            sys.total_memory()
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "Failed to read total system memory");
+            0
+        }
+    }
 }
 
 pub fn register_system_metrics(
@@ -151,7 +161,16 @@ pub fn register_system_metrics(
                 None
             }
         };
-        let mut sys = sysinfo::System::new();
+        let mut sys = match sysinfo::System::new() {
+            Ok(sys) => sys,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "Failed to initialise sysinfo; resource gauges will report zero"
+                );
+                return;
+            }
+        };
         let num_cpus = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1) as f64;
@@ -288,7 +307,7 @@ mod tests {
     /// source and be strictly smaller than host used memory.
     #[test]
     fn sample_resources_reports_process_rss_not_host_used_memory() {
-        let mut sys = System::new();
+        let mut sys = System::new().expect("sysinfo supports this platform");
         let pid = sysinfo::get_current_pid().ok();
         assert!(pid.is_some(), "current pid should be resolvable in tests");
 
@@ -316,7 +335,7 @@ mod tests {
 
     #[test]
     fn sample_resources_reports_finite_nonnegative_system_cpu_ratio() {
-        let mut sys = System::new();
+        let mut sys = System::new().expect("sysinfo supports this platform");
         let pid = sysinfo::get_current_pid().ok();
 
         sample_resources(&mut sys, pid);
@@ -332,7 +351,7 @@ mod tests {
 
     #[test]
     fn sample_resources_reports_positive_uptime_for_a_live_pid() {
-        let mut sys = System::new();
+        let mut sys = System::new().expect("sysinfo supports this platform");
         let pid = sysinfo::get_current_pid().ok();
         let sample = sample_resources(&mut sys, pid);
 
@@ -342,7 +361,7 @@ mod tests {
 
     #[test]
     fn sample_resources_without_pid_reports_zero_process_values() {
-        let mut sys = System::new();
+        let mut sys = System::new().expect("sysinfo supports this platform");
         let sample = sample_resources(&mut sys, None);
 
         assert_eq!(sample.process_memory_bytes, 0);
