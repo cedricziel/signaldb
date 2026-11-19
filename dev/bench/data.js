@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794975208665,
+  "lastUpdate": 1795061614760,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -32767,6 +32767,454 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 981952,
             "range": "± 10951",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]",
+            "email": "49699333+dependabot[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "588819b6e3cb8098c3d7bafc32c40b9ccc904b9f",
+          "message": "build(deps): bump sysinfo from 0.39.6 to 0.40.0 (#2318)\n\n* build(deps): bump sysinfo from 0.39.6 to 0.40.0\n\nBumps [sysinfo](https://github.com/GuillaumeGomez/sysinfo) from 0.39.6 to 0.40.0.\n- [Changelog](https://github.com/GuillaumeGomez/sysinfo/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/GuillaumeGomez/sysinfo/compare/v0.39.6...v0.40.0)\n\n---\nupdated-dependencies:\n- dependency-name: sysinfo\n  dependency-version: 0.40.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\n\n* fix(common): handle fallible sysinfo::System::new in sysinfo 0.40\n\nsysinfo 0.40 returns Result from System::new. Total-memory lookup falls\nback to 0 (clamped to the querier memory floor) and the resource sampler\nthread logs and exits instead of panicking when the platform is unsupported.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01NoPuyiJtvJF8n6FtaoNf1c\n\n---------\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>\nCo-authored-by: Cedric Ziel <mail@cedric-ziel.com>\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-11-15T07:10:34Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/588819b6e3cb8098c3d7bafc32c40b9ccc904b9f"
+        },
+        "date": 1795061613148,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 1722596,
+            "range": "± 33618",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 1088717,
+            "range": "± 23005",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 730423,
+            "range": "± 5975",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 1341389,
+            "range": "± 25529",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 651032,
+            "range": "± 3022",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 1778787,
+            "range": "± 23181",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 1184592,
+            "range": "± 20314",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/evaluator",
+            "value": 16378929,
+            "range": "± 137892",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/ancestry",
+            "value": 6986943,
+            "range": "± 216062",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/decode(a)",
+            "value": 3214267,
+            "range": "± 108737",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/decode(b)",
+            "value": 3862653,
+            "range": "± 233214",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/monitoring_10k_traces/materialize",
+            "value": 385176,
+            "range": "± 133548",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/evaluator",
+            "value": 2773107,
+            "range": "± 107570",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/ancestry",
+            "value": 41411450,
+            "range": "± 1847916",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/decode(a)",
+            "value": 1267848,
+            "range": "± 357118",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/decode(b)",
+            "value": 40068028,
+            "range": "± 3766167",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/deep_20x500_chain/materialize",
+            "value": 75058333,
+            "range": "± 8562301",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/evaluator",
+            "value": 20647415,
+            "range": "± 392976",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/ancestry",
+            "value": 14781457,
+            "range": "± 1191080",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/decode(a)",
+            "value": 6213804,
+            "range": "± 390251",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/decode(b)",
+            "value": 7093581,
+            "range": "± 166905",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/wide_10x10000_fanout/materialize",
+            "value": 819814,
+            "range": "± 26620",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/evaluator",
+            "value": 23851763,
+            "range": "± 376445",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/ancestry",
+            "value": 28742918,
+            "range": "± 956188",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/decode(a)",
+            "value": 8145296,
+            "range": "± 298440",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/decode(b)",
+            "value": 21918748,
+            "range": "± 699947",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "structural_ancestry/bushy_20x5000_random/materialize",
+            "value": 20783147,
+            "range": "± 692252",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.1MB",
+            "value": 2564573,
+            "range": "± 127636",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.5MB",
+            "value": 4560445,
+            "range": "± 21410",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_5.3MB",
+            "value": 24874958,
+            "range": "± 201911",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_46.7MB",
+            "value": 258087828,
+            "range": "± 7722720",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 7116008,
+            "range": "± 101102",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 14547371,
+            "range": "± 122924",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 26620566,
+            "range": "± 170655",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 53523288,
+            "range": "± 807752",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 1171789,
+            "range": "± 12014",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 4455751,
+            "range": "± 104540",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 7359359,
+            "range": "± 153678",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 13112315,
+            "range": "± 904708",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/1000",
+            "value": 104734,
+            "range": "± 818",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/1000",
+            "value": 146130,
+            "range": "± 1711",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/10000",
+            "value": 886219,
+            "range": "± 14580",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/10000",
+            "value": 1483695,
+            "range": "± 12705",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/100000",
+            "value": 8970325,
+            "range": "± 204650",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/100000",
+            "value": 27938164,
+            "range": "± 641253",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 1445855,
+            "range": "± 27045",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 25857121,
+            "range": "± 749738",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 26779822,
+            "range": "± 1172379",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 26274330,
+            "range": "± 1335671",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 26753039,
+            "range": "± 1724914",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 26222158,
+            "range": "± 977524",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 7492560,
+            "range": "± 433938",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 16097959,
+            "range": "± 684969",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 25463887,
+            "range": "± 2120152",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested",
+            "value": 8794706,
+            "range": "± 217394",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested_split_off",
+            "value": 8725074,
+            "range": "± 247866",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/unattested",
+            "value": 8587427,
+            "range": "± 235185",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested",
+            "value": 7490800,
+            "range": "± 410816",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested_split_off",
+            "value": 7249937,
+            "range": "± 232254",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/unattested",
+            "value": 7956228,
+            "range": "± 208303",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested",
+            "value": 15004316,
+            "range": "± 284350",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested_split_off",
+            "value": 20265682,
+            "range": "± 497971",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/unattested",
+            "value": 15257019,
+            "range": "± 338546",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 27552034,
+            "range": "± 2054804",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 6200792,
+            "range": "± 267235",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 73472674,
+            "range": "± 1798603",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 170870919,
+            "range": "± 3222691",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 132119495,
+            "range": "± 10537451",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 999969,
+            "range": "± 35941",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 948841,
+            "range": "± 8488",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 1001102,
+            "range": "± 11693",
             "unit": "ns/iter"
           }
         ]
