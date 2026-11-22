@@ -154,8 +154,10 @@ ghcr.io/cedricziel/signaldb:main-glibc-profiling
 
 This is the monolithic `signaldb` binary built for
 `x86_64-unknown-linux-gnu` by a native glibc toolchain — no cross wrapper, no
-ABI mismatch — on a `debian:trixie-slim` runtime whose glibc matches the
-builder's. It bundles the same entrypoint, ports, and Explore UI as the
+ABI mismatch — on a `debian:trixie-slim` runtime (glibc 2.41). The binary is
+linked on an `ubuntu-24.04` runner (glibc 2.39) so it never requires a newer
+glibc than the runtime ships, and CI starts it on the runtime base before
+building the image. It bundles the same entrypoint, ports, and Explore UI as the
 monolithic image, plus `signaldb-cli` for parity. **amd64 only** — no arm64
 build, no per-microservice variant, and only branch/PR tags (`main-`,
 `pr-<n>-`) are published; tagged releases do not yet produce a version-pinned

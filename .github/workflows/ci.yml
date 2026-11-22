@@ -693,9 +693,14 @@ jobs:
   # toolchain on a plain runner has no such mismatch.
   #
   # amd64 only for now; arm64 is a follow-up if operators need it.
+  #
+  # Pinned, not ubuntu-latest: the binary links against the runner's glibc and
+  # must run on the image's debian:trixie-slim (glibc 2.41). ubuntu-latest
+  # moved to 26.04 (glibc 2.43) and produced a binary that fails to start in
+  # the image. The image job smoke-tests the binary on the runtime base.
   build-glibc-profiling-amd64:
     name: Build glibc Profiling Binary (amd64)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [changes, check]
     if: needs.changes.outputs.images == 'true'
     steps:
@@ -936,6 +941,17 @@ jobs:
         with:
           name: glibc-profiling-binaries-amd64
           path: dist-glibc/
+
+      # The binary was linked on the build runner; this fails fast when that
+      # runner's glibc is newer than the image's runtime base.
+      - name: Verify binary starts on the runtime base image
+        run: |
+          base=$(awk '$1 == "FROM" && $4 == "runtime-base-glibc" { print $2 }' Dockerfile)
+          test -n "$base"
+          chmod +x dist-glibc/*
+          docker run --rm -v "$PWD/dist-glibc:/b:ro" -e MALLOC_CONF=prof:true \
+            "$base" /b/signaldb --help > /dev/null
+          docker run --rm -v "$PWD/dist-glibc:/b:ro" "$base" /b/signaldb-cli --help > /dev/null
 
       - name: Download UI dist
         uses: actions/download-artifact@v8
