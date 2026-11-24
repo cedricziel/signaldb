@@ -119,7 +119,7 @@ instead:
 ghcr.io/cedricziel/signaldb:main-glibc-profiling
 ```
 
-It ships the monolithic `signaldb` binary on a Debian runtime and is a
+It ships the monolithic `signaldb` binary on an Ubuntu runtime and is a
 drop-in swap for the monolithic image (**amd64 only**, branch/PR tags only —
 see the linked doc for the tagging caveat). See
 [Binary runtime characteristics](../operations/binaries.md#heap-profiling-and-the-glibc-image)
