@@ -45,6 +45,12 @@ jobs:
           VERSION=$(jq -r '.version' src/grafana-plugin/.config/.cprc.json)
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
+      # create-plugin resolves `prettier` from the plugin directory before its
+      # codemods run, so node_modules must exist on a fresh checkout.
+      - name: Install dependencies
+        if: steps.latest.outputs.version != steps.current.outputs.version
+        run: pnpm install --frozen-lockfile
+
       - name: Run create-plugin update
         if: steps.latest.outputs.version != steps.current.outputs.version
         working-directory: src/grafana-plugin
