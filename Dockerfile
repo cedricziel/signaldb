@@ -10,8 +10,8 @@
 # --build-arg UI_BUILDER=<source|prebuilt> (prebuilt copies a dist built by
 # CI and staged in ui-dist/, so one UI build serves every image).
 #
-# One stage stands outside this scheme: monolithic-glibc-profiling, a
-# Debian-based heap-profiling variant of the monolithic image built from a
+# One stage stands outside this scheme: monolithic-glibc-profiling, an
+# Ubuntu-based heap-profiling variant of the monolithic image built from a
 # glibc binary CI stages in dist-glibc/. See the bottom of this file.
 ARG BUILDER=source
 ARG UI_BUILDER=source
@@ -266,23 +266,27 @@ ENTRYPOINT ["/usr/local/bin/signaldb", "mcp"]
 #
 # This variant exists to give operators heap profiles anyway: signaldb-bin
 # and signaldb-cli, compiled for x86_64-unknown-linux-gnu by a native glibc
-# toolchain (no cross wrapper, no ABI mismatch), running on a Debian runtime
-# whose glibc matches the builder's. It is a drop-in swap for the monolithic
-# image.
+# toolchain (no cross wrapper, no ABI mismatch), running on an Ubuntu runtime
+# whose glibc matches the builder's: the runtime base below must be the same
+# Ubuntu release as the CI runner in build-glibc-profiling-amd64. It is a
+# drop-in swap for the monolithic image.
 #
 # Prebuilt-only: CI compiles the binary on a plain runner and stages it in
 # dist-glibc/. BuildKit skips this stage entirely unless it is the build
 # target, so the missing directory does not affect other image builds.
-FROM debian:trixie-slim AS builder-prebuilt-glibc
+FROM ubuntu:26.04 AS builder-prebuilt-glibc
 
 WORKDIR /build
 COPY --chmod=755 dist-glibc/ target/release/
 
-FROM debian:trixie-slim AS runtime-base-glibc
+FROM ubuntu:26.04 AS runtime-base-glibc
 
+# The ubuntu image ships a default "ubuntu" user on uid 1000; drop it so
+# signaldb gets the same uid/gid as in the other images.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
+    && (userdel --remove ubuntu 2>/dev/null || true) \
     && groupadd -g 1000 signaldb \
     && useradd -u 1000 -g signaldb -M -s /usr/sbin/nologin signaldb \
     && mkdir -p /data \
