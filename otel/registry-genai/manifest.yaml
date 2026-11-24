@@ -12,7 +12,7 @@
 name: signaldb-genai
 description: SignalDB conventions over the OpenTelemetry GenAI semantic conventions
 # x-release-please-start-version
-schema_url: https://cedricziel.github.io/signaldb/schemas/genai/0.4.1
+schema_url: https://cedricziel.github.io/signaldb/schemas/genai/0.5.0
 # x-release-please-end
 dependencies:
   - schema_url: https://opentelemetry.io/schemas/gen-ai-dev/1.42.0-dev
