@@ -693,9 +693,14 @@ jobs:
   # toolchain on a plain runner has no such mismatch.
   #
   # amd64 only for now; arm64 is a follow-up if operators need it.
+  #
+  # Pinned, not ubuntu-latest: the binary links against the runner's glibc, so
+  # the runner must match the image's runtime base (ubuntu:26.04 in the
+  # Dockerfile's runtime-base-glibc stage). Bump both together. The image job
+  # smoke-tests the binary on the runtime base to catch drift.
   build-glibc-profiling-amd64:
     name: Build glibc Profiling Binary (amd64)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: [changes, check]
     if: needs.changes.outputs.images == 'true'
     steps:
@@ -917,7 +922,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  # Heap-profiling image: the monolithic binary on a Debian runtime, built
+  # Heap-profiling image: the monolithic binary on an Ubuntu runtime, built
   # from the glibc binary above. Single-arch (amd64), so it is tagged
   # directly instead of going through the multi-arch manifest job.
   docker-build-glibc-profiling:
@@ -936,6 +941,17 @@ jobs:
         with:
           name: glibc-profiling-binaries-amd64
           path: dist-glibc/
+
+      # The binary was linked on the build runner; this fails fast when that
+      # runner's glibc is newer than the image's runtime base.
+      - name: Verify binary starts on the runtime base image
+        run: |
+          base=$(awk '$1 == "FROM" && $4 == "runtime-base-glibc" { print $2 }' Dockerfile)
+          test -n "$base"
+          chmod +x dist-glibc/*
+          docker run --rm -v "$PWD/dist-glibc:/b:ro" -e MALLOC_CONF=prof:true \
+            "$base" /b/signaldb --help > /dev/null
+          docker run --rm -v "$PWD/dist-glibc:/b:ro" "$base" /b/signaldb-cli --help > /dev/null
 
       - name: Download UI dist
         uses: actions/download-artifact@v8
